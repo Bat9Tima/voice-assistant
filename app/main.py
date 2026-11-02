@@ -16,13 +16,13 @@ from .actions import ActionRouter
 from .audio import Microphone, rms
 from .brain import OpenCodeBrain
 from .browser import BrowserController
-from .config import LOGS_DIR, VOSK_DIR, load_config
+from .config import LOGS_DIR, MODELS_DIR, VOSK_DIR, load_config
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
 from .text import normalize, strip_wake_word
 from .tray import TrayUI
-from .wake import WakeWordDetector
+from .wake import OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class Assistant:
             block_size=int(audio_cfg["block_size"]),
             device=audio_cfg.get("input_device"),
         )
-        self.wake: WakeWordDetector | None = None
+        self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
         self.server: ControlServer | None = None
         self._hotkey_listener = None
@@ -168,6 +168,14 @@ class Assistant:
         if self._mutex is None:
             return 0
 
+        # winrt (Windows Toast) падает с access violation, если onnxruntime
+        # загрузится уже после него. Поэтому грузим onnxruntime первым.
+        if str(self.cfg.get("wake_engine", "vosk")).lower() == "openwakeword":
+            try:
+                import onnxruntime  # noqa: F401
+            except Exception:  # noqa: BLE001
+                log.debug("onnxruntime не предзагрузился", exc_info=True)
+
         if self.tray is not None:
             self.tray.start()
 
@@ -198,16 +206,32 @@ class Assistant:
             self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша и HTTP-команды.")
             self.mic = None  # type: ignore[assignment]
 
-        try:
-            self.wake = WakeWordDetector(
-                VOSK_DIR,
-                self.cfg.get("wake_aliases") or [self.cfg.get("wake_word", "окей ассистент")],
-                sample_rate=int(self.cfg["audio"]["sample_rate"]),
-                confusables=self.cfg.get("wake_confusables") or [],
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Детектор ключевого слова не загрузился")
-            self.notify(f"Vosk не загрузился: {exc}. Используйте {self.cfg['hotkey']}.")
+        aliases = self.cfg.get("wake_aliases") or [
+            self.cfg.get("wake_word", "окей ассистент")
+        ]
+        engine = str(self.cfg.get("wake_engine", "vosk")).lower()
+        if engine == "openwakeword":
+            try:
+                model_name = self.cfg.get("wake_model") or "hey_luna.onnx"
+                self.wake = OpenWakeWordDetector(
+                    MODELS_DIR / "openwakeword" / model_name,
+                    threshold=float(self.cfg.get("wake_threshold", 0.5)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("openWakeWord не загрузился, откатываюсь на Vosk")
+                self.notify(f"openWakeWord не загрузился: {exc}. Использую Vosk.")
+
+        if self.wake is None:
+            try:
+                self.wake = WakeWordDetector(
+                    VOSK_DIR,
+                    aliases,
+                    sample_rate=int(self.cfg["audio"]["sample_rate"]),
+                    confusables=self.cfg.get("wake_confusables") or [],
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Детектор ключевого слова не загрузился")
+                self.notify(f"Vosk не загрузился: {exc}. Используйте {self.cfg['hotkey']}.")
 
         threading.Thread(target=self._warmup_stt, daemon=True, name="stt-warmup").start()
         threading.Thread(target=self._start_hotkey, daemon=True, name="hotkey").start()

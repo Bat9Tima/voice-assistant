@@ -74,3 +74,58 @@ class WakeWordDetector:
 
     def reset(self) -> None:
         self.recognizer.Reset()
+
+
+class OpenWakeWordDetector:
+    """Лёгкий детектор одной фразы на openWakeWord (ONNX).
+
+    В отличие от Vosk не распознаёт речь, а ищет акустический паттерн
+    конкретной фразы. Поэтому почти не нагружает CPU и не путает похожие
+    слова — но и работает только с той фразой, под которую обучена.
+    """
+
+    def __init__(self, model_path: Path, threshold: float = 0.5) -> None:
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Модель openWakeWord не найдена: {model_path}. "
+                "Скачайте её в папку моделей (см. README)."
+            )
+        try:
+            import openwakeword
+            from openwakeword.model import Model
+            from openwakeword.utils import download_models
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "openWakeWord не установлен: pip install openwakeword"
+            ) from exc
+
+        # openWakeWord качает общий feature extractor отдельно от пакета.
+        features = [Path(item["model_path"]) for item in openwakeword.FEATURE_MODELS.values()]
+        if any(not path.exists() for path in features):
+            log.info("Загружаю служебные модели openWakeWord...")
+            download_models()
+
+        self.model = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
+        self.name = next(iter(self.model.models))
+        self.threshold = float(threshold)
+        log.info(
+            "Детектор openWakeWord готов: %s (порог %.2f)",
+            self.name,
+            self.threshold,
+        )
+
+    def feed(self, pcm: bytes) -> bool:
+        if not pcm:
+            return False
+        import numpy as np
+
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        scores = self.model.predict(samples)
+        score = float(scores.get(self.name, 0.0))
+        if score >= self.threshold:
+            log.info("Ключевое слово: %s (score %.2f)", self.name, score)
+            return True
+        return False
+
+    def reset(self) -> None:
+        self.model.reset()

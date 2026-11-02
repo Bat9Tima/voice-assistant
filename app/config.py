@@ -21,6 +21,11 @@ GIGAAM_DIR = MODELS_DIR / "sherpa-onnx-nemo-transducer-giga-am-v3-russian-2025-1
 DEFAULTS: dict[str, Any] = {
     "wake_word": "окей ассистент",
     "wake_aliases": ["окей ассистент", "ок ассистент", "эй ассистент"],
+    # vosk — распознаёт речь и ищет фразу в тексте; openwakeword — лёгкая
+    # модель под одну конкретную фразу.
+    "wake_engine": "vosk",
+    "wake_model": "hey_luna.onnx",
+    "wake_threshold": 0.5,
     # Слова, похожие по звучанию на ключевое. Нужны, чтобы Vosk не
     # «подгонял» их под единственное слово в грамматике.
     "wake_confusables": [],

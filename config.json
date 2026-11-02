@@ -1,12 +1,13 @@
 {
-  "wake_word": "луна",
+  "wake_word": "хей луна",
   "wake_aliases": [
-   "луна"
+   "хей луна",
+   "эй луна"
   ],
-  "wake_confusables": [
-   "уна", "она", "они", "оно", "лупа", "руна", "юна", "дума", "лужа",
-   "лунь", "муна", "куна", "пуна", "нуна"
-  ],
+  "wake_engine": "openwakeword",
+  "wake_model": "hey_luna.onnx",
+  "wake_threshold": 0.5,
+  "wake_confusables": [],
   "language": "ru",
   "hotkey": "ctrl+alt+space",
   "notifications": true,

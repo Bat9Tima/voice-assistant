@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from app.wake import WakeWordDetector, allowed_errors
+from app.wake import OpenWakeWordDetector, WakeWordDetector, allowed_errors
 
 
 class AllowedErrorsTest(unittest.TestCase):
@@ -55,6 +55,42 @@ class WakeMatchTest(unittest.TestCase):
 
     def test_empty_audio_is_ignored(self) -> None:
         self.assertFalse(self.detector("луна").feed(b""))
+
+
+class FakeOpenWakeWordModel:
+    def __init__(self, score: float) -> None:
+        self.score = score
+        self.models = {"hey_luna": object()}
+        self.reset_called = False
+
+    def predict(self, samples):
+        return {"hey_luna": self.score}
+
+    def reset(self) -> None:
+        self.reset_called = True
+
+
+class OpenWakeWordMatchTest(unittest.TestCase):
+    def detector(self, score: float) -> OpenWakeWordDetector:
+        detector = OpenWakeWordDetector.__new__(OpenWakeWordDetector)
+        detector.model = FakeOpenWakeWordModel(score)
+        detector.name = "hey_luna"
+        detector.threshold = 0.5
+        return detector
+
+    def test_score_above_threshold_triggers(self) -> None:
+        self.assertTrue(self.detector(0.8).feed(b"\x00\x00"))
+
+    def test_score_below_threshold_is_ignored(self) -> None:
+        self.assertFalse(self.detector(0.49).feed(b"\x00\x00"))
+
+    def test_empty_audio_is_ignored(self) -> None:
+        self.assertFalse(self.detector(0.9).feed(b""))
+
+    def test_reset_clears_model_state(self) -> None:
+        detector = self.detector(0.0)
+        detector.reset()
+        self.assertTrue(detector.model.reset_called)
 
 
 if __name__ == "__main__":
