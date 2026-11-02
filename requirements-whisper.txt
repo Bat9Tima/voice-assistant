@@ -1,0 +1,5 @@
+# Опциональное английское распознавание (Whisper tiny).
+# Не ставится по умолчанию; включается: .\scripts\setup.cmd -English
+# Вручную: .venv\Scripts\python.exe -m pip install -r requirements-whisper.txt
+-r requirements.txt
+faster-whisper>=1.1.0

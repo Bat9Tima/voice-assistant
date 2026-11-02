@@ -1,0 +1,67 @@
+{
+  "wake_word": "окей ассистент",
+  "wake_aliases": [
+    "окей ассистент",
+    "ок ассистент",
+    "окей ассистэнт",
+    "эй ассистент"
+  ],
+  "language": "ru",
+  "hotkey": "ctrl+alt+space",
+  "notifications": true,
+  "log_level": "INFO",
+
+  "audio": {
+    "sample_rate": 16000,
+    "block_size": 4000,
+    "input_device": null,
+    "energy_threshold": 0.010,
+    "noise_multiplier": 2.0,
+    "pre_roll_sec": 2.5,
+    "silence_ms": 800,
+    "min_speech_ms": 250,
+    "max_command_sec": 15,
+    "no_speech_timeout_sec": 6
+  },
+
+  "stt": {
+    "engine": "gigaam",
+    "num_threads": 4,
+    "tail_padding_sec": 0.4,
+    "model": "small",
+    "device": "cpu",
+    "compute_type": "int8",
+    "beam_size": 5,
+    "initial_prompt": "Голосовые команды ассистенту: открой, включи, найди, поставь, пауза, следующее видео, закрой вкладку.",
+    "parallel_english": false,
+    "english_engine": "whisper",
+    "english_model": "tiny",
+    "english_num_threads": 4,
+    "english_device": "cpu",
+    "english_compute_type": "int8",
+    "english_beam_size": 1,
+    "english_crop_beam_size": 5,
+    "english_locator": "vosk"
+  },
+
+  "browser": {
+    "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "port": 9222,
+    "profile_dir": "%LOCALAPPDATA%\\VoiceAssistant\\chrome-profile",
+    "start_url": "https://www.google.com",
+    "autoplay": true
+  },
+
+  "control": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+
+  "opencode": {
+    "enabled": true,
+    "agent": "voice",
+    "cli": "",
+    "timeout_sec": 180,
+    "standalone": false
+  }
+}

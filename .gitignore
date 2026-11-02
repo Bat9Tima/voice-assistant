@@ -1,0 +1,6 @@
+.venv/
+models/
+logs/
+state/
+__pycache__/
+*.pyc
