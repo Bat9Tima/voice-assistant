@@ -5,7 +5,7 @@
    "эй луна"
   ],
   "wake_engine": "openwakeword",
-  "wake_model": "hey_luna.onnx",
+  "wake_model": "hey_loona.onnx",
   "wake_threshold": 0.5,
   "wake_confusables": [],
   "language": "ru",

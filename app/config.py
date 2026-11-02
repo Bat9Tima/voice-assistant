@@ -24,7 +24,7 @@ DEFAULTS: dict[str, Any] = {
     # vosk — распознаёт речь и ищет фразу в тексте; openwakeword — лёгкая
     # модель под одну конкретную фразу.
     "wake_engine": "vosk",
-    "wake_model": "hey_luna.onnx",
+    "wake_model": "hey_loona.onnx",
     "wake_threshold": 0.5,
     # Слова, похожие по звучанию на ключевое. Нужны, чтобы Vosk не
     # «подгонял» их под единственное слово в грамматике.
