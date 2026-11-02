@@ -203,6 +203,7 @@ class Assistant:
                 VOSK_DIR,
                 self.cfg.get("wake_aliases") or [self.cfg.get("wake_word", "окей ассистент")],
                 sample_rate=int(self.cfg["audio"]["sample_rate"]),
+                confusables=self.cfg.get("wake_confusables") or [],
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("Детектор ключевого слова не загрузился")
