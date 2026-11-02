@@ -477,7 +477,6 @@ class Assistant:
                     beep(320, 120)
                 return message
 
-            self.notify("Думаю…")
             answer = self.brain.ask(text)
             answer = (answer or "").strip()
             if answer:

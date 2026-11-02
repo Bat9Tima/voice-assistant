@@ -9,6 +9,12 @@ from .config import LOGS_DIR
 
 log = logging.getLogger(__name__)
 
+# Одно и то же приложение, тег и группа: новое уведомление заменяет старое,
+# а не встаёт за ним в очередь Explorer.
+_TOAST_APP = "Voice Assistant"
+_TOAST_TAG = "assistant"
+_TOAST_GROUP = "voice-assistant"
+
 COLORS = {
     "starting": "#7f8c8d",
     "idle": "#4a90e2",
@@ -51,8 +57,21 @@ class TrayUI:
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._notify_lock = threading.Lock()
+        self._toaster = None
+        self._toast_class = None
+
+    def _init_toasts(self) -> None:
+        try:
+            from windows_toasts import Toast, WindowsToaster
+
+            self._toaster = WindowsToaster(_TOAST_APP)
+            self._toast_class = Toast
+            log.info("Уведомления: Windows Toast")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Windows Toast недоступен, остаюсь на pystray: %s", exc)
 
     def start(self) -> None:
+        self._init_toasts()
         try:
             import pystray
         except Exception as exc:  # noqa: BLE001
@@ -99,8 +118,43 @@ class TrayUI:
         except Exception:  # noqa: BLE001
             log.debug("Не удалось обновить иконку трея", exc_info=True)
 
+    def _show_toast(self, message: str, title: str) -> bool:
+        toaster = self._toaster
+        toast_class = self._toast_class
+        if toaster is None or toast_class is None:
+            return False
+        with self._notify_lock:
+            try:
+                # Чистим историю этого приложения: иначе Windows держит
+                # предыдущие тосты и показывает их по очереди.
+                toaster.clear_toasts()
+                toast = toast_class(
+                    [title[:60], message[:250]],
+                    group=_TOAST_GROUP,
+                    suppress_popup=False,
+                )
+                toast.tag = _TOAST_TAG
+                toaster.show_toast(toast)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Windows Toast не сработал, откатываюсь на pystray: %s", exc
+                )
+                self._toaster = None
+                self._toast_class = None
+                return False
+
     def clear(self) -> None:
         """Сбрасывает текущее уведомление, чтобы новое не ждало очереди."""
+        toaster = self._toaster
+        if toaster is not None:
+            with self._notify_lock:
+                try:
+                    toaster.clear_toasts()
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("Не удалось очистить Windows Toast: %s", exc)
+
         icon = self.icon
         if icon is None or not self._ready.is_set():
             return
@@ -115,13 +169,14 @@ class TrayUI:
         if not message:
             return
         log.info("Уведомление: %s", message)
+        if self._show_toast(message, title):
+            return
         icon = self.icon
         if icon is None or not self._ready.is_set():
             return
         with self._notify_lock:
             try:
-                # Новое уведомление должно заменить предыдущее, а не встать
-                # за ним в очередь: при быстрых командах очередь отстаёт.
+                # Запасной путь для старых версий Windows.
                 icon.remove_notification()
                 icon.notify(message[:250], title[:60])
             except Exception:  # noqa: BLE001
