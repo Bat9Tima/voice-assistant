@@ -157,6 +157,11 @@ class Assistant:
         else:
             log.info("%s: %s", title, message)
 
+    def clear_notifications(self) -> None:
+        """Убирает уведомление предыдущей команды перед новой."""
+        if self.tray is not None:
+            self.tray.clear()
+
     # ------------------------------------------------------------------- startup
     def run(self) -> int:
         self._mutex = acquire()
@@ -238,6 +243,9 @@ class Assistant:
             except queue.Empty:
                 text = None
             if text:
+                # Текстовая команда из API начинает новую команду — старые
+                # уведомления больше не актуальны.
+                self.clear_notifications()
                 try:
                     self._process(text)
                 finally:
@@ -320,7 +328,9 @@ class Assistant:
         if self._paused or self.mic is None:
             return
         self.set_state("listening")
-        self.notify("Слушаю команду…", "Ассистент")
+        # Новая команда: убираем результат предыдущей, не ждём, пока
+        # системный центр уведомлений до неё доберётся.
+        self.clear_notifications()
         beep(880, 80)
         time.sleep(0.12)
         # Сигнал и хвост предыдущего аудио не должны считаться началом команды.

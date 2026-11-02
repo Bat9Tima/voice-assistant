@@ -50,6 +50,7 @@ class TrayUI:
         self.icon = None
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
+        self._notify_lock = threading.Lock()
 
     def start(self) -> None:
         try:
@@ -98,17 +99,33 @@ class TrayUI:
         except Exception:  # noqa: BLE001
             log.debug("Не удалось обновить иконку трея", exc_info=True)
 
+    def clear(self) -> None:
+        """Сбрасывает текущее уведомление, чтобы новое не ждало очереди."""
+        icon = self.icon
+        if icon is None or not self._ready.is_set():
+            return
+        with self._notify_lock:
+            try:
+                icon.remove_notification()
+            except Exception:  # noqa: BLE001
+                log.debug("Не удалось убрать уведомление", exc_info=True)
+
     def notify(self, message: str, title: str = "Ассистент") -> None:
         message = (message or "").strip()
         if not message:
             return
         log.info("Уведомление: %s", message)
-        if self.icon is None or not self._ready.is_set():
+        icon = self.icon
+        if icon is None or not self._ready.is_set():
             return
-        try:
-            self.icon.notify(message[:250], title[:60])
-        except Exception:  # noqa: BLE001
-            log.debug("Не удалось показать уведомление", exc_info=True)
+        with self._notify_lock:
+            try:
+                # Новое уведомление должно заменить предыдущее, а не встать
+                # за ним в очередь: при быстрых командах очередь отстаёт.
+                icon.remove_notification()
+                icon.notify(message[:250], title[:60])
+            except Exception:  # noqa: BLE001
+                log.debug("Не удалось показать уведомление", exc_info=True)
 
     @staticmethod
     def _open_log() -> None:
