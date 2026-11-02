@@ -470,6 +470,11 @@ class GigaAMTranscriber:
     def loaded(self) -> bool:
         return self._recognizer is not None
 
+    @property
+    def english_loaded(self) -> bool:
+        """У GigaAM нет английского движка — всегда False."""
+        return False
+
     def _encoder_path(self) -> Path:
         int8 = self.model_dir / "encoder.int8.onnx"
         if int8.exists():
