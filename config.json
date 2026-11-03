@@ -17,9 +17,9 @@
     "sample_rate": 16000,
     "block_size": 4000,
     "input_device": null,
-    "energy_threshold": 0.010,
+    "energy_threshold": 0.006,
     "noise_multiplier": 2.0,
-    "pre_roll_sec": 2.5,
+    "pre_roll_sec": 1,
     "silence_ms": 800,
     "min_speech_ms": 250,
     "max_command_sec": 15,
@@ -28,7 +28,7 @@
 
   "stt": {
     "engine": "gigaam",
-    "num_threads": 4,
+    "num_threads": 2,
     "tail_padding_sec": 0.4,
     "model": "small",
     "device": "cpu",
