@@ -86,6 +86,42 @@ NEGATIVES = [
     ("ФОН: музыка или телевизор", "включите фон и молчите"),
 ]
 
+# ------------------------------------------------- второй круг (индексы 118+)
+ROUND2_WAKE_2M = 6
+
+ROUND2_DIGITS = [
+    ("громкость ноль", "volume:0"),
+    ("громкость один", "volume:10"),
+    ("громкость два", "volume:20"),
+    ("громче на один", "volume:+10"),
+    ("тише на два", "volume:-20"),
+    ("громче на три", "volume:+30"),
+]
+
+ROUND2_COMMANDS = [
+    ("пауза", "media:pause"),
+    ("продолжи", "media:play"),
+    ("следующее видео", "media:next"),
+    ("открой гугл", "goto:google"),
+    ("включи на саундклауде лоуфай", "soundcloud:лоуфай"),
+    ("громче в саундклауде", "soundcloud_volume:up:10"),
+    ("тише на один в саундклауде", "soundcloud_volume:down:10"),
+    ("выключи звук в саундклауде", "soundcloud_volume:mute"),
+    ("какие вкладки", "tabs"),
+    ("переключись на вкладку два", "tab:2"),
+    ("что играет", "status"),
+    ("включи звук", "unmute"),
+]
+
+ROUND2_NEGATIVES = [
+    ("луна сегодня красивая", "слово «луна» в предложении"),
+    ("пошли в луна-парк", "«луна-парк» в обычной речи"),
+    ("эй ты, иди сюда", "похоже на wake"),
+    ("какая завтра погода", "бытовая речь"),
+    ("включи телевизор", "неподдерживаемая команда"),
+    ("хей люда", "похоже на wake, но не оно"),
+]
+
 HINTS = {
     "A": "Только фраза «хей луна», без команды.",
     "A2": "Только «эй луна», без команды.",
@@ -95,6 +131,10 @@ HINTS = {
     "E": "Громко, но не крик.",
     "G": "Шёпотом.",
     "H": "Это НЕ должно срабатывать. Говорите как обычно.",
+    "I": "Фраза «хей луна» с 2 метров, вполоборота, как в жизни.",
+    "J": "Голосом, обычная громкость. Цифру называйте словом.",
+    "K": "Обычный голос. Это команды из повседневного набора.",
+    "L": "Это НЕ должно срабатывать. Говорите как обычно.",
 }
 
 LEVEL_RANGES = {
@@ -202,6 +242,55 @@ def build_plan() -> list[dict]:
             "normal", 60, "s3", take, max_sec, notes, trim=trim)
 
     assert len(rows) == 117, len(rows)
+    return rows
+
+
+def build_round2(start: int = 118) -> list[dict]:
+    """Второй круг: дальний микрофон, цифры и команды вне первого набора."""
+    rows: list[dict] = []
+
+    def add(name, block, kind, text, action, level, rate, distance, session,
+            take, max_sec, notes, trim="1"):
+        index = start + len(rows)
+        rows.append({
+            "index": index,
+            "file": f"{index:03d}_{name}.wav",
+            "block": block,
+            "kind": kind,
+            "text": text,
+            "action": action,
+            "level": level,
+            "rate": rate,
+            "distance_cm": distance,
+            "session": session,
+            "take": take,
+            "max_sec": max_sec,
+            "trim": trim,
+            "status": "pending",
+            "peak_db": "",
+            "rms_db": "",
+            "dur_s": "",
+            "notes": notes,
+        })
+
+    for take in range(1, ROUND2_WAKE_2M + 1):
+        add(f"I_wake_2m_{take:02d}", "I", "wake", "хей луна", "", "normal",
+            "normal", 200, "s4", take, 3.5, "2 м, вполоборота")
+
+    for take in (1, 2):
+        for num, (text, action) in enumerate(ROUND2_DIGITS, 1):
+            add(f"J_vol{num:02d}_t{take}", "J", "command", text, action,
+                "normal", "normal", 60, "s4", take, 5.0,
+                f"цифры, {num} из {len(ROUND2_DIGITS)}")
+
+    for num, (text, action) in enumerate(ROUND2_COMMANDS, 1):
+        add(f"K_cmd{num:02d}", "K", "command", text, action, "normal",
+            "normal", 60, "s4", num, 6.0, f"команда {num} из {len(ROUND2_COMMANDS)}")
+
+    for num, (text, notes) in enumerate(ROUND2_NEGATIVES, 1):
+        add(f"L_neg{num:02d}", "L", "negative", text, "", "normal",
+            "normal", 60, "s4", num, 5.0, notes)
+
     return rows
 
 
@@ -420,6 +509,21 @@ def cmd_plan(rebuild: bool) -> None:
             f"{block} {count}" for block, count in sorted(by_block[session].items())
         )
         print(f"  {session}: {by_session[session]:3d}  ({blocks})")
+
+
+def cmd_extend() -> None:
+    """Добавляет второй круг к уже записанному labels.csv."""
+    rows = load_plan(rebuild=False)
+    if any(str(row.get("block", "")) in {"I", "J", "K", "L"} for row in rows):
+        print("Второй круг уже есть в плане — ничего не меняю.")
+        print(f"Файл: {OUT / 'labels.csv'}")
+        return
+    start = max((int(row["index"]) for row in rows), default=0) + 1
+    extra = build_round2(start)
+    write_csv([*rows, *extra])
+    print(f"Добавлено {len(extra)} дублей: {extra[0]['file']} … {extra[-1]['file']}")
+    print(f"Файл: {OUT / 'labels.csv'}")
+    print("Запись: start.cmd --session s4")
 
 
 def ensure_env() -> dict[str, str]:
@@ -710,6 +814,8 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="проверить микрофон")
     parser.add_argument("--calibrate", action="store_true", help="3 пробных дубля")
     parser.add_argument("--rebuild", action="store_true", help="пересобрать labels.csv")
+    parser.add_argument("--extend", action="store_true",
+                        help="добавить второй круг (2 м, цифры, новые команды)")
     args = parser.parse_args()
 
     global OUT
@@ -729,11 +835,14 @@ def main() -> int:
         ensure_env()
         cmd_calibrate()
         return 0
+    if args.extend:
+        cmd_extend()
+        return 0
 
     ensure_env()
     session = args.session.strip().lower()
-    if session not in ("all", "s1", "s2", "s3"):
-        print("Сессия: s1, s2, s3 или all")
+    if session not in ("all", "s1", "s2", "s3", "s4"):
+        print("Сессия: s1, s2, s3, s4 или all")
         return 1
     cmd_record(session)
     return 0

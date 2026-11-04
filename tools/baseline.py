@@ -123,16 +123,26 @@ def expected_intent(action: str) -> tuple:
                     {"mode": "set", "value": int(parts[2])})
     if action == "mute":
         return ("mute", True)
-    if action in {"newtab", "closetab"}:
+    if action == "unmute":
+        return ("mute", False)
+    if action in {"newtab", "closetab", "tabs", "status"}:
         return ("browser", action, {})
-    if action == "media:next":
-        return ("browser", "next", {})
-    if action == "media:prev":
-        return ("browser", "prev", {})
-    if action == "goto:youtube":
-        return ("browser", "goto", {"site": "youtube"})
+    if action.startswith("tab:"):
+        return ("browser", "tab", {"index": int(action.split(":", 1)[1])})
+    if action.startswith("media:"):
+        return ("browser", action.split(":", 1)[1], {})
+    if action.startswith("goto:"):
+        return ("browser", "goto", {"site": action.split(":", 1)[1]})
     if action.startswith("youtube:"):
         return ("browser", "youtube", {"query": action.split(":", 1)[1]})
+    if action.startswith("soundcloud:"):
+        return ("browser", "soundcloud", {"query": action.split(":", 1)[1]})
+    if action.startswith("soundcloud_volume:"):
+        parts = action.split(":")
+        payload = {"mode": parts[1]}
+        if len(parts) > 2:
+            payload["value"] = int(parts[2])
+        return ("browser", "soundcloud_volume", payload)
     return ("unknown", action)
 
 
@@ -149,21 +159,27 @@ def intent_ok(expected: tuple, observed: tuple) -> bool:
         return False
 
     kind = expected[1]
-    if kind in {"newtab", "closetab", "next", "prev"}:
+    if kind in {"newtab", "closetab", "next", "prev", "pause", "play",
+                "tabs", "status"}:
         return True
     args = observed[2] if len(observed) > 2 else {}
     if kind == "goto":
         url = str(args.get("url", "")).lower()
         return expected[2]["site"] in url
-    if kind == "youtube":
+    if kind in {"youtube", "soundcloud"}:
         want = normalize(expected[2]["query"]).replace(" ", "")
         got = normalize(str(args.get("query", ""))).replace(" ", "")
         if not got:
             return False
         return SequenceMatcher(None, want, got).ratio() >= 0.8
+    if kind == "tab":
+        return int(args.get("index", -1)) == expected[2]["index"]
     if kind == "soundcloud_volume":
-        return (args.get("mode") == "set"
-                and int(args.get("value", -1)) == expected[2]["value"])
+        if args.get("mode") != expected[2]["mode"]:
+            return False
+        if "value" in expected[2]:
+            return int(args.get("value", -1)) == expected[2]["value"]
+        return True
     return False
 
 

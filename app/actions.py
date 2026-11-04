@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .text import normalize
+from .text import canonicalize, normalize
 
 log = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ class ActionRouter:
 
     # ------------------------------------------------------------------ public
     def handle(self, text: str) -> CommandResult | None:
-        t = normalize(text)
+        t = canonicalize(normalize(text))
         if not t:
             return CommandResult(True, True, "")
 

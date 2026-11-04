@@ -55,6 +55,40 @@ def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
     return False
 
 
+_SOUNDCLOUD_ANY_RE = re.compile(
+    r"(?:сау(?:н[дт]?|[гк])?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
+    r"|sound\s*cloud",
+    re.UNICODE,
+)
+_LOFI_ANY_RE = re.compile(r"(?:лоу|лу|ло)\s*фай\w*", re.UNICODE)
+_YOUTUBE_SHORT_RE = re.compile(
+    r"(открой|включи|запусти|поставь)\s+(?:ту|тю|тюб|ют|юта|юту|юбе|юб)"
+)
+_SOUNDCLOUD_ENDINGS = "ауе"
+
+
+def _canonical_soundcloud(match: re.Match[str]) -> str:
+    word = match.group(0).replace(" ", "")
+    ending = word[-1] if word[-1] in _SOUNDCLOUD_ENDINGS else ""
+    return "саундклауд" + ending
+
+
+def canonicalize(text: str) -> str:
+    """Приводит названия сервисов к одному написанию.
+
+    STT слышит бренд по-разному: «санклауда», «саунглауда», «соунклауда».
+    Без нормализации страдает и точность текста, и поисковый запрос.
+    """
+    if not text:
+        return text
+    result = _SOUNDCLOUD_ANY_RE.sub(_canonical_soundcloud, text)
+    result = _LOFI_ANY_RE.sub("лоуфай", result)
+    match = _YOUTUBE_SHORT_RE.fullmatch(result)
+    if match:
+        return f"{match.group(1)} ютуб"
+    return result
+
+
 _WAKE_FILLERS = {
     "окей", "ок", "эй", "ассистент", "ассистэнт",
     "хей", "хэй", "хай",

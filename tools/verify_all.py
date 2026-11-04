@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app.config import VOSK_DIR, load_config  # noqa: E402
 from app.stt import GigaAMTranscriber  # noqa: E402
-from app.text import normalize, strip_wake_word  # noqa: E402
+from app.text import canonicalize, normalize, strip_wake_word  # noqa: E402
 from app.wake import WakeWordDetector  # noqa: E402
 from baseline import Router, expected_intent, intent_ok, word_error  # noqa: E402
 
@@ -40,6 +40,8 @@ GROUPS = {
     "A2 алиас": [f"{i:03d}_A2_alias_{i - 12:02d}.wav" for i in range(13, 17)],
     "B wake+cmd": [f"{i:03d}_B_wc{i - 16:02d}.wav" for i in range(17, 27)],
     "H негативы": [f"{i:03d}_H_neg_{i - 105:02d}.wav" for i in range(106, 118)],
+    "I 2 м": [f"{i:03d}_I_wake_2m_{i - 117:02d}.wav" for i in range(118, 124)],
+    "L негативы 2": [f"{i:03d}_L_neg_{i - 147:02d}.wav" for i in range(148, 154)],
 }
 
 
@@ -65,6 +67,7 @@ def main() -> int:
         delimiter=";",
     ))
     by_file = {r["file"]: r for r in labels}
+    labels = [r for r in labels if (AUDIO / r["file"]).exists()]
     cache = {r["file"]: read_pcm(r["file"]) for r in labels}
 
     # ---------------------------------------------------------------- wake
@@ -77,6 +80,9 @@ def main() -> int:
     feed(det, SIL_1S * 2)
     wake: dict[str, list[str]] = {}
     for group, names in GROUPS.items():
+        names = [name for name in names if name in cache]
+        if not names:
+            continue
         hits: list[str] = []
         for name in names:
             if feed(det, cache[name]) or feed(det, SIL_1S):
@@ -101,8 +107,9 @@ def main() -> int:
         t0 = time.perf_counter()
         text = stt.transcribe(cache[row["file"]])
         decode_times.append(time.perf_counter() - t0)
-        stripped = strip_wake_word(text, aliases)
+        stripped = canonicalize(strip_wake_word(text, aliases))
         want_text = strip_wake_word(row["text"], aliases) if row["kind"] == "wake_command" else row["text"]
+        want_text = canonicalize(want_text)
         observed = router.run(stripped)
         blocks[row["block"]].append({
             "file": row["file"],
@@ -117,11 +124,15 @@ def main() -> int:
     total_hits = 0
     total = 0
     for group, names in GROUPS.items():
-        hits = wake[group]
+        hits = wake.get(group)
+        if hits is None:
+            continue
+        names = [name for name in names if name in cache]
         print(f"  {group:<12} {len(hits)}/{len(names)}")
-        if group == "H негативы" and hits:
-            print("    ложные:", ", ".join(hits))
-        elif group != "H негативы":
+        if group.startswith(("H", "L")):
+            if hits:
+                print("    ложные:", ", ".join(hits))
+        else:
             total_hits += len(hits)
             total += len(names)
     print(f"  итого настоящих: {total_hits}/{total}")
@@ -131,7 +142,7 @@ def main() -> int:
     header = f"{'блок':<5}{'N':>4}{'действие':>10}{'текст':>8}{'WER':>7}"
     print(header)
     print("-" * len(header))
-    for block in "BCDEFG":
+    for block in "BCDEFGIJKL":
         items = blocks.get(block, [])
         if not items:
             continue

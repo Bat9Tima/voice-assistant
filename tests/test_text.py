@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.main import to_pynput
-from app.text import normalize, strip_wake_word
+from app.text import canonicalize, normalize, strip_wake_word
 
 
 class TextTest(unittest.TestCase):
@@ -50,6 +50,31 @@ class TextTest(unittest.TestCase):
             strip_wake_word("хэй открой ютуб", ["хей луна", "эй луна"]),
             "открой ютуб",
         )
+
+    def test_canonicalizes_soundcloud(self) -> None:
+        self.assertEqual(
+            canonicalize("громкость санклауда десять"),
+            "громкость саундклауда десять",
+        )
+        self.assertEqual(
+            canonicalize("громкость соунклауда десять"),
+            "громкость саундклауда десять",
+        )
+        self.assertEqual(
+            canonicalize("включи саундклауд"),
+            "включи саундклауд",
+        )
+
+    def test_canonicalizes_lofi(self) -> None:
+        self.assertEqual(canonicalize("найди на ютубе луфай"), "найди на ютубе лоуфай")
+        self.assertEqual(canonicalize("найди на ютубе лоу фай"), "найди на ютубе лоуфай")
+
+    def test_canonicalizes_short_youtube(self) -> None:
+        self.assertEqual(canonicalize("открой ту"), "открой ютуб")
+        self.assertEqual(canonicalize("включи тю"), "включи ютуб")
+
+    def test_canonicalize_keeps_other_text(self) -> None:
+        self.assertEqual(canonicalize("громкость пять"), "громкость пять")
 
     def test_hotkey_space(self) -> None:
         self.assertEqual(

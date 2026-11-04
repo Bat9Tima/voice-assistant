@@ -20,7 +20,7 @@ from .config import LOGS_DIR, MODELS_DIR, VOSK_DIR, load_config
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
-from .text import normalize, strip_wake_word
+from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .wake import OpenWakeWordDetector, WakeWordDetector
 
@@ -416,7 +416,9 @@ class Assistant:
             return
 
         log.info("STT: %r", text)
-        text = strip_wake_word(text, self.cfg.get("wake_aliases") or [])
+        text = canonicalize(
+            strip_wake_word(text, self.cfg.get("wake_aliases") or [])
+        )
         if not text:
             self.notify("Не разобрал команду")
             beep(320, 120)
