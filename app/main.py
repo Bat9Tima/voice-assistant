@@ -22,7 +22,7 @@ from .duck import AppVolumeDucker
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
-from .text import canonicalize, normalize, strip_wake_word
+from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .vad import EndpointTracker, SileroVad
 from .wake import OpenWakeWordDetector, WakeWordDetector
@@ -107,6 +107,7 @@ class Assistant:
         self.browser = BrowserController(cfg)
         self.router = ActionRouter(cfg, self.browser)
         self.brain = OpenCodeBrain(cfg)
+        self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
             samplerate=int(audio_cfg["sample_rate"]),
@@ -576,6 +577,20 @@ class Assistant:
     def _process(self, text: str) -> str:
         self.set_state("thinking")
         try:
+            triggered, request = split_agent_trigger(text, self.agent_triggers)
+            if triggered:
+                if not request:
+                    message = "Что спросить у агента?"
+                    self.notify(message)
+                    return message
+                answer = self.brain.ask(request)
+                answer = (answer or "").strip()
+                if answer:
+                    self.notify(answer[:250])
+                else:
+                    self.notify("Готово")
+                return answer
+
             result = self.router.handle(text)
             if result is not None:
                 message = result.message
@@ -585,13 +600,10 @@ class Assistant:
                     beep(320, 120)
                 return message
 
-            answer = self.brain.ask(text)
-            answer = (answer or "").strip()
-            if answer:
-                self.notify(answer[:250])
-            else:
-                self.notify("Готово")
-            return answer
+            message = "Не понял команду"
+            self.notify(message)
+            beep(320, 120)
+            return message
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка обработки команды")
             self.notify(f"Ошибка: {exc}"[:250])

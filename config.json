@@ -73,6 +73,7 @@
   "opencode": {
     "enabled": true,
     "agent": "voice",
+    "triggers": ["спроси агента", "спроси у агента", "передай агенту", "агент"],
     "cli": "",
     "timeout_sec": 180,
     "standalone": false
