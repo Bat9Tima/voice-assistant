@@ -27,7 +27,8 @@
     "silence_ms": 800,
     "min_speech_ms": 250,
     "max_command_sec": 15,
-    "no_speech_timeout_sec": 6
+    "no_speech_timeout_sec": 6,
+    "save_last_command": true
   },
 
   "stt": {

@@ -56,7 +56,7 @@ def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
 
 
 _SOUNDCLOUD_ANY_RE = re.compile(
-    r"(?:сау(?:н[дт]?|[гк])?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
+    r"(?:сау(?:н[дт]?|[гк])?[ао]?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
     r"|sound\s*cloud",
     re.UNICODE,
 )

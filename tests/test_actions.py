@@ -290,6 +290,81 @@ class SoundCloudTest(unittest.TestCase):
         self.assertEqual(args["query"], "")
 
 
+class SoundCloudNoiseFallbackTest(unittest.TestCase):
+    """GigaAM на фоне музыки теряет «саундклауда» — спасает контекст вкладки."""
+
+    class TabsBrowser(FakeBrowser):
+        def __init__(self, urls: list[str]) -> None:
+            super().__init__()
+            self.urls = urls
+
+        def call(self, action: str, timeout: float = 90, **args) -> dict:
+            self.calls.append((action, args))
+            if action == "tabs":
+                tabs = [
+                    {"index": i + 1, "url": url, "title": ""}
+                    for i, url in enumerate(self.urls)
+                ]
+                return {"ok": True, "data": {"tabs": tabs}}
+            return {"ok": True, "data": {}}
+
+    def make_router(self, urls: list[str]) -> tuple[ActionRouter, "SoundCloudNoiseFallbackTest.TabsBrowser"]:
+        browser = self.TabsBrowser(urls)
+        return ActionRouter({}, browser), browser
+
+    def test_garbled_word_routes_to_soundcloud(self) -> None:
+        router, browser = self.make_router(["https://soundcloud.com/discover"])
+        for phrase in (
+            "громкость на паузу пять",
+            "громкость сомкала на пять",
+            "пойдуна громко сама правда десять",
+        ):
+            browser.calls.clear()
+            result = router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = browser.calls[-1]
+            self.assertEqual(action, "soundcloud_volume", phrase)
+            self.assertEqual(args["mode"], "set", phrase)
+
+    def test_sauna_klauha_is_soundcloud(self) -> None:
+        router, browser = self.make_router(["https://soundcloud.com/discover"])
+        result = router.handle("громкость сауна клауда десять")
+        self.assertIsNotNone(result)
+        action, args = browser.calls[-1]
+        self.assertEqual(action, "soundcloud_volume")
+        self.assertEqual(args["value"], 100)
+
+    def test_without_soundcloud_tab_falls_through(self) -> None:
+        router, _ = self.make_router(["https://www.youtube.com/"])
+        self.assertIsNone(router.handle("громкость сомкала на пять"))
+
+    def test_plain_volume_still_system(self) -> None:
+        class Volume:
+            level = 0.5
+            muted = 0
+
+            def GetMasterVolumeLevelScalar(self):
+                return self.level
+
+            def SetMasterVolumeLevelScalar(self, value, context=None):
+                self.level = value
+
+            def GetMute(self):
+                return self.muted
+
+            def SetMute(self, value, context=None):
+                self.muted = value
+
+        router, browser = self.make_router(["https://soundcloud.com/discover"])
+        router._volume = Volume()
+        result = router.handle("громкость пять")
+        self.assertIsNotNone(result)
+        self.assertEqual(router._volume.level, 0.5)
+        self.assertFalse(
+            any(action == "soundcloud_volume" for action, _ in browser.calls)
+        )
+
+
 class EnglishSearchTest(unittest.TestCase):
     def setUp(self) -> None:
         self.browser = FakeBrowser()

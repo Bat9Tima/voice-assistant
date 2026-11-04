@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import math
 import os
 import queue
 import re
@@ -13,10 +14,10 @@ from collections import deque
 from typing import Any
 
 from .actions import ActionRouter
-from .audio import Microphone, rms
+from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
-from .config import LOGS_DIR, MODELS_DIR, VOSK_DIR, load_config
+from .config import LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -389,6 +390,21 @@ class Assistant:
             beep(320, 120)
             self.set_state("idle")
             return
+
+        peak, level = levels(pcm)
+        log.info(
+            "Команда: %.2f с, пик %.1f dBFS, RMS %.1f dBFS",
+            len(pcm) / 2 / 16000,
+            20 * math.log10(max(peak, 1e-9)),
+            20 * math.log10(max(level, 1e-9)),
+        )
+        if bool(self.cfg["audio"].get("save_last_command", False)):
+            try:
+                target = STATE_DIR / "last-command.wav"
+                save_wav_pcm(target, pcm)
+                log.info("Команда сохранена: %s", target)
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось сохранить команду")
 
         self.set_state("thinking")
         try:

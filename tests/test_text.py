@@ -69,6 +69,12 @@ class TextTest(unittest.TestCase):
         self.assertEqual(canonicalize("найди на ютубе луфай"), "найди на ютубе лоуфай")
         self.assertEqual(canonicalize("найди на ютубе лоу фай"), "найди на ютубе лоуфай")
 
+    def test_canonicalizes_sauna_klauha(self) -> None:
+        self.assertEqual(
+            canonicalize("громкость сауна клауда десять"),
+            "громкость саундклауда десять",
+        )
+
     def test_canonicalizes_short_youtube(self) -> None:
         self.assertEqual(canonicalize("открой ту"), "открой ютуб")
         self.assertEqual(canonicalize("включи тю"), "включи ютуб")

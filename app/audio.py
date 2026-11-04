@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import queue
 import time
+import wave
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
@@ -19,6 +21,28 @@ def rms(pcm: bytes) -> float:
         return 0.0
     normalized = samples.astype(np.float32) / 32768.0
     return float(np.sqrt(np.mean(normalized * normalized)))
+
+
+def levels(pcm: bytes) -> tuple[float, float]:
+    """Пик и RMS фрагмента PCM int16 в долях полной шкалы (0..1)."""
+    if not pcm:
+        return 0.0, 0.0
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return 0.0, 0.0
+    peak = float(np.abs(samples).max())
+    return peak, float(np.sqrt(np.mean(samples * samples)))
+
+
+def save_wav_pcm(path: str | Path, pcm: bytes, sample_rate: int = 16000) -> None:
+    """Сохраняет PCM int16 mono в WAV (для диагностики)."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(target), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(sample_rate)
+        out.writeframes(pcm)
 
 
 def list_input_devices() -> list[dict]:

@@ -76,10 +76,14 @@ _RESULT_WORDS = {
 
 VOLUME_STEP = 0.10
 _SOUNDCLOUD_RE = re.compile(
-    r"(?:сау(?:н[дт]?|[гк])?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
+    r"(?:сау(?:н[дт]?|[гк])?[ао]?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
     r"|sound\s*cloud",
     re.UNICODE,
 )
+
+# «Громкость … число» — если слово перед числом распознано с ошибкой
+# («сомкала», «на паузу»), но SoundCloud открыт, это почти наверняка плеер.
+_AMBIGUOUS_VOLUME_RE = re.compile(r"(?:громкость|громко|звук)", re.UNICODE)
 
 # GigaAM на быстрой речи обрезает «ютуб» до «ту»/«тю»: «открой ту».
 _YOUTUBE_SHORT_RE = re.compile(
@@ -174,6 +178,10 @@ class ActionRouter:
         volume = self._volume_command(t)
         if volume:
             return volume
+
+        ambiguous = self._ambiguous_soundcloud_volume(t)
+        if ambiguous:
+            return ambiguous
 
         tabs = self._tabs_command(t)
         if tabs:
@@ -487,6 +495,37 @@ class ActionRouter:
             return self._simple("soundcloud", f"Включаю на SoundCloud: {query}", query=query)
         return self._simple("goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"])
 
+    def _ambiguous_soundcloud_volume(self, t: str) -> CommandResult | None:
+        """«громкость <искажённое слово> пять» при открытом SoundCloud.
+
+        GigaAM на фоне музыки теряет «саундклауда»: «громкость на паузу пять»,
+        «громкость сомкала на пять». Если в конце число, а SoundCloud открыт,
+        это почти наверняка громкость плеера.
+        """
+        if not _AMBIGUOUS_VOLUME_RE.search(t):
+            return None
+        head, _, tail = t.rpartition(" ")
+        if not head or not tail or not _AMBIGUOUS_VOLUME_RE.search(head):
+            return None
+        percent = parse_volume_percent(tail)
+        if percent is None:
+            return None
+        if not self._soundcloud_open():
+            return None
+        return self._simple(
+            "soundcloud_volume",
+            f"Громкость SoundCloud: {percent}%",
+            mode="set",
+            value=percent,
+        )
+
+    def _soundcloud_open(self) -> bool:
+        ok, data, _ = self._call_browser("tabs", timeout=5)
+        if not ok or not isinstance(data, dict):
+            return False
+        tabs = data.get("tabs") or []
+        return any("soundcloud.com" in str(tab.get("url", "")).lower() for tab in tabs)
+
     def _soundcloud_volume_command(self, t: str) -> CommandResult | None:
         if not _SOUNDCLOUD_RE.search(t):
             return None
@@ -704,9 +743,9 @@ class ActionRouter:
         return None
 
     # ----------------------------------------------------------------- helpers
-    def _call_browser(self, action: str, **args: Any) -> tuple[bool, Any, str]:
+    def _call_browser(self, action: str, timeout: float = 90, **args: Any) -> tuple[bool, Any, str]:
         try:
-            result = self.browser.call(action, timeout=90, **args)
+            result = self.browser.call(action, timeout=timeout, **args)
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка вызова браузера: %s", action)
             return False, None, str(exc)
