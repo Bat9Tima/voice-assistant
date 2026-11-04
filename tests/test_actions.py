@@ -172,6 +172,21 @@ class SoundCloudTest(unittest.TestCase):
         self.assertEqual(args["mode"], "set")
         self.assertEqual(args["value"], 50)
 
+    def test_recognized_soundcloud_variants(self) -> None:
+        for phrase in (
+            "громкость сауклауда десять",
+            "громкость соунклауда десять",
+            "громкость саунглауда десять",
+            "громкость сон клауда десять",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_volume", phrase)
+            self.assertEqual(args["mode"], "set", phrase)
+            self.assertEqual(args["value"], 100, phrase)
+
     def test_sauntlaudi_routes_to_soundcloud(self) -> None:
         result = self.router.handle("включи Bohemian Rhapsody на саунтлауди")
         self.assertIsNotNone(result)
@@ -341,6 +356,14 @@ class EnglishSearchTest(unittest.TestCase):
         action, args = self.browser.calls[1]
         self.assertEqual(action, "google")
         self.assertEqual(args["query"], "stack overflow")
+
+    def test_truncated_youtube_opens_site(self) -> None:
+        # GigaAM на быстрой речи слышит «открой ютуб» как «открой ту».
+        result = self.router.handle("открой ту")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "goto")
+        self.assertEqual(args["url"], "https://www.youtube.com")
 
 
 class SearchResultTest(unittest.TestCase):

@@ -38,6 +38,19 @@ class TextTest(unittest.TestCase):
             "включи музыку",
         )
 
+    def test_strips_merged_wake_phrase(self) -> None:
+        aliases = ["хей луна", "эй луна"]
+        self.assertEqual(strip_wake_word("хейлуна открой ютуб", aliases), "открой ютуб")
+        self.assertEqual(strip_wake_word("эйлона громкость пять", aliases), "громкость пять")
+        self.assertEqual(strip_wake_word("хайлу на следующий трек", aliases), "следующий трек")
+        self.assertEqual(strip_wake_word("эйна громкость пять", aliases), "громкость пять")
+
+    def test_strips_standalone_wake_filler(self) -> None:
+        self.assertEqual(
+            strip_wake_word("хэй открой ютуб", ["хей луна", "эй луна"]),
+            "открой ютуб",
+        )
+
     def test_hotkey_space(self) -> None:
         self.assertEqual(
             to_pynput("ctrl+alt+space"), "<ctrl>+<alt>+<space>"

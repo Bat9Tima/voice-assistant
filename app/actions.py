@@ -76,7 +76,14 @@ _RESULT_WORDS = {
 
 VOLUME_STEP = 0.10
 _SOUNDCLOUD_RE = re.compile(
-    r"сау?н[дт]?\s*к?л[ао]у[дт]\w*|sound\s*cloud",
+    r"(?:сау(?:н[дт]?|[гк])?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
+    r"|sound\s*cloud",
+    re.UNICODE,
+)
+
+# GigaAM на быстрой речи обрезает «ютуб» до «ту»/«тю»: «открой ту».
+_YOUTUBE_SHORT_RE = re.compile(
+    r"(?:открой|включи|запусти|поставь)\s+(?:ту|тю|тюб|ют|юта|юту|юбе|юб)",
     re.UNICODE,
 )
 
@@ -176,7 +183,10 @@ class ActionRouter:
         if media:
             return media
 
-        if "ютуб" in t or "youtube" in t or "you tube" in t:
+        short_youtube = bool(_YOUTUBE_SHORT_RE.fullmatch(t))
+        if "ютуб" in t or "youtube" in t or "you tube" in t or short_youtube:
+            if short_youtube:
+                return self._simple("goto", "Открываю YouTube", url=SITE_URLS["ютуб"])
             if re.search(
                 r"(включи|поставь|запусти|найди|покажи|открой|"
                 r"play|find|search|open|show|look)",

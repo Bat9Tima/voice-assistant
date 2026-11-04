@@ -1,0 +1,769 @@
+{
+  "wake": {
+    "A обычные": [
+      "001_A_wake_01.wav",
+      "002_A_wake_02.wav",
+      "003_A_wake_03.wav",
+      "004_A_wake_04.wav",
+      "005_A_wake_05.wav",
+      "006_A_wake_06.wav",
+      "007_A_wake_07.wav",
+      "008_A_wake_08.wav"
+    ],
+    "A тихие": [
+      "009_A_wake_09.wav",
+      "010_A_wake_10.wav"
+    ],
+    "A 2 м": [
+      "011_A_wake_11.wav"
+    ],
+    "A2 алиас": [
+      "013_A2_alias_01.wav",
+      "014_A2_alias_02.wav",
+      "015_A2_alias_03.wav",
+      "016_A2_alias_04.wav"
+    ],
+    "B wake+cmd": [
+      "017_B_wc01.wav",
+      "018_B_wc02.wav",
+      "019_B_wc03.wav",
+      "020_B_wc04.wav",
+      "021_B_wc05.wav",
+      "022_B_wc06.wav",
+      "023_B_wc07.wav",
+      "024_B_wc08.wav",
+      "025_B_wc09.wav",
+      "026_B_wc10.wav"
+    ],
+    "H негативы": [
+      "107_H_neg_02.wav"
+    ]
+  },
+  "commands": {
+    "B": [
+      {
+        "file": "017_B_wc01.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "эйлона громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "018_B_wc02.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хайлу на следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "019_B_wc03.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хейлуна открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "020_B_wc04.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "хейлуна громкость соунклауда десять",
+        "stripped": "громкость соунклауда десять"
+      },
+      {
+        "file": "021_B_wc05.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хэй луна тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "022_B_wc06.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хейлуна найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      },
+      {
+        "file": "023_B_wc07.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хейлуна предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "024_B_wc08.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хейлуна новая вкладка",
+        "stripped": "новая вкладка"
+      },
+      {
+        "file": "025_B_wc09.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хейлуна громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "026_B_wc10.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "хэй луна выключи звук",
+        "stripped": "выключи звук"
+      }
+    ],
+    "C": [
+      {
+        "file": "027_C_c01_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "028_C_c02_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость десять",
+        "stripped": "громкость десять"
+      },
+      {
+        "file": "029_C_c03_t1.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.03571428571428571,
+        "text": "громкость саунклауда десять",
+        "stripped": "громкость саунклауда десять"
+      },
+      {
+        "file": "030_C_c04_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "031_C_c05_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "032_C_c06_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук",
+        "stripped": "выключи звук"
+      },
+      {
+        "file": "033_C_c07_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "новая вкладка",
+        "stripped": "новая вкладка"
+      },
+      {
+        "file": "034_C_c08_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "закрой вкладку",
+        "stripped": "закрой вкладку"
+      },
+      {
+        "file": "035_C_c09_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "036_C_c10_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "037_C_c11_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "038_C_c12_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      },
+      {
+        "file": "039_C_c01_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "040_C_c02_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость десять",
+        "stripped": "громкость десять"
+      },
+      {
+        "file": "041_C_c03_t2.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.03571428571428571,
+        "text": "громкость саунклауда десять",
+        "stripped": "громкость саунклауда десять"
+      },
+      {
+        "file": "042_C_c04_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "043_C_c05_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "044_C_c06_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук",
+        "stripped": "выключи звук"
+      },
+      {
+        "file": "045_C_c07_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "новая вкладка",
+        "stripped": "новая вкладка"
+      },
+      {
+        "file": "046_C_c08_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "закрой вкладку",
+        "stripped": "закрой вкладку"
+      },
+      {
+        "file": "047_C_c09_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "048_C_c10_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "049_C_c11_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "050_C_c12_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      },
+      {
+        "file": "051_C_c01_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "052_C_c02_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость десять",
+        "stripped": "громкость десять"
+      },
+      {
+        "file": "053_C_c03_t3.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "громкость санклауда десять",
+        "stripped": "громкость санклауда десять"
+      },
+      {
+        "file": "054_C_c04_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "055_C_c05_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "056_C_c06_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук",
+        "stripped": "выключи звук"
+      },
+      {
+        "file": "057_C_c07_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "новая вкладка",
+        "stripped": "новая вкладка"
+      },
+      {
+        "file": "058_C_c08_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "закрой вкладку",
+        "stripped": "закрой вкладку"
+      },
+      {
+        "file": "059_C_c09_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "060_C_c10_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "061_C_c11_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "062_C_c12_t3.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      }
+    ],
+    "D": [
+      {
+        "file": "063_D_c01_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "064_D_c02_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость десять",
+        "stripped": "громкость десять"
+      },
+      {
+        "file": "065_D_c03_t1.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "громкость санклауда десять",
+        "stripped": "громкость санклауда десять"
+      },
+      {
+        "file": "066_D_c04_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "067_D_c05_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "068_D_c06_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук",
+        "stripped": "выключи звук"
+      },
+      {
+        "file": "069_D_c09_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "070_D_c10_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "071_D_c11_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "072_D_c12_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      },
+      {
+        "file": "073_D_c01_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "074_D_c02_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость десять",
+        "stripped": "громкость десять"
+      },
+      {
+        "file": "075_D_c03_t2.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "громкость сауклауда десять",
+        "stripped": "громкость сауклауда десять"
+      },
+      {
+        "file": "076_D_c04_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "077_D_c05_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "078_D_c06_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук",
+        "stripped": "выключи звук"
+      },
+      {
+        "file": "079_D_c09_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "080_D_c10_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "предыдущий трек",
+        "stripped": "предыдущий трек"
+      },
+      {
+        "file": "081_D_c11_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "082_D_c12_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      }
+    ],
+    "E": [
+      {
+        "file": "083_E_c01.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "084_E_c03.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.03571428571428571,
+        "text": "громкость саунклауда десять",
+        "stripped": "громкость саунклауда десять"
+      },
+      {
+        "file": "085_E_c09.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "086_E_c11.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "087_E_c12.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      }
+    ],
+    "F": [
+      {
+        "file": "088_F_c01_fast.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "089_F_c03_fast.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "громкость сан клауда десять",
+        "stripped": "громкость сан клауда десять"
+      },
+      {
+        "file": "090_F_c04_fast.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "091_F_c09_fast.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "092_F_c11_fast.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.18181818181818182,
+        "text": "открой ту",
+        "stripped": "открой ту"
+      },
+      {
+        "file": "093_F_c12_fast.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.047619047619047616,
+        "text": "найди на ютубе луфай",
+        "stripped": "найди на ютубе луфай"
+      },
+      {
+        "file": "094_F_c01_slow.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "095_F_c03_slow.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.03571428571428571,
+        "text": "громкость саунклауда десять",
+        "stripped": "громкость саунклауда десять"
+      },
+      {
+        "file": "096_F_c04_slow.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на два",
+        "stripped": "громче на два"
+      },
+      {
+        "file": "097_F_c09_slow.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "098_F_c11_slow.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "099_F_c12_slow.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "найди на ютубе лоуфай",
+        "stripped": "найди на ютубе лоуфай"
+      }
+    ],
+    "G": [
+      {
+        "file": "100_G_c01_whisper.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость пять",
+        "stripped": "громкость пять"
+      },
+      {
+        "file": "101_G_c03_whisper.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.07142857142857142,
+        "text": "громкость саунглауда десять",
+        "stripped": "громкость саунглауда десять"
+      },
+      {
+        "file": "102_G_c05_whisper.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише",
+        "stripped": "тише"
+      },
+      {
+        "file": "103_G_c09_whisper.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующий трек",
+        "stripped": "следующий трек"
+      },
+      {
+        "file": "104_G_c11_whisper.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой ютуб",
+        "stripped": "открой ютуб"
+      },
+      {
+        "file": "105_G_c12_whisper.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.047619047619047616,
+        "text": "найди на ютубе лоу фай",
+        "stripped": "найди на ютубе лоу фай"
+      }
+    ]
+  },
+  "decode_sec": 0.242
+}

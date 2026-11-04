@@ -169,12 +169,12 @@ class Assistant:
             return 0
 
         # winrt (Windows Toast) падает с access violation, если onnxruntime
-        # загрузится уже после него. Поэтому грузим onnxruntime первым.
-        if str(self.cfg.get("wake_engine", "vosk")).lower() == "openwakeword":
-            try:
-                import onnxruntime  # noqa: F401
-            except Exception:  # noqa: BLE001
-                log.debug("onnxruntime не предзагрузился", exc_info=True)
+        # загрузится уже после него. Грузим onnxruntime первым — его всё равно
+        # использует GigaAM, независимо от движка wake-слова.
+        try:
+            import onnxruntime  # noqa: F401
+        except Exception:  # noqa: BLE001
+            log.debug("onnxruntime не предзагрузился", exc_info=True)
 
         if self.tray is not None:
             self.tray.start()
@@ -358,9 +358,22 @@ class Assistant:
         self.clear_notifications()
         beep(880, 80)
         time.sleep(0.12)
-        # Сигнал и хвост предыдущего аудио не должны считаться началом команды.
         if self.mic is not None:
-            self.mic.flush()
+            if pre_roll is None:
+                # Горячая клавиша: до нажатия могла звучать обычная речь.
+                self.mic.flush()
+            else:
+                # Активация голосом: не теряем начало команды, сказанной без
+                # паузы («хей луна открой ютуб»). Добавляем накопленное за
+                # сигнал аудио к pre-roll, но не считаем его речью команды —
+                # иначе сигнал запускал бы отсчёт тишины.
+                extra: list[bytes] = []
+                while True:
+                    chunk = self.mic.read(timeout=0)
+                    if not chunk:
+                        break
+                    extra.append(chunk)
+                pre_roll = [*pre_roll, *extra]
 
         try:
             pcm = self._record_command(pre_roll)
@@ -470,10 +483,14 @@ class Assistant:
             return b""
 
         start_index = 0
-        for index, level in enumerate(levels):
-            if level >= threshold * 0.8:
-                start_index = max(0, index - 2)
-                break
+        if pre_roll is None:
+            # Для горячей клавиши обрезаем ведущую тишину. При активации
+            # голосом pre-roll уже выбран и может содержать тихое начало
+            # команды — его не трогаем.
+            for index, level in enumerate(levels):
+                if level >= threshold * 0.8:
+                    start_index = max(0, index - 2)
+                    break
         log.info(
             "Запись команды: всего %.0f мс, речь %.0f мс, тишина %.0f мс, "
             "pre-roll %.0f мс, порог %.4f",

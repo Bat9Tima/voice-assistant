@@ -55,14 +55,45 @@ def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
     return False
 
 
-_WAKE_FILLERS = {"окей", "ок", "эй", "ассистент", "ассистэнт"}
+_WAKE_FILLERS = {
+    "окей", "ок", "эй", "ассистент", "ассистэнт",
+    "хей", "хэй", "хай",
+}
+
+
+def _wake_prefix_size(text: str, aliases: list[str], max_distance: int = 2) -> int:
+    """Сколько первых слов занимает ключевая фраза.
+
+    STT часто сливает «хей луна» в «хейлуна», «эйлона» или даже «эйна»,
+    поэтому сравниваем первые 1–3 слова без пробелов с тем же вариантом
+    алиаса. Допуск маленький: «хэй люда» (расстояние 3) остаётся командой.
+    """
+    words = text.split()
+    targets = [normalize(alias).replace(" ", "") for alias in aliases]
+    targets = [target for target in targets if target]
+    if not targets:
+        return 0
+    for size in (1, 2, 3):
+        if len(words) < size:
+            continue
+        window = "".join(words[:size])
+        for target in targets:
+            if window == target:
+                return size
+            if (
+                abs(len(window) - len(target)) <= max_distance
+                and levenshtein(window, target) <= max_distance
+            ):
+                return size
+    return 0
 
 
 def strip_wake_word(text: str, aliases: list[str]) -> str:
     """Убирает ключевую фразу в начале, допуская ошибки распознавания.
 
-    STT иногда теряет часть фразы («окей открой ютуб»), поэтому после точного
-    совпадения убираются и отдельные слова-wake: «окей», «ассистент», «эй».
+    STT иногда теряет часть фразы («окей открой ютуб») или сливает её в одно
+    слово («хейлуна открой ютуб»), поэтому после точного совпадения
+    проверяются слитные варианты, а затем отдельные слова-wake.
     """
     normalized = normalize(text)
     prepared = sorted(
@@ -75,13 +106,9 @@ def strip_wake_word(text: str, aliases: list[str]) -> str:
             return normalized[len(alias) :].strip()
 
     words = normalized.split()
-    for alias in prepared:
-        alias_words = alias.split()
-        if len(words) < len(alias_words):
-            continue
-        window = " ".join(words[: len(alias_words)])
-        if levenshtein(window, alias) <= 2:
-            return " ".join(words[len(alias_words) :]).strip()
+    size = _wake_prefix_size(normalized, prepared)
+    if size:
+        return " ".join(words[size:]).strip()
 
     while words and words[0] in _WAKE_FILLERS:
         words.pop(0)
