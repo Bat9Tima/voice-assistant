@@ -94,8 +94,13 @@ def canonicalize(text: str) -> str:
         result = _QUIET_NUMBER_RE.sub("тише на ", result)
     match = _YOUTUBE_SHORT_RE.fullmatch(result)
     if match:
-        return f"{match.group(1)} ютуб"
-    return result
+        result = f"{match.group(1)} ютуб"
+    # Словарь предметной области дополняет точечные правила выше: названия
+    # сервисов и их искажения. Импорт локальный, чтобы не было цикла:
+    # app.dictionary использует normalize() из этого модуля.
+    from .dictionary import apply as apply_dictionary
+
+    return apply_dictionary(result)
 
 
 _WAKE_FILLERS = {

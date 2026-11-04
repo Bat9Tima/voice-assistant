@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "terms": [
+    {
+      "id": "youtube",
+      "kind": "site",
+      "canonical": "ютуб",
+      "aliases": [
+        {"text": "youtube", "replace": false},
+        {"text": "you tube", "replace": false},
+        "ютуб",
+        "ютюб",
+        "ютьюб",
+        "ю туб"
+      ]
+    },
+    {
+      "id": "soundcloud",
+      "kind": "site",
+      "canonical": "саундклауд",
+      "replace": false,
+      "aliases": [
+        "soundcloud",
+        "sound cloud",
+        "саундклауд",
+        "саунд клауд",
+        "саундклоуд",
+        "саунд клоуд"
+      ]
+    },
+    {
+      "id": "lofi",
+      "kind": "genre",
+      "canonical": "лоуфай",
+      "replace": false,
+      "aliases": [
+        "lofi",
+        "lo fi",
+        "лоуфай",
+        "лоу фай",
+        "луфай",
+        "лофай"
+      ]
+    },
+    {
+      "id": "google",
+      "kind": "site",
+      "canonical": "гугл",
+      "aliases": [
+        "гугл",
+        "гугль",
+        "гугел",
+        "гугель",
+        "гугол",
+        "гугля",
+        {"text": "google", "replace": false},
+        {"text": "гугле", "replace": false}
+      ]
+    },
+    {
+      "id": "yandex",
+      "kind": "site",
+      "canonical": "яндекс",
+      "aliases": [
+        "яндекс",
+        "яндекц",
+        "яндек с",
+        {"text": "yandex", "replace": false}
+      ]
+    },
+    {
+      "id": "vk",
+      "kind": "site",
+      "canonical": "вконтакте",
+      "aliases": [
+        "вконтакте",
+        "в контакте",
+        "вконтакт",
+        "в кантакте",
+        "вк",
+        {"text": "vk", "replace": false}
+      ]
+    },
+    {
+      "id": "telegram",
+      "kind": "site",
+      "canonical": "телеграм",
+      "aliases": [
+        "телеграм",
+        "телеграмм",
+        {"text": "telegram", "replace": false}
+      ]
+    },
+    {
+      "id": "telegram_slang",
+      "kind": "site",
+      "canonical": "телеграм",
+      "replace": false,
+      "aliases": [
+        "телега",
+        "тг",
+        "tg"
+      ]
+    },
+    {
+      "id": "mail",
+      "kind": "site",
+      "canonical": "почта",
+      "aliases": [
+        "почта",
+        "почту",
+        {"text": "gmail", "replace": false},
+        "гмейл",
+        "джимейл",
+        "джи мейл",
+        "гугл почта",
+        "гугл почту"
+      ]
+    },
+    {
+      "id": "github",
+      "kind": "site",
+      "canonical": "гитхаб",
+      "aliases": [
+        "гитхаб",
+        "гит хаб",
+        {"text": "github", "replace": false},
+        {"text": "git hub", "replace": false}
+      ]
+    },
+    {
+      "id": "chatgpt",
+      "kind": "site",
+      "canonical": "чатгпт",
+      "aliases": [
+        "чатгпт",
+        "чат гпт",
+        "чат джипити",
+        {"text": "chatgpt", "replace": false},
+        {"text": "chat gpt", "replace": false}
+      ]
+    },
+    {
+      "id": "wikipedia",
+      "kind": "site",
+      "canonical": "википедия",
+      "aliases": [
+        "википедия",
+        "википедию",
+        "википедии",
+        {"text": "wikipedia", "replace": false},
+        "вики"
+      ]
+    },
+    {
+      "id": "kinopoisk",
+      "kind": "site",
+      "canonical": "кинопоиск",
+      "aliases": [
+        "кинопоиск",
+        "кино поиск",
+        "кинопоиска",
+        "кинопоиску",
+        "kinopoisk"
+      ]
+    },
+    {
+      "id": "ozon",
+      "kind": "site",
+      "canonical": "озон",
+      "aliases": [
+        "озон",
+        "озона",
+        "озоне",
+        {"text": "ozon", "replace": false}
+      ]
+    },
+    {
+      "id": "wildberries",
+      "kind": "site",
+      "canonical": "вайлдберриз",
+      "aliases": [
+        "вайлдберриз",
+        "вайлд берриз",
+        "вайлдберрис",
+        "вайлд беррис",
+        "вайлдбериз",
+        "вайлд бериз",
+        "вайлдберриес",
+        {"text": "wildberries", "replace": false},
+        {"text": "wild berries", "replace": false}
+      ]
+    },
+    {
+      "id": "avito",
+      "kind": "site",
+      "canonical": "авито",
+      "aliases": [
+        "авито",
+        "авита",
+        "авиту",
+        "авите",
+        {"text": "avito", "replace": false}
+      ]
+    },
+    {
+      "id": "maps",
+      "kind": "site",
+      "canonical": "карты",
+      "aliases": [
+        "карты",
+        "яндекс карты",
+        "яндекс карта",
+        "яндекс карту",
+        "яндекс карте"
+      ]
+    },
+    {
+      "id": "translator",
+      "kind": "site",
+      "canonical": "переводчик",
+      "aliases": [
+        "переводчик",
+        "яндекс переводчик",
+        "яндекс переводчика",
+        "переводчика"
+      ]
+    },
+    {
+      "id": "music",
+      "kind": "site",
+      "canonical": "яндекс музыка",
+      "aliases": [
+        "яндекс музыка",
+        "яндекс музыку",
+        "яндекс музыке",
+        "яндекс музыки",
+        {"text": "yandex music", "replace": false}
+      ]
+    },
+    {
+      "id": "drive",
+      "kind": "site",
+      "canonical": "диск",
+      "aliases": [
+        "диск",
+        "гугл диск",
+        "гугл диске",
+        {"text": "google drive", "replace": false},
+        "гугл драйв"
+      ]
+    },
+    {
+      "id": "calendar",
+      "kind": "site",
+      "canonical": "календарь",
+      "aliases": [
+        "календарь",
+        "гугл календарь",
+        "гугл календаре",
+        {"text": "google calendar", "replace": false}
+      ]
+    },
+    {
+      "id": "habr",
+      "kind": "site",
+      "canonical": "хабр",
+      "aliases": [
+        "хабр",
+        {"text": "habr", "replace": false}
+      ]
+    }
+  ]
+}
