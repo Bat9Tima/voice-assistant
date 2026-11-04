@@ -72,6 +72,12 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         self.assertEqual(assistant.brain.asked, [])
         self.assertEqual(assistant.router.seen, ["включи фильм агент 007"])
 
+    def test_canonicalizes_text_before_routing(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю Google"))
+        message = assistant.run_text("открой гугель")
+        self.assertEqual(message, "Открываю Google")
+        self.assertEqual(assistant.router.seen, ["открой гугл"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -575,6 +575,7 @@ class Assistant:
         log.info("Текстовая команда из API: %s", text)
 
     def _process(self, text: str) -> str:
+        text = canonicalize(text)
         self.set_state("thinking")
         try:
             triggered, request = split_agent_trigger(text, self.agent_triggers)
