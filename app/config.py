@@ -48,6 +48,9 @@ DEFAULTS: dict[str, Any] = {
         "min_speech_ms": 250,
         "max_command_sec": 15,
         "no_speech_timeout_sec": 6,
+        "duck_while_listening": True,
+        "duck_level": 0.15,
+        "duck_processes": ["chrome.exe"],
     },
     "stt": {
         "engine": "gigaam",

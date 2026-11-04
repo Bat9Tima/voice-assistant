@@ -18,6 +18,7 @@ from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .config import LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
+from .duck import AppVolumeDucker
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -111,6 +112,12 @@ class Assistant:
             block_size=int(audio_cfg["block_size"]),
             device=audio_cfg.get("input_device"),
         )
+        self.ducker: AppVolumeDucker | None = None
+        if bool(audio_cfg.get("duck_while_listening", False)):
+            self.ducker = AppVolumeDucker(
+                process_names=audio_cfg.get("duck_processes") or ["chrome.exe"],
+                level=float(audio_cfg.get("duck_level", 0.15)),
+            )
         self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
         self.server: ControlServer | None = None
@@ -359,29 +366,41 @@ class Assistant:
         self.clear_notifications()
         beep(880, 80)
         time.sleep(0.12)
-        if self.mic is not None:
-            if pre_roll is None:
-                # Горячая клавиша: до нажатия могла звучать обычная речь.
-                self.mic.flush()
-            else:
-                # Активация голосом: не теряем начало команды, сказанной без
-                # паузы («хей луна открой ютуб»). Добавляем накопленное за
-                # сигнал аудио к pre-roll, но не считаем его речью команды —
-                # иначе сигнал запускал бы отсчёт тишины.
-                extra: list[bytes] = []
-                while True:
-                    chunk = self.mic.read(timeout=0)
-                    if not chunk:
-                        break
-                    extra.append(chunk)
-                pre_roll = [*pre_roll, *extra]
-
+        if self.ducker is not None:
+            # Музыка из браузера не должна попадать в запись команды.
+            # Громкость вернётся сразу после захвата, до распознавания.
+            try:
+                self.ducker.duck()
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось приглушить звук приложений")
         try:
+            if self.mic is not None:
+                if pre_roll is None:
+                    # Горячая клавиша: до нажатия могла звучать обычная речь.
+                    self.mic.flush()
+                else:
+                    # Активация голосом: не теряем начало команды, сказанной без
+                    # паузы («хей луна открой ютуб»). Добавляем накопленное за
+                    # сигнал аудио к pre-roll, но не считаем его речью команды —
+                    # иначе сигнал запускал бы отсчёт тишины.
+                    extra: list[bytes] = []
+                    while True:
+                        chunk = self.mic.read(timeout=0)
+                        if not chunk:
+                            break
+                        extra.append(chunk)
+                    pre_roll = [*pre_roll, *extra]
+
             pcm = self._record_command(pre_roll)
         except Exception:  # noqa: BLE001
             log.exception("Ошибка записи команды")
             pcm = b""
         finally:
+            if self.ducker is not None:
+                try:
+                    self.ducker.restore()
+                except Exception:  # noqa: BLE001
+                    log.exception("Не удалось вернуть звук приложений")
             if self.wake is not None:
                 self.wake.reset()
 
