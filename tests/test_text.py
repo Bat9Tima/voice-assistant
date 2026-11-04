@@ -79,6 +79,11 @@ class TextTest(unittest.TestCase):
         self.assertEqual(canonicalize("открой ту"), "открой ютуб")
         self.assertEqual(canonicalize("включи тю"), "включи ютуб")
 
+    def test_canonicalizes_quiet_with_number(self) -> None:
+        self.assertEqual(canonicalize("тишина два"), "тише на два")
+        self.assertEqual(canonicalize("тишина на два"), "тише на два")
+        self.assertEqual(canonicalize("тишина в комнате"), "тишина в комнате")
+
     def test_canonicalize_keeps_other_text(self) -> None:
         self.assertEqual(canonicalize("громкость пять"), "громкость пять")
 

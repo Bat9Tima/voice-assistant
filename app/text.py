@@ -65,6 +65,10 @@ _YOUTUBE_SHORT_RE = re.compile(
     r"(открой|включи|запусти|поставь)\s+(?:ту|тю|тюб|ют|юта|юту|юбе|юб)"
 )
 _SOUNDCLOUD_ENDINGS = "ауе"
+_QUIET_NUMBER_RE = re.compile(
+    r"^тишина\s+(?=\d|ноль|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)",
+    re.UNICODE,
+)
 
 
 def _canonical_soundcloud(match: re.Match[str]) -> str:
@@ -83,6 +87,10 @@ def canonicalize(text: str) -> str:
         return text
     result = _SOUNDCLOUD_ANY_RE.sub(_canonical_soundcloud, text)
     result = _LOFI_ANY_RE.sub("лоуфай", result)
+    if result.startswith("тишина "):
+        # GigaAM слышит «тише» как «тишина»: «тишина два» → «тише на два».
+        result = re.sub(r"^тишина\s+на\s+", "тише на ", result)
+        result = _QUIET_NUMBER_RE.sub("тише на ", result)
     match = _YOUTUBE_SHORT_RE.fullmatch(result)
     if match:
         return f"{match.group(1)} ютуб"

@@ -37,6 +37,12 @@
     ],
     "H негативы": [
       "107_H_neg_02.wav"
+    ],
+    "I 2 м": [
+      "119_I_wake_2m_02.wav",
+      "120_I_wake_2m_03.wav",
+      "121_I_wake_2m_04.wav",
+      "123_I_wake_2m_06.wav"
     ]
   },
   "commands": {
@@ -763,7 +769,203 @@
         "text": "найди на ютубе лоу фай",
         "stripped": "найди на ютубе лоуфай"
       }
+    ],
+    "J": [
+      {
+        "file": "124_J_vol01_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость ноль",
+        "stripped": "громкость ноль"
+      },
+      {
+        "file": "125_J_vol02_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость один",
+        "stripped": "громкость один"
+      },
+      {
+        "file": "126_J_vol03_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость два",
+        "stripped": "громкость два"
+      },
+      {
+        "file": "127_J_vol04_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на один",
+        "stripped": "громче на один"
+      },
+      {
+        "file": "128_J_vol05_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тише на два",
+        "stripped": "тише на два"
+      },
+      {
+        "file": "129_J_vol06_t1.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на три",
+        "stripped": "громче на три"
+      },
+      {
+        "file": "130_J_vol01_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость ноль",
+        "stripped": "громкость ноль"
+      },
+      {
+        "file": "131_J_vol02_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость один",
+        "stripped": "громкость один"
+      },
+      {
+        "file": "132_J_vol03_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громкость два",
+        "stripped": "громкость два"
+      },
+      {
+        "file": "133_J_vol04_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на один",
+        "stripped": "громче на один"
+      },
+      {
+        "file": "134_J_vol05_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "тишина два",
+        "stripped": "тише на два"
+      },
+      {
+        "file": "135_J_vol06_t2.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "громче на три",
+        "stripped": "громче на три"
+      }
+    ],
+    "K": [
+      {
+        "file": "136_K_cmd01.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "пауза",
+        "stripped": "пауза"
+      },
+      {
+        "file": "137_K_cmd02.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.125,
+        "text": "продолжим",
+        "stripped": "продолжим"
+      },
+      {
+        "file": "138_K_cmd03.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "следующее видео",
+        "stripped": "следующее видео"
+      },
+      {
+        "file": "139_K_cmd04.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "открой гугл",
+        "stripped": "открой гугл"
+      },
+      {
+        "file": "140_K_cmd05.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "включи на саунклауде лоуфай",
+        "stripped": "включи на саундклауде лоуфай"
+      },
+      {
+        "file": "141_K_cmd06.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.15,
+        "text": "громче сан клауди",
+        "stripped": "громче саундклауд"
+      },
+      {
+        "file": "142_K_cmd07.wav",
+        "ok": true,
+        "exact": false,
+        "wer": 0.11538461538461539,
+        "text": "тише на один сон клауди",
+        "stripped": "тише на один саундклауд"
+      },
+      {
+        "file": "143_K_cmd08.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "выключи звук в сан клауде",
+        "stripped": "выключи звук в саундклауде"
+      },
+      {
+        "file": "144_K_cmd09.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "какие вкладки",
+        "stripped": "какие вкладки"
+      },
+      {
+        "file": "145_K_cmd10.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "переключись на вкладку два",
+        "stripped": "переключись на вкладку два"
+      },
+      {
+        "file": "146_K_cmd11.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "что играет",
+        "stripped": "что играет"
+      },
+      {
+        "file": "147_K_cmd12.wav",
+        "ok": true,
+        "exact": true,
+        "wer": 0.0,
+        "text": "включи звук",
+        "stripped": "включи звук"
+      }
     ]
   },
-  "decode_sec": 0.172
+  "decode_sec": 0.236
 }

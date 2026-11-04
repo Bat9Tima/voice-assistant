@@ -334,6 +334,25 @@ class SoundCloudNoiseFallbackTest(unittest.TestCase):
         self.assertEqual(action, "soundcloud_volume")
         self.assertEqual(args["value"], 100)
 
+    def test_leading_garble_still_volume(self) -> None:
+        """Живой случай: «элонорд громкость саунклауда десять» открывал сайт."""
+        router, browser = self.make_router(["https://soundcloud.com/discover"])
+        result = router.handle("элонорд громкость саунклауда десять")
+        self.assertIsNotNone(result)
+        action, args = browser.calls[-1]
+        self.assertEqual(action, "soundcloud_volume")
+        self.assertEqual(args["mode"], "set")
+        self.assertEqual(args["value"], 100)
+
+    def test_relative_soundcloud_volume_not_system(self) -> None:
+        router, browser = self.make_router(["https://soundcloud.com/discover"])
+        result = router.handle("тише на один в саундклауде")
+        self.assertIsNotNone(result)
+        action, args = browser.calls[-1]
+        self.assertEqual(action, "soundcloud_volume")
+        self.assertEqual(args["mode"], "down")
+        self.assertEqual(args["value"], 10)
+
     def test_without_soundcloud_tab_falls_through(self) -> None:
         router, _ = self.make_router(["https://www.youtube.com/"])
         self.assertIsNone(router.handle("громкость сомкала на пять"))
