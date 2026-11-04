@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.brain import OpenCodeBrain, OpenCodeError
@@ -17,6 +20,7 @@ def make_brain(
     brain.standalone = False
     brain.timeout = 5
     brain.cli = "opencode"
+    brain.signature = ""
     brain._save_session = lambda session_id: None
     return brain
 
@@ -69,6 +73,46 @@ class BrainRunTest(unittest.TestCase):
         )
         with patch("app.brain.subprocess.run", return_value=completed):
             self.assertIsNone(make_brain()._run("привет", "ses_1"))
+
+
+class BrainSessionTest(unittest.TestCase):
+    def _brain(self, signature: str) -> OpenCodeBrain:
+        brain = OpenCodeBrain.__new__(OpenCodeBrain)
+        brain.cfg = {}
+        brain.agent = "voice"
+        brain.model = ""
+        brain.signature = signature
+        brain.session_id = None
+        return brain
+
+    def test_prompt_change_drops_old_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.json"
+            path.write_text(
+                json.dumps({"session_id": "ses_1", "signature": "old"}),
+                encoding="utf-8",
+            )
+            with patch("app.brain.SESSION_FILE", path):
+                self.assertIsNone(self._brain("new")._load_session())
+                self.assertEqual(self._brain("old")._load_session(), "ses_1")
+
+    def test_session_without_signature_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.json"
+            path.write_text(json.dumps({"session_id": "ses_1"}), encoding="utf-8")
+            with patch("app.brain.SESSION_FILE", path):
+                self.assertIsNone(self._brain("new")._load_session())
+                # Если промпт недоступен, отпечатка нет и сессия сохраняется.
+                self.assertEqual(self._brain("")._load_session(), "ses_1")
+
+    def test_saved_session_keeps_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.json"
+            with patch("app.brain.SESSION_FILE", path):
+                brain = self._brain("abc")
+                brain._save_session("ses_2")
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(data, {"session_id": "ses_2", "signature": "abc"})
 
 
 if __name__ == "__main__":

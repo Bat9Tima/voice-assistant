@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -31,6 +32,7 @@ class OpenCodeBrain:
         self.standalone = bool(self.cfg.get("standalone"))
         self.cli = self._find_cli()
         self._lock = threading.Lock()
+        self.signature = self._signature()
         self.session_id = self._load_session()
 
     # ------------------------------------------------------------------- setup
@@ -64,18 +66,46 @@ class OpenCodeBrain:
         log.warning("OpenCode CLI не найден")
         return None
 
+    def _signature(self) -> str:
+        """Отпечаток промпта и модели.
+
+        Сессия OpenCode хранит историю прошлых команд. После правки промпта
+        старые примеры могут перебивать новые правила, поэтому начинаем
+        новую сессию. Если файла промпта нет, отпечаток пустой и сессия
+        сохраняется как раньше.
+        """
+        prompt = ROOT / ".opencode" / "agents" / f"{self.agent}.md"
+        digest = hashlib.sha256()
+        try:
+            digest.update(prompt.read_bytes())
+        except OSError:
+            return ""
+        digest.update(b"\0")
+        digest.update(self.agent.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(self.model.encode("utf-8"))
+        return digest.hexdigest()
+
     def _load_session(self) -> str | None:
         try:
             data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-            return data.get("session_id")
         except Exception:
             return None
+        session_id = data.get("session_id")
+        stored = str(data.get("signature") or "")
+        if session_id and self.signature and stored != self.signature:
+            log.info("Промпт агента изменился — начинаю новую сессию OpenCode")
+            return None
+        return session_id
 
     def _save_session(self, session_id: str | None) -> None:
         self.session_id = session_id
+        payload = {"session_id": session_id}
+        if self.signature:
+            payload["signature"] = self.signature
         try:
             SESSION_FILE.write_text(
-                json.dumps({"session_id": session_id}, ensure_ascii=False, indent=2),
+                json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except OSError as exc:
