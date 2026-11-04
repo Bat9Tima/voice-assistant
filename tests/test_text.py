@@ -64,6 +64,11 @@ class TextTest(unittest.TestCase):
             canonicalize("включи саундклауд"),
             "включи саундклауд",
         )
+        for variant in ("саут клауда", "саунклада", "сана клауда", "саунд клада"):
+            self.assertEqual(
+                canonicalize(f"громкость {variant} десять"),
+                "громкость саундклауда десять",
+            )
 
     def test_canonicalizes_lofi(self) -> None:
         self.assertEqual(canonicalize("найди на ютубе луфай"), "найди на ютубе лоуфай")
