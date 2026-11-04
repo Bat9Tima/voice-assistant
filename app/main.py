@@ -17,7 +17,7 @@ from .actions import ActionRouter
 from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
-from .config import LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
+from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .duck import AppVolumeDucker
 from .server import ControlServer
 from .single_instance import acquire
@@ -118,6 +118,7 @@ class Assistant:
             self.ducker = AppVolumeDucker(
                 process_names=audio_cfg.get("duck_processes") or ["chrome.exe"],
                 level=float(audio_cfg.get("duck_level", 0.15)),
+                state_path=DATA_DIR / "duck-state.json",
             )
         self.vad: SileroVad | None = None
         if bool(audio_cfg.get("vad_enabled", True)):
@@ -182,6 +183,13 @@ class Assistant:
         self._mutex = acquire()
         if self._mutex is None:
             return 0
+
+        if self.ducker is not None:
+            # Предыдущий запуск мог быть прерван во время приглушения Chrome.
+            try:
+                self.ducker.recover()
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось восстановить звук после прежнего запуска")
 
         # winrt (Windows Toast) падает с access violation, если onnxruntime
         # загрузится уже после него. Грузим onnxruntime первым — его всё равно
