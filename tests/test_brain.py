@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import subprocess
+import unittest
+from unittest.mock import patch
+
+from app.brain import OpenCodeBrain, OpenCodeError
+
+
+def make_brain(
+    model: str = "opencode/deepseek-v4.1-flash-free",
+) -> OpenCodeBrain:
+    brain = OpenCodeBrain.__new__(OpenCodeBrain)
+    brain.cfg = {}
+    brain.agent = "voice"
+    brain.model = model
+    brain.standalone = False
+    brain.timeout = 5
+    brain.cli = "opencode"
+    brain._save_session = lambda session_id: None
+    return brain
+
+
+class BrainCommandTest(unittest.TestCase):
+    def test_command_includes_model(self) -> None:
+        cmd = make_brain()._command("привет", "ses_1")
+        self.assertIn("--model", cmd)
+        self.assertEqual(
+            cmd[cmd.index("--model") + 1],
+            "opencode/deepseek-v4.1-flash-free",
+        )
+
+    def test_command_omits_empty_model(self) -> None:
+        cmd = make_brain(model="")._command("привет", None)
+        self.assertNotIn("--model", cmd)
+
+    def test_command_includes_agent_and_session(self) -> None:
+        cmd = make_brain()._command("привет", "ses_1")
+        self.assertEqual(cmd[cmd.index("--agent") + 1], "voice")
+        self.assertEqual(cmd[cmd.index("--session") + 1], "ses_1")
+        self.assertEqual(cmd[-1], "привет")
+
+
+class BrainRunTest(unittest.TestCase):
+    def test_text_event_is_returned(self) -> None:
+        stdout = (
+            '{"type":"text","sessionID":"ses_1","part":'
+            '{"type":"text","text":"Четыре."}}\n'
+        )
+        completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+        with patch("app.brain.subprocess.run", return_value=completed):
+            self.assertEqual(make_brain()._run("два плюс два", None), "Четыре.")
+
+    def test_error_event_is_reported(self) -> None:
+        stdout = (
+            '{"type":"error","sessionID":"ses_1","error":'
+            '{"type":"provider.auth","message":'
+            '"This model is not available in your country"}}\n'
+        )
+        completed = subprocess.CompletedProcess([], 1, stdout=stdout, stderr="")
+        with patch("app.brain.subprocess.run", return_value=completed):
+            with self.assertRaises(OpenCodeError) as ctx:
+                make_brain()._run("привет", None)
+        self.assertIn("not available in your country", str(ctx.exception))
+
+    def test_missing_session_returns_none(self) -> None:
+        completed = subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="session not found"
+        )
+        with patch("app.brain.subprocess.run", return_value=completed):
+            self.assertIsNone(make_brain()._run("привет", "ses_1"))
+
+
+if __name__ == "__main__":
+    unittest.main()

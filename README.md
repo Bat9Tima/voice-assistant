@@ -411,6 +411,7 @@ Windows (не до входа в систему). Вариант с Планир
 | `browser.chrome_path` | путь к Chrome |
 | `browser.port` | CDP-порт (по умолчанию 9222) |
 | `opencode.agent` | имя агента (`voice`) |
+| `opencode.model` | модель агента в формате `provider/model`; пусто — выбор OpenCode по умолчанию |
 | `opencode.triggers` | фразы явного вызова агента; остаток после них уходит агенту |
 | `opencode.timeout_sec` | таймаут ответа агента |
 | `notifications` | всплывающие уведомления; новое заменяет предыдущее |
@@ -511,8 +512,9 @@ app/
 ### OpenCode
 
 Агент описан в `.opencode/agents/voice.md`. У него запрещены файлы и все
-shell-команды, кроме `bin\browser.cmd` / `browser_cli`. Модель берётся из
-настроек OpenCode (в конфиге агента модель не зафиксирована). Сессия хранится в
+shell-команды, кроме `bin\browser.cmd` / `browser_cli`. Модель задаётся в
+`config.json → opencode.model` (по умолчанию `opencode/deepseek-v4.1-flash-free`);
+пустая строка — выбор OpenCode по умолчанию. Сессия хранится в
 `state/opencode_session.json`, чтобы работал контекст «включи ещё одно».
 
 Если CLI не найден автоматически, укажите путь:
@@ -585,8 +587,11 @@ HuggingFace и может быть недоступна.
 повторите. Порт 9222 должен быть свободен. Если Chrome нестандартно установлен —
 пропишите `browser.chrome_path`.
 
-**OpenCode не отвечает.** Проверьте `opencode models`, авторизацию и лимиты
-бесплатной модели. Быстрые команды работают и без OpenCode.
+**OpenCode завершился с ошибкой 1.** Текст после «Ошибка:» приходит из события
+`error` CLI. Частая причина — `This model is not available in your country`:
+укажите рабочую модель в `config.json → opencode.model` (например,
+`opencode/deepseek-v4.1-flash-free`) и перезапустите ассистента. Список
+доступных моделей: `opencode models`. Быстрые команды работают и без OpenCode.
 
 **Автозапуск не сработал.** Проверьте ярлык в `shell:startup` и
 `logs\assistant.log`. Путь к `pythonw.exe` не должен содержать несуществующих

@@ -73,6 +73,7 @@
   "opencode": {
     "enabled": true,
     "agent": "voice",
+    "model": "opencode/deepseek-v4.1-flash-free",
     "triggers": ["спроси агента", "спроси у агента", "передай агенту", "агент"],
     "cli": "",
     "timeout_sec": 180,

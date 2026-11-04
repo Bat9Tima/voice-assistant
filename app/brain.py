@@ -26,6 +26,7 @@ class OpenCodeBrain:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg["opencode"]
         self.agent = str(self.cfg.get("agent") or "voice")
+        self.model = str(self.cfg.get("model") or "").strip()
         self.timeout = float(self.cfg.get("timeout_sec") or 180)
         self.standalone = bool(self.cfg.get("standalone"))
         self.cli = self._find_cli()
@@ -99,15 +100,21 @@ class OpenCodeBrain:
                 answer = self._run(text, None)
             return answer or ""
 
-    def _run(self, text: str, session_id: str | None) -> str | None:
+    def _command(self, text: str, session_id: str | None) -> list[str]:
         cmd = [self.cli, "run", "--format", "json", "--auto"]
         if self.standalone:
             cmd.append("--standalone")
         if self.agent:
             cmd.extend(["--agent", self.agent])
+        if self.model:
+            cmd.extend(["--model", self.model])
         if session_id:
             cmd.extend(["--session", session_id])
         cmd.append(text)
+        return cmd
+
+    def _run(self, text: str, session_id: str | None) -> str | None:
+        cmd = self._command(text, session_id)
 
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
@@ -135,6 +142,7 @@ class OpenCodeBrain:
             raise OpenCodeError(f"Не удалось запустить OpenCode: {exc}") from exc
 
         texts: list[str] = []
+        errors: list[str] = []
         new_session = session_id
         for line in (completed.stdout or "").splitlines():
             line = line.strip()
@@ -145,6 +153,12 @@ class OpenCodeBrain:
             except json.JSONDecodeError:
                 continue
             new_session = event.get("sessionID") or new_session
+            if event.get("type") == "error":
+                error = event.get("error") or {}
+                message = str(error.get("message") or error.get("type") or "").strip()
+                if message:
+                    errors.append(message)
+                continue
             if event.get("type") != "text":
                 continue
             part = event.get("part") or {}
@@ -162,7 +176,14 @@ class OpenCodeBrain:
             if "session" in stderr.lower() and "not found" in stderr.lower() and session_id:
                 log.warning("Сессия OpenCode не найдена, создаю новую")
                 return None
-            detail = stderr.splitlines()[-1][:500] if stderr else f"код {completed.returncode}"
+            if errors:
+                detail = errors[-1][:500]
+            elif stderr:
+                detail = stderr.splitlines()[-1][:500]
+            else:
+                detail = f"код {completed.returncode}"
             raise OpenCodeError(f"OpenCode завершился с ошибкой: {detail}")
 
+        if errors:
+            raise OpenCodeError(f"OpenCode: {errors[-1][:500]}")
         return ""
