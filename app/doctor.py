@@ -19,6 +19,7 @@ from .config import (
     load_config,
 )
 from .stt import create_transcriber
+from .vad import ensure_model
 from .wake import WakeWordDetector
 
 
@@ -135,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n[Модели]")
     print(f"  Vosk: {'OK' if _check_vosk() else 'НЕТ — запустите scripts\\setup.cmd'} ({VOSK_DIR})")
+    vad_path = ensure_model()
+    print(f"  Silero VAD: {'OK' if vad_path else 'нет — останется порог громкости'}")
     engine = str(cfg["stt"].get("engine") or "gigaam")
     if engine in {"gigaam", "giga-am", "sherpa", "sherpa-onnx", "nemo"}:
         gigaam_state = "OK" if _check_gigaam() else "НЕТ — запустите scripts\\setup.cmd"

@@ -24,6 +24,7 @@ from .single_instance import acquire
 from .stt import create_transcriber
 from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
+from .vad import EndpointTracker, SileroVad
 from .wake import OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
@@ -117,6 +118,12 @@ class Assistant:
             self.ducker = AppVolumeDucker(
                 process_names=audio_cfg.get("duck_processes") or ["chrome.exe"],
                 level=float(audio_cfg.get("duck_level", 0.15)),
+            )
+        self.vad: SileroVad | None = None
+        if bool(audio_cfg.get("vad_enabled", True)):
+            self.vad = SileroVad.create(
+                model=audio_cfg.get("vad_model"),
+                threshold=float(audio_cfg.get("vad_threshold", 0.5)),
             )
         self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
@@ -485,15 +492,19 @@ class Assistant:
         initial = list(pre_roll or [])
         chunks: list[bytes] = list(initial)
         levels: list[float] = [rms(chunk) for chunk in initial]
+        vad_flags: list[bool] = [False] * len(initial)
         preroll_ms = sum(len(chunk) / 2 / 16000 * 1000 for chunk in initial)
         # Vosk может определить фразу уже после того, как она закончилась.
         # Тогда команда целиком лежит в pre-roll, и новых громких чанков нет.
         preroll_has_speech = any(level >= threshold for level in levels)
-        speech_ms = 0.0
-        silence_ms = 0.0
-        total_ms = 0.0
-        started = False
+        tracker = EndpointTracker(
+            silence_ms=silence_limit,
+            min_speech_ms=min_speech,
+        )
+        if self.vad is not None:
+            self.vad.reset()
 
+        total_ms = 0.0
         while total_ms < max_ms:
             chunk = self.mic.read(timeout=0.5)
             if chunk is None:
@@ -501,22 +512,22 @@ class Assistant:
             duration_ms = len(chunk) / 2 / 16000 * 1000
             total_ms += duration_ms
             level = rms(chunk)
+            vad_speech = self.vad.feed(chunk) if self.vad is not None else False
             chunks.append(chunk)
             levels.append(level)
+            vad_flags.append(vad_speech)
+            tracker.update(
+                duration_ms,
+                vad_speech=vad_speech,
+                loud=level >= threshold,
+            )
 
-            if level >= threshold:
-                speech_ms += duration_ms
-                silence_ms = 0.0
-                started = True
-            elif started:
-                silence_ms += duration_ms
-
-            if started and speech_ms >= min_speech and silence_ms >= silence_limit:
+            if tracker.started and tracker.silence_ms >= tracker.silence_limit:
                 break
-            if not started and total_ms >= no_speech_limit:
+            if not tracker.started and total_ms >= no_speech_limit:
                 break
 
-        if speech_ms < min_speech and not preroll_has_speech:
+        if not tracker.has_speech and not preroll_has_speech:
             return b""
 
         start_index = 0
@@ -524,17 +535,27 @@ class Assistant:
             # Для горячей клавиши обрезаем ведущую тишину. При активации
             # голосом pre-roll уже выбран и может содержать тихое начало
             # команды — его не трогаем.
+            first_speech: int | None = None
+            for index, flag in enumerate(vad_flags):
+                if flag:
+                    first_speech = index
+                    break
             for index, level in enumerate(levels):
                 if level >= threshold * 0.8:
-                    start_index = max(0, index - 2)
+                    if first_speech is None or index < first_speech:
+                        first_speech = index
                     break
+            if first_speech is not None:
+                start_index = max(0, first_speech - 2)
         log.info(
             "Запись команды: всего %.0f мс, речь %.0f мс, тишина %.0f мс, "
-            "pre-roll %.0f мс, порог %.4f",
+            "pre-roll %.0f мс, VAD %.0f мс (%s), порог %.4f",
             total_ms,
-            speech_ms,
-            silence_ms,
+            tracker.speech_ms,
+            tracker.silence_ms,
             preroll_ms,
+            tracker.vad_ms,
+            "вкл" if self.vad is not None else "выкл",
             threshold,
         )
         return b"".join(chunks[start_index:])

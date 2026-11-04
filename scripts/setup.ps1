@@ -65,6 +65,11 @@ if (-not (Test-Path (Join-Path $modelDir "am"))) {
 }
 Write-Host "Модель Vosk: OK ($modelDir)"
 
+# --- Silero VAD: локальное определение конца команды ---
+Push-Location $root
+& $vpy -c "import logging; logging.basicConfig(level=logging.INFO, format='%(message)s'); from app.vad import ensure_model; p = ensure_model(); print('Silero VAD:', p or 'не найден, останется порог громкости')"
+Pop-Location
+
 # --- Vosk EN: опциональный локатор английских слов в смешанных фразах ---
 if ($installEnglish) {
     $enModelDir = Join-Path $modelsDir "vosk-en-small"
