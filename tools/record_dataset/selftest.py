@@ -220,6 +220,34 @@ def test_plan() -> None:
     raw = [r for r in rows if r["trim"] == "0"]
     check("план: фон без обрезки", len(raw) == 1 and raw[0]["block"] == "H")
 
+    check("план: новые поля", {"condition", "speaker", "room"} <= set(record.FIELDS))
+
+
+def test_round3() -> None:
+    rows = record.build_round3()
+    check("MNO: 74 дубля", len(rows) == 74, str(len(rows)))
+    check("MNO: имена уникальны", len({r["file"] for r in rows}) == 74)
+    check("MNO: индексы с 154", rows[0]["index"] == 154)
+
+    sessions: dict[str, int] = {}
+    for row in rows:
+        sessions[row["session"]] = sessions.get(row["session"], 0) + 1
+    check("MNO: сессии 30/24/20",
+          sessions == {"s5": 30, "s6": 24, "s7": 20}, str(sessions))
+
+    check("MNO: условия заданы",
+          all(r["condition"] for r in rows))
+    check("MNO: у команд есть action",
+          all(r["action"] for r in rows if r["kind"] == "command"))
+    check("MNO: фоновые негативы без обрезки",
+          all(r["trim"] == "0" for r in rows
+              if r["kind"] == "negative" and r["text"].startswith("ФОН:")))
+
+    full = record.build_full_plan()
+    check("полный план: 227 дублей", len(full) == 227, str(len(full)))
+    check("полный план: индексы без дыр",
+          [r["index"] for r in full] == list(range(1, 228)))
+
 
 def main() -> int:
     print("review")
@@ -234,6 +262,8 @@ def main() -> int:
     test_misc()
     print("plan")
     test_plan()
+    print("round3")
+    test_round3()
 
     print()
     if FAILED:

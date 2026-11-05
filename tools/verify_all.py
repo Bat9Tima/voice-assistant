@@ -69,6 +69,10 @@ def main() -> int:
     by_file = {r["file"]: r for r in labels}
     labels = [r for r in labels if (AUDIO / r["file"]).exists()]
     cache = {r["file"]: read_pcm(r["file"]) for r in labels}
+    for block, label in (("M", "M условия"), ("N", "N негативы")):
+        names = [r["file"] for r in labels if r["block"] == block]
+        if names:
+            GROUPS[label] = names
 
     # ---------------------------------------------------------------- wake
     det = WakeWordDetector(
@@ -129,7 +133,7 @@ def main() -> int:
             continue
         names = [name for name in names if name in cache]
         print(f"  {group:<12} {len(hits)}/{len(names)}")
-        if group.startswith(("H", "L")):
+        if group.startswith(("H", "L", "N")):
             if hits:
                 print("    ложные:", ", ".join(hits))
         else:
@@ -142,7 +146,7 @@ def main() -> int:
     header = f"{'блок':<5}{'N':>4}{'действие':>10}{'текст':>8}{'WER':>7}"
     print(header)
     print("-" * len(header))
-    for block in "BCDEFGIJKL":
+    for block in sorted(blocks):
         items = blocks.get(block, [])
         if not items:
             continue

@@ -110,7 +110,7 @@ def main() -> int:
         open(BASE / "labels.csv", encoding="utf-8-sig", newline=""),
         delimiter=";",
     ))
-    plan = {int(r["index"]): r for r in record.build_plan()}
+    plan = {int(r["index"]): r for r in record.build_full_plan()}
 
     issues: dict[str, list[str]] = defaultdict(list)
     stats: list[dict] = []
@@ -135,8 +135,11 @@ def main() -> int:
         expected = plan.get(index)
         if expected:
             for key in ("file", "block", "kind", "text", "action", "level",
-                        "rate", "distance_cm", "session", "take", "max_sec",
-                        "trim"):
+                        "rate", "distance_cm", "condition", "speaker", "room",
+                        "session", "take", "max_sec", "trim"):
+                # В старых labels.csv новых колонок ещё нет — не считаем это ошибкой.
+                if key not in row:
+                    continue
                 if str(row.get(key, "")) != str(expected.get(key, "")):
                     labels_mismatch.append(
                         f"{name}: {key} = {row.get(key)!r}, "
@@ -161,6 +164,8 @@ def main() -> int:
             "file": name,
             "block": row["block"],
             "level": row["level"],
+            "condition": row.get("condition") or "unknown",
+            "distance": row.get("distance_cm") or "",
             "dur": dur,
             "peak": peak,
             "rms": rms,
@@ -255,6 +260,13 @@ def main() -> int:
         stats.append(item)
         prints.append((name, fingerprint(samples), peak))
 
+    for row in rows:
+        if str(row.get("block", "")) not in {"M", "N", "O"}:
+            continue
+        for key in ("condition", "speaker", "room"):
+            if not str(row.get(key) or "").strip():
+                issues["нет метаданных"].append(f"{row['file']}: {key}")
+
     for digest, names in hashes.items():
         if len(names) > 1:
             issues["одинаковые файлы"].append(", ".join(names))
@@ -313,6 +325,24 @@ def main() -> int:
             f"{(np.median(snrs) if snrs else float('nan')):>13.1f}"
             f"{np.median(durs):>15.2f}{bad:>10}")
     add("")
+
+    cond_items = [i for i in stats if i["block"] in {"M", "N", "O"}]
+    if cond_items:
+        add("По условиям (M/N/O)")
+        add(f"{'блок':<5}{'условие':<10}{'дист.':>7}{'N':>4}"
+            f"{'пик':>9}{'SNR':>8}")
+        grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+        for item in cond_items:
+            grouped[(item["block"], item["condition"],
+                     str(item["distance"]))].append(item)
+        for key in sorted(grouped):
+            items = grouped[key]
+            peaks = [i["peak"] for i in items]
+            snrs = [i["snr"] for i in items if i["snr"] is not None]
+            add(f"{key[0]:<5}{key[1]:<10}{key[2]:>7}{len(items):>4}"
+                f"{np.median(peaks):>9.1f}"
+                f"{(np.median(snrs) if snrs else float('nan')):>8.1f}")
+        add("")
 
     add("Проблемы")
     if not issues and not labels_mismatch:
