@@ -4,3 +4,6 @@ logs/
 state/
 __pycache__/
 *.pyc
+
+# Сгенерированные отчёты инструментов
+tools/*_results.json
