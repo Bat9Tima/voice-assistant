@@ -70,6 +70,10 @@
     "port": 8765
   },
 
+  "context": {
+    "ttl_sec": 180
+  },
+
   "opencode": {
     "enabled": true,
     "agent": "voice",

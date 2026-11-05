@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "intents": [
+    {
+      "id": "soundcloud_volume_down_context",
+      "priority": 90,
+      "requires": "volume",
+      "patterns": ["сделай тише"],
+      "action": "soundcloud_volume_down_context"
+    },
+    {
+      "id": "soundcloud_volume_up_context",
+      "priority": 90,
+      "requires": "volume",
+      "patterns": ["сделай громче"],
+      "action": "soundcloud_volume_up_context"
+    },
+    {
+      "id": "repeat_search",
+      "priority": 80,
+      "requires": "search",
+      "patterns": ["повтори", "повтори запрос", "повтори еще раз", "еще раз"],
+      "action": "repeat_search"
+    },
+    {
+      "id": "next_result",
+      "priority": 80,
+      "requires": "search",
+      "patterns": ["еще один", "давай еще", "следующий результат"],
+      "action": "next_result"
+    },
+    {
+      "id": "open_result_context",
+      "priority": 80,
+      "requires": "results",
+      "patterns": ["{index}"],
+      "slots": {"index": "ordinal_word"},
+      "action": "open_result"
+    },
+    {
+      "id": "open_result",
+      "priority": 70,
+      "patterns": [
+        "открой {index} ссылку",
+        "открой {index} результат",
+        "открыть {index} ссылку",
+        "перейди на {index} ссылку",
+        "нажми на {index} результат",
+        "открой ссылку {index}",
+        "открой результат номер {index}"
+      ],
+      "slots": {"index": "ordinal"},
+      "action": "open_result"
+    },
+    {
+      "id": "open_site",
+      "priority": 60,
+      "patterns": ["открой {site}", "открыть {site}", "open {site}", "go to {site}"],
+      "slots": {"site": "site"},
+      "action": "open_site"
+    },
+    {
+      "id": "youtube_search",
+      "priority": 55,
+      "patterns": [
+        "найди на ютубе {query}",
+        "найди в ютубе {query}",
+        "найди {query} на ютубе",
+        "найди на youtube {query}",
+        "найди в youtube {query}",
+        "найди {query} на youtube",
+        "включи на ютубе {query}",
+        "включи в ютубе {query}",
+        "включи {query} на ютубе",
+        "включи на youtube {query}",
+        "включи в youtube {query}",
+        "включи {query} на youtube",
+        "поставь на ютубе {query}",
+        "поставь {query} на ютубе",
+        "поставь на youtube {query}",
+        "запусти на ютубе {query}",
+        "запусти {query} на ютубе",
+        "find {query} on youtube",
+        "search for {query} on youtube",
+        "play {query} on youtube"
+      ],
+      "slots": {"query": "query"},
+      "action": "youtube_search"
+    },
+    {
+      "id": "google_search",
+      "priority": 50,
+      "patterns": [
+        "загугли {query}",
+        "погугли {query}",
+        "найди в гугле {query}",
+        "поищи в гугле {query}",
+        "найди в интернете {query}",
+        "найди {query}",
+        "поищи {query}",
+        "search for {query}",
+        "search {query}",
+        "find {query}",
+        "look up {query}",
+        "google {query}"
+      ],
+      "slots": {"query": "query"},
+      "action": "google_search"
+    },
+    {
+      "id": "new_tab",
+      "priority": 40,
+      "patterns": ["новая вкладка", "открой новую вкладку", "создай вкладку", "новую вкладку"],
+      "action": "new_tab"
+    },
+    {
+      "id": "close_tab",
+      "priority": 40,
+      "patterns": ["закрой вкладку", "закрыть вкладку", "закрой текущую вкладку"],
+      "action": "close_tab"
+    },
+    {
+      "id": "switch_tab",
+      "priority": 40,
+      "patterns": ["переключись на вкладку {tab}", "перейди на вкладку {tab}", "вкладка {tab}"],
+      "slots": {"tab": "tab"},
+      "action": "switch_tab"
+    },
+    {
+      "id": "list_tabs",
+      "priority": 40,
+      "patterns": ["какие вкладки", "список вкладок", "покажи вкладки", "вкладки"],
+      "action": "list_tabs"
+    },
+    {
+      "id": "pause",
+      "priority": 40,
+      "patterns": ["пауза", "поставь на паузу", "останови видео", "стоп видео", "приостанови", "стоп"],
+      "action": "pause"
+    },
+    {
+      "id": "play",
+      "priority": 40,
+      "patterns": ["продолжи", "продолжим", "продолжай", "играй", "плей", "возобнови", "включи видео"],
+      "action": "play"
+    },
+    {
+      "id": "next",
+      "priority": 40,
+      "patterns": ["следующее видео", "следующий", "дальше", "переключи видео", "следующий трек", "следующая песня"],
+      "action": "next"
+    },
+    {
+      "id": "prev",
+      "priority": 40,
+      "patterns": ["предыдущее видео", "предыдущий", "назад видео", "предыдущий трек", "предыдущая песня"],
+      "action": "prev"
+    },
+    {
+      "id": "back",
+      "priority": 40,
+      "patterns": ["назад", "вернись назад", "страница назад"],
+      "action": "back"
+    },
+    {
+      "id": "forward",
+      "priority": 40,
+      "patterns": ["вперед", "страница вперед"],
+      "action": "forward"
+    },
+    {
+      "id": "reload",
+      "priority": 40,
+      "patterns": ["обнови", "обнови страницу", "перезагрузи страницу"],
+      "action": "reload"
+    },
+    {
+      "id": "scroll_down",
+      "priority": 40,
+      "patterns": ["прокрути вниз", "листай вниз", "вниз страницы"],
+      "action": "scroll_down"
+    },
+    {
+      "id": "scroll_up",
+      "priority": 40,
+      "patterns": ["прокрути вверх", "листай вверх", "вверх страницы"],
+      "action": "scroll_up"
+    },
+    {
+      "id": "fullscreen",
+      "priority": 40,
+      "patterns": ["во весь экран", "на весь экран", "разверни видео", "полный экран"],
+      "action": "fullscreen"
+    },
+    {
+      "id": "status",
+      "priority": 40,
+      "patterns": ["что играет", "что сейчас играет", "какая вкладка", "где я", "статус"],
+      "action": "status"
+    }
+  ]
+}

@@ -82,6 +82,9 @@ DEFAULTS: dict[str, Any] = {
         "autoplay": True,
     },
     "control": {"host": "127.0.0.1", "port": 8765},
+    # Короткий контекст продолжений: «ещё один», «вторую», «тише».
+    # TTL ограничивает, как долго старая команда может влиять на новую.
+    "context": {"ttl_sec": 180},
     "opencode": {
         "enabled": True,
         "agent": "voice",
