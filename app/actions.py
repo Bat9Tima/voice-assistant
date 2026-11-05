@@ -330,9 +330,15 @@ class ActionRouter:
 
     def _intent_open_result(self, match: IntentMatch) -> CommandResult:
         index = int(match.slots["index"])
-        self.context.remember("results", "search_result", index=index)
+        query = self._google_query_from_context()
+        self.context.remember(
+            "results", "search_result", index=index, query=query
+        )
         return self._simple(
-            "search_result", f"Открываю ссылку №{index}", index=index
+            "search_result",
+            f"Открываю ссылку №{index}",
+            index=index,
+            query=query,
         )
 
     def _intent_repeat_search(self, match: IntentMatch) -> CommandResult | None:
@@ -391,9 +397,14 @@ class ActionRouter:
             self.context.remember("results", "google_search", index=1)
             return self._simple("google", f"Ищу: {query}", query=query)
         if action == "search_result":
-            self.context.remember("results", "search_result", index=index)
+            self.context.remember(
+                "results", "search_result", index=index, query=query
+            )
             return self._simple(
-                "search_result", f"Открываю ссылку №{index}", index=index
+                "search_result",
+                f"Открываю ссылку №{index}",
+                index=index,
+                query=query,
             )
         return None
 
@@ -451,9 +462,15 @@ class ActionRouter:
             results = self.context.get("results")
             if results is not None:
                 index = int(results.slots.get("index") or 1) + 1
-            self.context.remember("results", "search_result", index=index)
+                query = str(results.slots.get("query") or "") or query
+            self.context.remember(
+                "results", "search_result", index=index, query=query
+            )
             return self._simple(
-                "search_result", f"Открываю ссылку №{index}", index=index
+                "search_result",
+                f"Открываю ссылку №{index}",
+                index=index,
+                query=query,
             )
         return None
 
@@ -961,7 +978,19 @@ class ActionRouter:
         self.context.remember(
             "search", "google_search", site="google", query=query, index=1
         )
-        self.context.remember("results", "google_search", index=1)
+        self.context.remember(
+            "results", "google_search", query=query, index=1
+        )
+
+    def _google_query_from_context(self) -> str:
+        for kind in ("results", "search"):
+            entry = self.context.get(kind)
+            if entry is None:
+                continue
+            query = str(entry.slots.get("query") or "")
+            if query:
+                return query
+        return ""
 
     def _remember_youtube_search(self, query: str) -> None:
         self.context.remember(

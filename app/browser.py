@@ -881,7 +881,16 @@ class BrowserController(threading.Thread):
         page.bring_to_front()
         url = page.url or ""
         if "google." not in url or "/search" not in url:
-            raise BrowserError("Сейчас открыта не выдача Google. Сначала скажите «открой …»")
+            query = str(args.get("query") or "").strip()
+            if not query:
+                raise BrowserError(
+                    "Сейчас открыта не выдача Google. Сначала скажите «открой …»"
+                )
+            page.goto(
+                "https://www.google.com/search?q=" + quote_plus(query),
+                wait_until="domcontentloaded",
+                timeout=45000,
+            )
         self._dismiss_consent(page)
 
         try:

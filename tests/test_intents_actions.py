@@ -107,6 +107,7 @@ class SearchContextTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(self.browser.last[0], "search_result")
         self.assertEqual(self.browser.last[1]["index"], 2)
+        self.assertEqual(self.browser.last[1]["query"], "погода москва")
 
     def test_next_google_result_uses_last_opened_index(self) -> None:
         self.router.handle("загугли погода москва")
@@ -114,6 +115,7 @@ class SearchContextTest(unittest.TestCase):
         self.router.handle("еще один")
         self.assertEqual(self.browser.last[0], "search_result")
         self.assertEqual(self.browser.last[1]["index"], 3)
+        self.assertEqual(self.browser.last[1]["query"], "погода москва")
 
     def test_repeat_google_search(self) -> None:
         self.router.handle("загугли погода москва")
