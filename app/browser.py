@@ -433,6 +433,10 @@ class BrowserController(threading.Thread):
         query = str(args.get("query", "")).strip()
         if not query:
             raise BrowserError("Пустой поисковый запрос для YouTube")
+        try:
+            index = max(1, int(args.get("index", 1) or 1))
+        except (TypeError, ValueError):
+            index = 1
         page = self._assistant_tab()
         page.bring_to_front()
         search_url = "https://www.youtube.com/results?search_query=" + quote_plus(query)
@@ -440,6 +444,7 @@ class BrowserController(threading.Thread):
         self._dismiss_consent(page)
 
         href = ""
+        available = 0
         selectors = [
             "ytd-video-renderer a#video-title",
             "a#video-title",
@@ -449,17 +454,29 @@ class BrowserController(threading.Thread):
         for selector in selectors:
             try:
                 page.wait_for_selector(selector, timeout=15000)
-                href = page.eval_on_selector(selector, "el => el.href") or ""
-                if href:
+                hrefs = page.eval_on_selector_all(
+                    selector,
+                    "els => els.map(el => el.href).filter(Boolean)",
+                ) or []
+                available = max(available, len(hrefs))
+                if len(hrefs) >= index:
+                    href = hrefs[index - 1]
                     break
             except PlaywrightTimeout as exc:
                 last_error = exc
                 continue
         if not href:
+            if available:
+                raise BrowserError(f"В результатах YouTube только {available} видео")
             raise BrowserError("YouTube не показал результаты поиска") from last_error
         page.goto(href, wait_until="domcontentloaded", timeout=45000)
         self._ensure_playing(page)
-        return {"url": page.url, "title": self._safe_title(page), "query": query}
+        return {
+            "url": page.url,
+            "title": self._safe_title(page),
+            "query": query,
+            "index": index,
+        }
 
     def _act_soundcloud(self, args: dict[str, Any]) -> dict[str, Any]:
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
@@ -467,6 +484,10 @@ class BrowserController(threading.Thread):
         query = str(args.get("query", "")).strip()
         if not query:
             raise BrowserError("Пустой поисковый запрос для SoundCloud")
+        try:
+            index = max(1, int(args.get("index", 1) or 1))
+        except (TypeError, ValueError):
+            index = 1
         page = self._assistant_tab()
         page.bring_to_front()
         search_url = "https://soundcloud.com/search/sounds?q=" + quote_plus(query)
@@ -480,7 +501,11 @@ class BrowserController(threading.Thread):
         except PlaywrightTimeout as exc:
             raise BrowserError("SoundCloud не показал результаты поиска") from exc
 
-        button = page.locator(play_selector).first
+        buttons = page.locator(play_selector)
+        count = buttons.count()
+        if count < index:
+            raise BrowserError(f"В поиске SoundCloud только {count} треков")
+        button = buttons.nth(index - 1)
         try:
             button.click(timeout=5000)
         except Exception:
@@ -509,7 +534,12 @@ class BrowserController(threading.Thread):
             raise BrowserError("SoundCloud не начал воспроизведение") from exc
 
         page.wait_for_timeout(500)
-        return {"url": page.url, "title": self._safe_title(page), "query": query}
+        return {
+            "url": page.url,
+            "title": self._safe_title(page),
+            "query": query,
+            "index": index,
+        }
 
     # ------------------------------------------------------- soundcloud volume
     @staticmethod
