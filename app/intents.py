@@ -201,6 +201,9 @@ def _slot_definitions(
 
     return {
         "query": SlotDefinition(_QUERY_RE, parse_query),
+        # Ведущий шум перед командой: «элонорд громкость саундклауда десять».
+        # Слот нужен только чтобы шаблон нашёл команду; значение не используется.
+        "prefix": SlotDefinition(_QUERY_RE, parse_query),
         "site": SlotDefinition(f"(?:{site_re})", parse_site),
         "tab": SlotDefinition(rf"(?:\d{{1,2}}|{tab_words})", parse_tab),
         "ordinal": SlotDefinition(

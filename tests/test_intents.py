@@ -271,9 +271,24 @@ class ShippedIntentsTest(unittest.TestCase):
         self.assertEqual(match.intent.id, "youtube_search")
 
     def test_context_intents_need_context(self) -> None:
-        for phrase in ("еще один", "повтори", "тише"):
+        context_only = {
+            "еще один": "next_result",
+            "повтори": "repeat_search",
+            "сделай тише": "volume_down_context",
+            "сделай громче": "volume_up_context",
+        }
+        for phrase, intent_id in context_only.items():
             with self.subTest(phrase=phrase):
-                self.assertIsNone(self.intents.match(phrase))
+                match = self.intents.match(phrase)
+                self.assertTrue(match is None or match.intent.id != intent_id)
+
+    def test_bare_volume_is_system_intent(self) -> None:
+        self.assertEqual(
+            self.intents.match("тише").intent.id, "system_volume_down"
+        )
+        self.assertEqual(
+            self.intents.match("громче").intent.id, "system_volume_up"
+        )
 
 
 if __name__ == "__main__":

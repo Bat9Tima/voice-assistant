@@ -152,12 +152,6 @@ class ActionRouter:
             self.context.clear()
             return CommandResult(True, True, "Отменено")
 
-        # SoundCloud разбирается старым путём: там много вариантов искажений
-        # названия сервиса, которые пока не перенесены в декларативные интенты.
-        soundcloud = self._soundcloud_command(t)
-        if soundcloud:
-            return soundcloud
-
         match = self.intents.match(t, self.context)
         if match is not None:
             result = self._handle_intent(match)
@@ -168,10 +162,6 @@ class ActionRouter:
                     dict(match.slots),
                 )
                 return result
-
-        volume = self._volume_command(t)
-        if volume:
-            return volume
 
         ambiguous = self._ambiguous_soundcloud_volume(t)
         if ambiguous:
@@ -467,27 +457,168 @@ class ActionRouter:
             )
         return None
 
-    def _intent_soundcloud_volume_up_context(
-        self, match: IntentMatch
-    ) -> CommandResult | None:
-        return self._soundcloud_volume_from_context("up")
-
-    def _intent_soundcloud_volume_down_context(
-        self, match: IntentMatch
-    ) -> CommandResult | None:
-        return self._soundcloud_volume_from_context("down")
-
-    def _soundcloud_volume_from_context(self, mode: str) -> CommandResult | None:
+    # ------------------------------------------------------ volume (система)
+    def _intent_volume_up_context(self, match: IntentMatch) -> CommandResult:
         entry = self.context.get("volume")
-        if entry is None or entry.slots.get("target") != "soundcloud":
-            return None
-        self.context.remember("volume", "soundcloud_volume", target="soundcloud")
+        if entry is not None and entry.slots.get("target") == "soundcloud":
+            return self._soundcloud_volume_change("up", None)
+        return self._system_volume_change(1, None)
+
+    def _intent_volume_down_context(self, match: IntentMatch) -> CommandResult:
+        entry = self.context.get("volume")
+        if entry is not None and entry.slots.get("target") == "soundcloud":
+            return self._soundcloud_volume_change("down", None)
+        return self._system_volume_change(-1, None)
+
+    def _intent_system_volume_set(self, match: IntentMatch) -> CommandResult:
+        percent = int(match.slots["level"])
+        self._remember_system_volume()
+        return self._set_volume(percent / 100)
+
+    def _intent_system_volume_up(self, match: IntentMatch) -> CommandResult:
+        return self._system_volume_change(1, match.slots.get("amount"))
+
+    def _intent_system_volume_down(self, match: IntentMatch) -> CommandResult:
+        return self._system_volume_change(-1, match.slots.get("amount"))
+
+    def _system_volume_change(
+        self, sign: int, amount: int | None
+    ) -> CommandResult:
+        self._remember_system_volume()
+        step = amount / 100 if amount is not None and amount > 0 else VOLUME_STEP
+        return self._change_volume(sign * step)
+
+    def _intent_system_mute(self, match: IntentMatch) -> CommandResult:
+        self._remember_system_volume()
+        return self._set_mute(True)
+
+    def _intent_system_unmute(self, match: IntentMatch) -> CommandResult:
+        self._remember_system_volume()
+        return self._set_mute(False)
+
+    # --------------------------------------------------- volume (SoundCloud)
+    def _intent_soundcloud_volume_set(self, match: IntentMatch) -> CommandResult:
+        percent = int(match.slots["level"])
+        self._remember_soundcloud_volume()
+        return self._simple(
+            "soundcloud_volume",
+            f"Громкость SoundCloud: {percent}%",
+            mode="set",
+            value=percent,
+        )
+
+    def _intent_soundcloud_volume_up(self, match: IntentMatch) -> CommandResult:
+        return self._soundcloud_volume_change("up", match.slots.get("amount"))
+
+    def _intent_soundcloud_volume_down(self, match: IntentMatch) -> CommandResult:
+        return self._soundcloud_volume_change("down", match.slots.get("amount"))
+
+    def _soundcloud_volume_change(
+        self, mode: str, amount: int | None
+    ) -> CommandResult:
+        step = int(amount) if amount is not None else round(VOLUME_STEP * 100)
+        self._remember_soundcloud_volume()
         return self._simple(
             "soundcloud_volume",
             "Делаю громче в SoundCloud" if mode == "up" else "Делаю тише в SoundCloud",
             mode=mode,
-            value=round(VOLUME_STEP * 100),
+            value=step,
         )
+
+    def _intent_soundcloud_volume_mute(self, match: IntentMatch) -> CommandResult:
+        self._remember_soundcloud_volume()
+        return self._simple(
+            "soundcloud_volume", "Выключаю звук SoundCloud", mode="mute"
+        )
+
+    def _intent_soundcloud_volume_unmute(self, match: IntentMatch) -> CommandResult:
+        self._remember_soundcloud_volume()
+        return self._simple(
+            "soundcloud_volume", "Включаю звук SoundCloud", mode="unmute"
+        )
+
+    # ---------------------------------------------------------- SoundCloud
+    def _intent_soundcloud_open(self, match: IntentMatch) -> CommandResult:
+        self._remember_media("open_site", site="soundcloud")
+        return self._simple(
+            "goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"]
+        )
+
+    def _intent_soundcloud_search(self, match: IntentMatch) -> CommandResult | None:
+        query = self._soundcloud_query(str(match.slots["query"]))
+        if not query:
+            return None
+        self.context.remember(
+            "search",
+            "soundcloud_search",
+            site="soundcloud",
+            query=query,
+            index=1,
+        )
+        self._remember_media("soundcloud_search", site="soundcloud")
+        return self._simple(
+            "soundcloud", f"Включаю на SoundCloud: {query}", query=query, index=1
+        )
+
+    def _intent_soundcloud_likes_open(self, match: IntentMatch) -> CommandResult:
+        return self._soundcloud_likes(match, play=False)
+
+    def _intent_soundcloud_likes_play(self, match: IntentMatch) -> CommandResult:
+        return self._soundcloud_likes(match, play=True)
+
+    def _soundcloud_likes(
+        self, match: IntentMatch, play: bool
+    ) -> CommandResult:
+        query = self._likes_query(str(match.slots.get("query") or ""))
+        if play:
+            random_choice = not query
+            message = (
+                "Включаю случайный лайкнутый трек"
+                if random_choice
+                else f"Ищу среди лайкнутых: {query}"
+            )
+            self.context.remember(
+                "search",
+                "soundcloud_likes",
+                site="soundcloud",
+                query=query,
+                random=random_choice,
+            )
+            self._remember_media("soundcloud_likes", site="soundcloud")
+            return self._simple(
+                "soundcloud_likes",
+                message,
+                query=query,
+                random=random_choice,
+                play=True,
+            )
+        self.context.remember(
+            "search",
+            "soundcloud_likes",
+            site="soundcloud",
+            query=query,
+            random=True,
+        )
+        self._remember_media("soundcloud_likes", site="soundcloud")
+        return self._simple(
+            "soundcloud_likes", "Открываю лайкнутые треки SoundCloud", play=False
+        )
+
+    def _intent_soundcloud_pause(self, match: IntentMatch) -> CommandResult:
+        self._remember_media("pause", site="soundcloud")
+        return self._simple("pause", "Пауза")
+
+    def _intent_soundcloud_resume(self, match: IntentMatch) -> CommandResult:
+        self._remember_media("play", site="soundcloud")
+        return self._simple("play", "Продолжаю")
+
+    def _intent_soundcloud_next(self, match: IntentMatch) -> CommandResult:
+        self._remember_media("next", site="soundcloud")
+        return self._simple("next", "Следующий трек")
+
+    def _intent_soundcloud_prev(self, match: IntentMatch) -> CommandResult:
+        self._remember_media("prev", site="soundcloud")
+        return self._simple("prev", "Предыдущий трек")
 
     # ------------------------------------------------------------------ volume
     def _volume_interface(self):
@@ -509,63 +640,6 @@ class ActionRouter:
             log.warning("Не удалось получить доступ к громкости: %s", exc)
             return None
         return self._volume
-
-    def _volume_command(self, t: str) -> CommandResult | None:
-        up = re.fullmatch(
-            r"(?:громче|погромче|прибавь(?:\s+(?:звук|громкость))?|сделай\s+громче|"
-            r"увеличь(?:\s+(?:звук|громкость))?|подними(?:\s+громкость)?|"
-            r"громкость\s+выше|добавь\s+звук)(?:\s+на\s+(.+))?",
-            t,
-        )
-        if up:
-            self._remember_system_volume()
-            return self._change_volume(self._volume_delta(up.group(1), 1))
-
-        down = re.fullmatch(
-            r"(?:тише|потише|убавь(?:\s+(?:звук|громкость))?|сделай\s+тише|"
-            r"уменьши(?:\s+(?:звук|громкость))?|снизь(?:\s+громкость)?|"
-            r"громкость\s+ниже|убери\s+звук)(?:\s+на\s+(.+))?",
-            t,
-        )
-        if down:
-            self._remember_system_volume()
-            return self._change_volume(self._volume_delta(down.group(1), -1))
-
-        if re.fullmatch(
-            r"(?:выключи|отключи|убери|заглуши)\s+(?:звук|громкость)|без\s+звука|мьют|mute",
-            t,
-        ):
-            self._remember_system_volume()
-            return self._set_mute(True)
-        if re.fullmatch(r"(?:включи|верни)\s+(?:звук|громкость)|unmute", t):
-            self._remember_system_volume()
-            return self._set_mute(False)
-
-        match = re.fullmatch(
-            r"(?:установи|поставь|сделай|выставь)\s+(?:громкость|звук)\s*(?:на\s+)?(.+)",
-            t,
-        )
-        if not match:
-            match = re.fullmatch(r"(?:громкость|звук)\s*(?:на\s+)?(.+)", t)
-        if match:
-            raw = re.sub(
-                r"\b(?:поставь|поставил|установи|установил|сделай|сделал|пожалуйста)\b",
-                " ",
-                match.group(1),
-            )
-            percent = parse_volume_percent(raw)
-            if percent is not None:
-                self._remember_system_volume()
-                return self._set_volume(percent / 100)
-        return None
-
-    @staticmethod
-    def _volume_delta(text: str | None, sign: int) -> float:
-        if text:
-            percent = parse_volume_percent(text)
-            if percent is not None and percent > 0:
-                return sign * percent / 100
-        return sign * VOLUME_STEP
 
     def _change_volume(self, delta: float) -> CommandResult:
         volume = self._volume_interface()
@@ -695,101 +769,6 @@ class ActionRouter:
         return re.sub(r"\s+", " ", query).strip(" ,.-")
 
     # ------------------------------------------------------------- soundcloud
-    def _soundcloud_command(self, t: str) -> CommandResult | None:
-        if not _SOUNDCLOUD_RE.search(t):
-            return None
-
-        volume = self._soundcloud_volume_command(t)
-        if volume:
-            return volume
-
-        if re.search(r"(?:лайк|избранн|любим)", t):
-            query = self._likes_query(t)
-            wants_play = bool(
-                re.search(r"(?:включи|поставь|запусти|играй|слушай|play|listen)", t)
-            )
-            wants_open = bool(re.search(r"(?:открой|покажи|зайди|перейди)", t))
-            if wants_play:
-                random_choice = bool(
-                    re.search(r"(?:случайн|рандом|любой|первый\s+попавш)", t)
-                ) or not query
-                message = (
-                    "Включаю случайный лайкнутый трек"
-                    if random_choice
-                    else f"Ищу среди лайкнутых: {query}"
-                )
-                self.context.remember(
-                    "search",
-                    "soundcloud_likes",
-                    site="soundcloud",
-                    query=query,
-                    random=random_choice,
-                )
-                self._remember_media("soundcloud_likes", site="soundcloud")
-                return self._simple(
-                    "soundcloud_likes",
-                    message,
-                    query=query,
-                    random=random_choice,
-                    play=True,
-                )
-            if wants_open or not query:
-                self.context.remember(
-                    "search",
-                    "soundcloud_likes",
-                    site="soundcloud",
-                    query=query,
-                    random=True,
-                )
-                self._remember_media("soundcloud_likes", site="soundcloud")
-                return self._simple(
-                    "soundcloud_likes", "Открываю лайкнутые треки SoundCloud", play=False
-                )
-
-        core = self._soundcloud_core(t)
-        if re.fullmatch(r"(?:пауза|поставь\s+на\s+паузу|приостанови|стоп)", core):
-            self._remember_media("pause", site="soundcloud")
-            return self._simple("pause", "Пауза")
-        if re.fullmatch(
-            r"(?:продолжи|продолжим|продолжай|играй|плей|возобнови|включи\s+видео)", core
-        ):
-            self._remember_media("play", site="soundcloud")
-            return self._simple("play", "Продолжаю")
-        if re.fullmatch(
-            r"(?:(?:включи|поставь|переключи)\s+)?(?:на\s+)?"
-            r"(?:следующ(?:ий|ую|ее)|дальше)(?:\s+(?:трек|песню|видео))?",
-            core,
-        ):
-            self._remember_media("next", site="soundcloud")
-            return self._simple("next", "Следующий трек")
-        if re.fullmatch(
-            r"(?:(?:включи|поставь|переключи)\s+)?(?:на\s+)?"
-            r"(?:предыдущ(?:ий|ую|ее))(?:\s+(?:трек|песню|видео))?",
-            core,
-        ):
-            self._remember_media("prev", site="soundcloud")
-            return self._simple("prev", "Предыдущий трек")
-
-        query = self._soundcloud_query(t)
-        if query and re.search(
-            r"(?:включи|поставь|запусти|найди|покажи|играй|слушай|"
-            r"play|find|search|listen)",
-            t,
-        ):
-            self.context.remember(
-                "search",
-                "soundcloud_search",
-                site="soundcloud",
-                query=query,
-                index=1,
-            )
-            self._remember_media("soundcloud_search", site="soundcloud")
-            return self._simple(
-                "soundcloud", f"Включаю на SoundCloud: {query}", query=query, index=1
-            )
-        self._remember_media("open_site", site="soundcloud")
-        return self._simple("goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"])
-
     def _ambiguous_soundcloud_volume(self, t: str) -> CommandResult | None:
         """«громкость <искажённое слово> пять» при открытом SoundCloud.
 
@@ -821,84 +800,6 @@ class ActionRouter:
             return False
         tabs = data.get("tabs") or []
         return any("soundcloud.com" in str(tab.get("url", "")).lower() for tab in tabs)
-
-    def _soundcloud_volume_command(self, t: str) -> CommandResult | None:
-        if not _SOUNDCLOUD_RE.search(t):
-            return None
-        core = self._soundcloud_core(t)
-        if not core:
-            return None
-
-        if re.fullmatch(
-            r"(?:выключи|отключи|убери|заглуши)\s+(?:звук|громкость)|"
-            r"без\s+звука|мьют|mute",
-            core,
-        ):
-            self._remember_soundcloud_volume()
-            return self._simple(
-                "soundcloud_volume", "Выключаю звук SoundCloud", mode="mute"
-            )
-        if re.fullmatch(r"(?:включи|верни)\s+(?:звук|громкость)|unmute", core):
-            self._remember_soundcloud_volume()
-            return self._simple(
-                "soundcloud_volume", "Включаю звук SoundCloud", mode="unmute"
-            )
-
-        if re.search(
-            r"(?:громче|погромче|тише|потише|прибавь|убавь|увеличь|уменьши|"
-            r"подними|снизь|громкость\s+выше|громкость\s+ниже)",
-            core,
-        ):
-            mode = (
-                "up"
-                if re.search(
-                    r"(?:громче|погромче|прибавь|увеличь|подними|выше)", core
-                )
-                else "down"
-            )
-            amount: int | None = None
-            match = re.search(r"\bна\s+(.+)$", core)
-            if match:
-                amount = parse_volume_percent(match.group(1))
-            step = amount if amount is not None else round(VOLUME_STEP * 100)
-            self._remember_soundcloud_volume()
-            return self._simple(
-                "soundcloud_volume",
-                "Делаю громче в SoundCloud" if mode == "up" else "Делаю тише в SoundCloud",
-                mode=mode,
-                value=step,
-            )
-
-        match = re.search(
-            r"(?:установи|поставь|сделай|выставь)\s+(?:громкость|звук)\s*(?:на\s+)?(.+)",
-            core,
-        )
-        if not match:
-            match = re.search(r"(?:громкость|звук)\s*(?:на\s+)?(.+)", core)
-        if match:
-            raw = re.sub(
-                r"\b(?:поставь|поставил|установи|установил|сделай|сделал|пожалуйста)\b",
-                " ",
-                match.group(1),
-            )
-            percent = parse_volume_percent(raw)
-            if percent is not None:
-                self._remember_soundcloud_volume()
-                return self._simple(
-                    "soundcloud_volume",
-                    f"Устанавливаю громкость SoundCloud: {percent}%",
-                    mode="set",
-                    value=percent,
-                )
-        return None
-
-    @staticmethod
-    def _soundcloud_core(t: str) -> str:
-        core = _SOUNDCLOUD_RE.sub(" ", t)
-        core = re.sub(r"\s+", " ", core).strip(" ,.-")
-        core = re.sub(r"^(?:на|в|у|для)\s+", "", core)
-        core = re.sub(r"\s+(?:на|в|у|для)$", "", core)
-        return core
 
     @staticmethod
     def _likes_query(t: str) -> str:

@@ -180,6 +180,16 @@ class VolumeContextTest(unittest.TestCase):
             any(action == "soundcloud_volume" for action, _ in self.browser.calls)
         )
 
+    def test_explicit_quiet_after_system_volume_targets_system(self) -> None:
+        self.router.handle("громкость пять")
+        result = self.router.handle("сделай тише")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.message, "Громкость: 40%")
+        self.assertAlmostEqual(self.volume.level, 0.4)
+        self.assertFalse(
+            any(action == "soundcloud_volume" for action, _ in self.browser.calls)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
