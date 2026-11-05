@@ -15,9 +15,9 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import load_config  # noqa: E402
 from app.text import normalize, strip_wake_word  # noqa: E402
