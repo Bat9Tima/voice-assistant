@@ -241,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg["wake_aliases"],
         sample_rate=int(cfg["audio"]["sample_rate"]),
         confusables=cfg.get("wake_confusables") or [],
+        # evaluate() сам прогревает модель двухсекундной тишиной.
+        warm_up=False,
     )
     positives, negatives, payload = evaluate(
         rows, audio, det, labels_path=labels_path)

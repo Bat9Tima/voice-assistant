@@ -67,6 +67,25 @@ class WakeResetTest(unittest.TestCase):
         self.assertIs(detector.recognizer, created)
 
 
+class WakeWarmupTest(unittest.TestCase):
+    def test_warm_up_feeds_one_second_of_silence(self) -> None:
+        detector = WakeWordDetector.__new__(WakeWordDetector)
+        detector.sample_rate = 16000
+        fed: list[bytes] = []
+
+        class Recorder:
+            def AcceptWaveform(self, pcm: bytes) -> bool:  # noqa: N802
+                fed.append(pcm)
+                return False
+
+        detector.recognizer = Recorder()
+        created = object()
+        detector._new_recognizer = lambda: created
+        detector._warm_up()
+        self.assertEqual(fed, [b"\x00\x00" * 16000])
+        self.assertIs(detector.recognizer, created)
+
+
 class FakeOpenWakeWordModel:
     def __init__(self, score: float) -> None:
         self.score = score

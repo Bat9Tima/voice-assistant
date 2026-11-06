@@ -79,6 +79,8 @@ def main() -> int:
         aliases,
         sample_rate=int(cfg["audio"]["sample_rate"]),
         confusables=cfg.get("wake_confusables") or [],
+        # Ниже поток прогревается SIL_1S * 2.
+        warm_up=False,
     )
     feed(det, SIL_1S * 2)
     wake: dict[str, list[str]] = {}

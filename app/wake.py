@@ -31,6 +31,7 @@ class WakeWordDetector:
         aliases: list[str],
         sample_rate: int = 16000,
         confusables: list[str] | None = None,
+        warm_up: bool = True,
     ) -> None:
         if not model_dir.exists():
             raise FileNotFoundError(
@@ -54,6 +55,15 @@ class WakeWordDetector:
             ", ".join(self.aliases),
             len(extra),
         )
+        if warm_up:
+            self._warm_up()
+
+    def _warm_up(self) -> None:
+        # Первый проход после загрузки модели Vosk хуже слышит начало фразы:
+        # «хей луна» превращается в «луна». Прогреваем распознаватель
+        # тишиной, чтобы первая же фраза после запуска не потерялась.
+        self.recognizer.AcceptWaveform(b"\x00\x00" * self.sample_rate)
+        self.recognizer = self._new_recognizer()
 
     def _new_recognizer(self):
         recognizer = vosk.KaldiRecognizer(
