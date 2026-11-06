@@ -1,12 +1,15 @@
 """Генерация синтетических позитивов через Silero TTS v5.
 
-Silero даёт 5 русских голосов и SSML: можно менять темп и вставлять паузу
-между «хей» и «луна». Модель скачивается torch.hub в кэш пользователя,
-поэтому кириллица в пути проекта ей не мешает.
+Два профиля из config.yaml: `silero` (v5_ru) и `silero_cis` (v5_cis_base).
+Silero даёт SSML: можно менять темп и вставлять паузу между «хей» и
+«луна». Модель скачивается torch.hub в кэш пользователя, поэтому
+кириллица в пути проекта ей не мешает.
 
 Пример:
     python wake_model/scripts/synthesize_silero.py --count 20 \
         --out wake_model/data/silero_probe
+    python wake_model/scripts/synthesize_silero.py --profile cis \
+        --count 16 --out wake_model/data/silero_cis_smoke
 """
 
 from __future__ import annotations
@@ -99,20 +102,28 @@ def normalize(pcm: np.ndarray, target_db: float) -> np.ndarray:
 
 def main() -> int:
     cfg = load_config()
-    silero = cfg["silero"]
     synth = cfg["synthesis"]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path,
-                        default=cfg["paths"]["data"] / "silero_probe")
+    parser.add_argument("--profile", choices=["silero", "cis"],
+                        default="silero",
+                        help="silero = v5_ru, cis = v5_cis_base")
+    parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--text", default=cfg["phrase"])
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--clean", action="store_true")
-    parser.add_argument("--speaker", action="append", choices=silero["voices"])
-    parser.add_argument("--variant", action="append", choices=silero["variants"])
+    args, _ = parser.parse_known_args()
+    profile = cfg["silero"] if args.profile == "silero" else cfg["silero_cis"]
+    parser.add_argument("--speaker", action="append",
+                        choices=profile["voices"])
+    parser.add_argument("--variant", action="append",
+                        choices=profile["variants"])
     args = parser.parse_args()
 
-    out: Path = args.out
+    out: Path = args.out or (
+        cfg["paths"]["data"] /
+        ("silero_probe" if args.profile == "silero" else "silero_cis_probe")
+    )
     out.mkdir(parents=True, exist_ok=True)
     if args.clean:
         for wav in out.glob("*.wav"):
@@ -121,19 +132,20 @@ def main() -> int:
         if meta.exists():
             meta.unlink()
 
-    voices = args.speaker or silero["voices"]
-    variants = args.variant or silero["variants"]
+    voices = args.speaker or profile["voices"]
+    variants = args.variant or profile["variants"]
     combos = [(voice, variant) for variant in variants for voice in voices]
+    break_range = profile.get("break_ms", [150, 400])
     rng = random.Random(args.seed)
 
     torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
-    model = load_model(silero["model"])
+    model = load_model(profile["model"])
     rate = int(cfg["audio"]["sample_rate"])
     rows: list[dict] = []
 
     for index in range(args.count):
         voice, variant = combos[index % len(combos)]
-        break_ms = rng.randint(*silero["break_ms"])
+        break_ms = rng.randint(*break_range)
         text, ssml = ssml_for(variant, args.text, break_ms)
         if ssml:
             audio = model.apply_tts(ssml_text=ssml, speaker=voice,

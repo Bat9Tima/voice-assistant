@@ -21,11 +21,11 @@
   (F1–F5, M1–M5), русский поддерживается. Пробные 30 клипов: GigaAM
   слышит в основном слитное «хейлуна», точное совпадение 6/30; это
   нормальное слияние слов, а не ошибка произношения. По контрольному
-  прослушиванию прошли **M1 только в `slow`** и **M5 во всех темпах**;
-  M1 `plain`/`fast` и M2 отбракованы.
+  прослушиванию прошёл только **M5** (все темпы); M1, M2 и остальные
+  голоса отбракованы.
 - Silero v5_cis_base: 29 голосов `ru_*` (носители из СНГ, у части акцент).
-  После автоматического QC и прослушивания в шортлисте 8 голосов:
-  marat, nurgul, oksana, vika, aigul, alfia, roman, zhadyra.
+  После автоматического QC и контрольного прослушивания подтверждены
+  8 голосов: marat, nurgul, oksana, vika, aigul, alfia, roman, zhadyra.
   albina, eduard, alfia2, onaoy, ramilia, gamat, sibday отбракованы.
 - Кастомный Piper Puriso (дистилляция Supertonic M1 в ruslan): 6 клипов,
   GigaAM не слышит «хей луна» ни в одном (0/6, варианты «филна/кшилма»),
@@ -34,11 +34,12 @@
   и 58 клипов Silero CIS; автоматическая проверка (длительность, пик,
   клиппинг, GigaAM) и страницы для прослушивания.
 
-Итог по голосам для синтетики этапа 1: **7 подтверждённых** — Silero
-aidar, baya, eugene, xenia (все темпы) + Piper irina (только номинальный
-темп, `length_scale` ≈ 1.0) + Supertonic M1 (только `slow`) и M5 (все
-темпы). Сверху — 8 голосов Silero CIS в статусе прослушивания. Даже с
-ними этап 2 (реальные 3–5 голосов) остаётся обязательным.
+Итог по голосам для синтетики этапа 1: **14 подтверждённых** — Silero
+v5_ru aidar, baya, eugene, xenia (все темпы) + Silero v5_cis_base marat,
+nurgul, oksana, vika, aigul, alfia, roman, zhadyra (plain/slow) + Piper
+irina (только номинальный темп, `length_scale` ≈ 1.0) + Supertonic M5
+(все темпы). Непроверенных кандидатов не осталось. Этап 2 (реальные
+3–5 голосов) по-прежнему обязателен.
 
 ## Результаты QC
 
@@ -89,8 +90,8 @@ Supertonic 3, 30 клипов (`data/supertonic_probe/qc_report.txt`):
 
 18 из 30 клипов GigaAM записала как «хейлуна» — слова слились, отдельной
 ошибки «кей» нет. По вариантам точных совпадений: plain 4/10, slow 1/10,
-fast 1/10. По контрольному прослушиванию: M1 — только `slow`, M5 — все
-темпы; M1 `plain`/`fast` и M2 отбракованы.
+fast 1/10. По контрольному прослушиванию оставлен только M5 (все темпы);
+M1, M2 и остальные голоса отбракованы.
 
 Silero v5_cis_base, 58 клипов (`data/silero_cis_probe/qc_report.txt`):
 
@@ -117,8 +118,8 @@ Piper Puriso, 6 клипов (`data/puriso_probe/qc_report.txt`): 0/6 точны
 - `data/listen_supertonic.html` — Supertonic 3, все 10 голосов для истории.
 - `data/listen_silero_cis.html` — Silero v5_cis_base, 8 голосов
   в шортлисте.
-- `data/listen_control.html` — контрольный список: 7 подтверждённых
-  и 8 кандидатов CIS.
+- `data/listen_control.html` — контрольный список: 14 подтверждённых
+  голосов, кандидатов не осталось.
 
 ## Структура
 
@@ -128,9 +129,9 @@ wake_model/
 ├── requirements-train.txt   версии учебного окружения
 ├── scripts/
 │   ├── setup.ps1            venv + Piper + голоса
-│   ├── synthesize.py        синтез Piper (irina/ruslan)
-│   ├── synthesize_silero.py синтез Silero (4 голоса, SSML)
-│   ├── synthesize_supertonic.py синтез Supertonic (M1 slow, M5)
+│   ├── synthesize.py        синтез Piper (irina)
+│   ├── synthesize_silero.py синтез Silero v5_ru и v5_cis_base
+│   ├── synthesize_supertonic.py синтез Supertonic (M5)
 │   └── check_qc.py          длительность, пик, клиппинг, GigaAM
 ├── data/                    клипы и отчёты (gitignore)
 ├── features/                memmap фич (gitignore)
@@ -151,12 +152,16 @@ powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 .\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 100 --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\piper_qc
 
-# Silero: 9 клипов текущими голосами и проверка
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 9 --out wake_model\data\silero_probe_new
+# Silero v5_ru: 16 клипов, 4 голоса × plain/slow/fast/break
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 16 --out wake_model\data\silero_probe_new --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_probe_new
 
-# Supertonic: 4 клипа, M1 slow + M5 plain/slow/fast
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 4 --out wake_model\data\supertonic_probe_new --clean
+# Silero v5_cis_base: 16 клипов, 8 голосов × plain/slow
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 16 --out wake_model\data\silero_cis_smoke --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_cis_smoke
+
+# Supertonic: 3 клипа, M5 × plain/slow/fast
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 3 --out wake_model\data\supertonic_probe_new --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe_new
 ```
 
@@ -167,7 +172,7 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py 
 - openwakeword 0.6.0, torchinfo 1.8.0, torchmetrics 1.9.0
 - numpy 2.5.4, scipy 1.18.1, onnxruntime 1.31.1
 - Piper 2023.11.14-2, голоса `ru_RU` medium (22 050 Гц)
-- Silero v5_ru (48 000 Гц, приводим к 16 000)
+- Silero v5_ru и v5_cis_base (48 000 Гц, приводим к 16 000)
 - Supertonic 3, ONNX (44 100 Гц, приводим к 16 000)
 
 ## Лицензии
@@ -180,9 +185,8 @@ OpenRAIL-M (использование с ограничениями, для л�
 
 ## Дальше
 
-Этап 1: 3–10 тыс. синтетических «хей луна» на подтверждённых голосах
-Silero (aidar/baya/eugene/xenia) с вариантами `plain`, `slow`, `fast`,
-`break`, Supertonic (M1 `slow`, M5 все темпы) и Piper irina (только
-`length_scale` ≈ 1.0). После прослушивания к ним могут добавиться 8
-голосов Silero v5_cis_base. Затем аугментации (скорость, питч, шум, RIR)
-и реальные записи этапа 2.
+Этап 1: 3–10 тыс. синтетических «хей луна» на 14 подтверждённых голосах:
+Silero v5_ru (aidar/baya/eugene/xenia; `plain`, `slow`, `fast`, `break`),
+Silero v5_cis_base (8 голосов; `plain`, `slow`), Supertonic M5 (все
+темпы) и Piper irina (только `length_scale` ≈ 1.0). Затем аугментации
+(скорость, питч, шум, RIR) и реальные записи этапа 2.
