@@ -1,0 +1,8 @@
+.venv/
+bin/
+voices/
+data/
+features/
+checkpoints/
+__pycache__/
+*.pyc

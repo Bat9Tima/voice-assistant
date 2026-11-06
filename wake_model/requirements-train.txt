@@ -1,0 +1,15 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.15.0+cpu
+torchinfo==1.8.0
+torchmetrics==1.9.0
+openwakeword==0.6.0
+PyYAML==6.0.3
+soundfile==0.14.0
+omegaconf==2.4.0
+
+# Проверенные транзитивные версии
+numpy==2.5.4
+scipy==1.18.1
+onnxruntime==1.31.1
+scikit-learn==1.9.1

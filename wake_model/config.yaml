@@ -1,0 +1,52 @@
+# Настройки проекта собственной wake-модели openWakeWord.
+#
+# Piper и голоса лежат в ASCII-каталоге за пределами репозитория:
+# piper.exe (2023.11.14-2) падает на путях с кириллицей, а путь проекта
+# содержит «Проект по умолчанию». Пути можно переопределить переменными
+# окружения PIPER_EXE и PIPER_VOICES.
+
+phrase: "хей луна"
+
+paths:
+  piper: "%USERPROFILE%/Documents/VoiceAssistantTools/piper/piper.exe"
+  voices: "%USERPROFILE%/Documents/VoiceAssistantTools/voices"
+  data: "data"
+  features: "features"
+  checkpoints: "checkpoints"
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  sample_width: 2
+
+voices:
+  # denis и dmitri не прошли QC: первое слово звучит как «кей/цей».
+  - ru_RU-irina-medium
+  - ru_RU-ruslan-medium
+
+# Основной синтез для обучения. Silero v5 даёт 5 голосов и SSML-управление
+# темпом/паузами; Piper остаётся дополнительным источником двух голосов.
+silero:
+  model: v5_ru
+  # eugene и kseniya не прошли QC («силна/килуна»), fast — слишком быстро.
+  voices:
+    - aidar
+    - baya
+    - xenia
+  variants:
+    - plain
+    - slow
+    - break
+  break_ms: [150, 400]
+
+# Диапазоны для этапа 0 и синтетических позитивов этапа 1.
+synthesis:
+  length_scale: [0.8, 1.2]
+  noise_scale: [0.5, 0.8]
+  noise_w: [0.6, 1.0]
+  pause_probability: 0.25      # доля клипов «хей, луна» с паузой
+  lead_silence: 0.30
+  tail_silence: 0.30
+  target_peak_db: -3.0
+  trim_threshold_db: -40.0
+  trim_padding: 0.03
