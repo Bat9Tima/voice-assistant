@@ -99,7 +99,16 @@ def main() -> int:
 
     voices = args.voice or tonic["voices"]
     variants = args.variant or tonic["variants"]
-    combos = [(voice, variant) for variant in variants for voice in voices]
+    allowed = tonic.get("voice_variants", {})
+    combos = [
+        (voice, variant)
+        for variant in variants
+        for voice in voices
+        if variant in allowed.get(voice, tonic["variants"])
+    ]
+    if not combos:
+        print("Нет допустимых сочетаний голос/вариант", file=sys.stderr)
+        return 2
     rng = random.Random(args.seed)
     rate = int(cfg["audio"]["sample_rate"])
     tts = TTS(model=tonic["model"], auto_download=True)
