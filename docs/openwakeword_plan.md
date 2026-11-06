@@ -125,13 +125,16 @@ Silero CIS — 1434, Supertonic M5 — 238, Piper irina — 275. Все 14 го�
 ### Этап 5. Датасет и разбиение (я, 0,5 дня)
 
 ```
-wake_model/data/positive/{synthetic,real}
+wake_model/data/positives_tts/   # синтетика этапа 1 + manifest.csv
+wake_model/data/positives_real/  # реальные записи этапа 2
 wake_model/data/negative/{speech,music,tv,street,hard}
 wake_model/data/rir
 wake_model/features   # memmap фич, ~4–5 ГБ
 wake_model/checkpoints
 ```
 
+- Синтетические позитивы собираются из `positives_tts/manifest.csv`
+  (строки с `kept=1`); отдельный каталог `positive/synthetic` не создаём.
 - Манифест-CSV: путь, источник, спикер, дистанция, условие, длина.
 - Разбиение: **speaker-disjoint** (спикер из test никогда не в train),
   **session-disjoint** для фона (часть часов только для test).

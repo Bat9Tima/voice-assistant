@@ -5,7 +5,7 @@ Piper запускается отдельным процессом: бинарн
 ASCII-каталоге VoiceAssistantTools. Путь к готовому WAV может быть любым.
 
 Пример:
-    python wake_model/scripts/synthesize.py --count 100
+    python wake_model/scripts/synthesize_piper.py --count 100
 """
 
 from __future__ import annotations
@@ -180,7 +180,7 @@ def main() -> int:
     cfg = load_config()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path,
-                        default=cfg["paths"]["data"] / "piper_qc")
+                        default=cfg["paths"]["data"] / "stage0" / "piper_qc")
     parser.add_argument("--count", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--clean", action="store_true",

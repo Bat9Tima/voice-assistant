@@ -6,7 +6,7 @@ Supertonic 3 — локальный ONNX-TTS на 31 язык, включая р
 
 Пример:
     python wake_model/scripts/synthesize_supertonic.py --count 30 \
-        --out wake_model/data/supertonic_probe --clean
+        --out wake_model/data/stage0/supertonic_probe --clean
 """
 
 from __future__ import annotations
@@ -77,7 +77,8 @@ def main() -> int:
     synth = cfg["synthesis"]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path,
-                        default=cfg["paths"]["data"] / "supertonic_probe")
+                        default=cfg["paths"]["data"] / "stage0"
+                                / "supertonic_probe")
     parser.add_argument("--count", type=int, default=30)
     parser.add_argument("--text", default=cfg["phrase"])
     parser.add_argument("--seed", type=int, default=0)

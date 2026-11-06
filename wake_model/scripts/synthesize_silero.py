@@ -7,9 +7,9 @@ Silero даёт SSML: можно менять темп и вставлять п�
 
 Пример:
     python wake_model/scripts/synthesize_silero.py --count 20 \
-        --out wake_model/data/silero_probe
+        --out wake_model/data/stage0/silero_probe
     python wake_model/scripts/synthesize_silero.py --profile cis \
-        --count 16 --out wake_model/data/silero_cis_smoke
+        --count 16 --out wake_model/data/stage0/silero_cis_smoke
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ def main() -> int:
     args = parser.parse_args()
 
     out: Path = args.out or (
-        cfg["paths"]["data"] /
+        cfg["paths"]["data"] / "stage0" /
         ("silero_probe" if args.profile == "silero" else "silero_cis_probe")
     )
     out.mkdir(parents=True, exist_ok=True)

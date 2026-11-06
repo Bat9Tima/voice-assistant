@@ -70,7 +70,7 @@ irina (только номинальный темп, `length_scale` ≈ 1.0) + S
 
 ## Результаты QC
 
-Piper, 100 клипов (`data/piper_qc/qc_report.txt`):
+Piper, 100 клипов (`data/stage0/piper_qc/qc_report.txt`):
 
 | Голос | Клипов | Точно «хей луна» | Есть «луна» |
 |---|---:|---:|---:|
@@ -84,7 +84,7 @@ Piper, 100 клипов (`data/piper_qc/qc_report.txt`):
 прослушивание. Piper ломает первое слово при изменении темпа, поэтому
 для него оставлен только `length_scale` ≈ 1.0.
 
-Silero, 20 клипов (`data/silero_probe/qc_report.txt`):
+Silero, 20 клипов (`data/stage0/silero_probe/qc_report.txt`):
 
 | Голос | Клипов | Точно «хей луна» | Есть «луна» |
 |---|---:|---:|---:|
@@ -101,7 +101,7 @@ kseniya отбракована. Позже массовый QC забраков�
 записях, поэтому это фильтр, а не приговор; окончательное решение — за
 прослушиванием.
 
-Supertonic 3, 30 клипов (`data/supertonic_probe/qc_report.txt`):
+Supertonic 3, 30 клипов (`data/stage0/supertonic_probe/qc_report.txt`):
 
 | Голос | Клипов | Точно «хей луна» | Есть «луна» |
 |---|---:|---:|---:|
@@ -121,7 +121,7 @@ Supertonic 3, 30 клипов (`data/supertonic_probe/qc_report.txt`):
 fast 1/10. По контрольному прослушиванию оставлен только M5 (все темпы);
 M1, M2 и остальные голоса отбракованы.
 
-Silero v5_cis_base, 58 клипов (`data/silero_cis_probe/qc_report.txt`):
+Silero v5_cis_base, 58 клипов (`data/stage0/silero_cis_probe/qc_report.txt`):
 
 | Группа | Голосов | Клипов | Точно «хей луна» |
 |---|---:|---:|---:|
@@ -134,22 +134,25 @@ Silero v5_cis_base, 58 клипов (`data/silero_cis_probe/qc_report.txt`):
 отброшены автоматически; albina, eduard, alfia2, onaoy, ramilia, gamat,
 sibday отбракованы после прослушивания.
 
-Piper Puriso, 6 клипов (`data/puriso_probe/qc_report.txt`): 0/6 точных,
+Piper Puriso, 6 клипов (`data/stage0/puriso_probe/qc_report.txt`): 0/6 точных,
 1/6 с «луна»; GigaAM слышит «филна», «кшилма», «челуна». Голос
 отбракован по ASR, до прослушивания не доходит.
 
-Страницы для прослушивания (локально, не коммитятся):
+Страницы для прослушивания (локально, не коммитятся; этап 0 — в `data/stage0/`):
 
-- `data/piper_qc/listen_all.html` — Piper: реальные записи, одинаковые
-  настройки, разброс параметров.
-- `data/listen_tts.html` — Silero против Piper.
-- `data/listen_supertonic.html` — Supertonic 3, все 10 голосов для истории.
-- `data/listen_silero_cis.html` — Silero v5_cis_base, 8 голосов
+- `data/stage0/piper_qc/listen_all.html` — Piper: реальные записи,
+  одинаковые настройки, разброс параметров.
+- `data/stage0/listen_tts.html` — Silero против Piper.
+- `data/stage0/listen_supertonic.html` — Supertonic 3, все 10 голосов
+  для истории.
+- `data/stage0/listen_silero_cis.html` — Silero v5_cis_base, 8 голосов
   в шортлисте.
-- `data/listen_control.html` — контрольный список: 14 подтверждённых
-  голосов, кандидатов не осталось.
+- `data/stage0/listen_control.html` — контрольный список: 14
+  подтверждённых голосов, кандидатов не осталось.
 - `data/positives_tts/listen_samples.html` — выборочный контроль этапа 1:
   по два клипа на голос.
+- `data/positives_tts/listen_piper_stage1.html` — Piper irina, 24
+  случайных клипа этапа 1.
 
 ## Структура
 
@@ -159,13 +162,16 @@ wake_model/
 ├── requirements-train.txt   версии учебного окружения
 ├── scripts/
 │   ├── setup.ps1            venv + Piper + голоса
-│   ├── synthesize.py        синтез Piper (irina)
+│   ├── synthesize_piper.py  синтез Piper (irina)
 │   ├── synthesize_silero.py синтез Silero v5_ru и v5_cis_base
 │   ├── synthesize_supertonic.py синтез Supertonic (M5)
 │   ├── check_qc.py          длительность, пик, клиппинг, GigaAM
 │   ├── collect_positives.py сборка manifest после QC
 │   └── make_listen_positives.py страница выборочного прослушивания
 ├── data/                    клипы и отчёты (gitignore)
+│   ├── stage0/              архив этапа 0: пробы QC и страницы прослушивания
+│   ├── positives_tts/       синтетика этапа 1 + manifest.csv
+│   ├── positive/, negative/, rir/ — заготовки этапов 2–4
 ├── features/                memmap фич (gitignore)
 └── checkpoints/             чекпоинты обучения (gitignore)
 ```
@@ -180,33 +186,34 @@ Piper и голоса лежат в `%USERPROFILE%\Documents\VoiceAssistantTools
 # Восстановить окружение с нуля (скачает ~600 МБ)
 powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 
-# Piper: 100 клипов и проверка (в config — только irina)
-.\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 100 --clean
-.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\piper_qc
+# Piper: 100 клипов и проверка (в config — только irina; по умолчанию
+# пишет в data/stage0/piper_qc)
+.\.venv\Scripts\python.exe wake_model\scripts\synthesize_piper.py --count 100 --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\stage0\piper_qc
 
 # Silero v5_ru: 12 клипов, 4 голоса × plain/slow/break
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 12 --out wake_model\data\silero_probe_new --clean
-.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_probe_new
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 12 --out wake_model\data\stage0\silero_probe_new --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\stage0\silero_probe_new
 
 # Silero v5_cis_base: 16 клипов, 8 голосов × plain/slow
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 16 --out wake_model\data\silero_cis_smoke --clean
-.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_cis_smoke
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 16 --out wake_model\data\stage0\silero_cis_smoke --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\stage0\silero_cis_smoke
 
 # Supertonic: 3 клипа, M5 × plain/slow/fast
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 3 --out wake_model\data\supertonic_probe_new --clean
-.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe_new
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 3 --out wake_model\data\stage0\supertonic_probe_new --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\stage0\supertonic_probe_new
 
 # Этап 1: 4320 синтетических позитивов на 14 голосах.
 # База — 3040 клипов:
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 1280 --out wake_model\data\positives_tts\silero_ru --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 1280 --out wake_model\data\positives_tts\silero_cis --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 240 --out wake_model\data\positives_tts\supertonic --clean
-.\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 240 --out wake_model\data\positives_tts\piper --clean --no-html
+.\.venv\Scripts\python.exe wake_model\scripts\synthesize_piper.py --count 240 --out wake_model\data\positives_tts\piper --clean --no-html
 
 # Добор — 1280 клипов (Silero 480, CIS slow 320, Piper 480):
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 480 --seed 1 --out wake_model\data\positives_tts\silero_ru_extra --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --variant slow --count 320 --seed 1 --out wake_model\data\positives_tts\silero_cis_extra --clean
-.\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 480 --seed 1 --out wake_model\data\positives_tts\piper_extra --clean --no-html
+.\.venv\Scripts\python.exe wake_model\scripts\synthesize_piper.py --count 480 --seed 1 --out wake_model\data\positives_tts\piper_extra --clean --no-html
 
 # QC каждого каталога, затем единый manifest
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_ru

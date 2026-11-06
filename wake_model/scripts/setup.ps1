@@ -88,6 +88,6 @@ if (-not $SkipVenv) {
 Write-Host ""
 Write-Host "Дальше:"
 Write-Host "  python wake_model\scripts\synthesize_silero.py --count 20"
-Write-Host "  python wake_model\scripts\check_qc.py --dir wake_model\data\silero_probe"
+Write-Host "  python wake_model\scripts\check_qc.py --dir wake_model\data\stage0\silero_probe"
 Write-Host "  python wake_model\scripts\synthesize_supertonic.py --count 30 --clean"
-Write-Host "  python wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe"
+Write-Host "  python wake_model\scripts\check_qc.py --dir wake_model\data\stage0\supertonic_probe"
