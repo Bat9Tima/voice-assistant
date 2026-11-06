@@ -230,8 +230,8 @@ wake_model/checkpoints
     в основном слитное «хейлуна», точных совпадений 6/30. По
     прослушиванию прошли **M1, M2, M5**.
   - **Silero v5_cis_base** — 29 голосов `ru_*` с акцентами. После
-    автоматического QC и прослушивания в шортлисте 11: albina, marat,
-    nurgul, oksana, vika, aigul, alfia, eduard, roman, sibday, zhadyra.
+    автоматического QC и прослушивания в шортлисте 9: marat, nurgul,
+    oksana, vika, aigul, alfia, roman, sibday, zhadyra. albina, eduard,
     alfia2, onaoy, ramilia, gamat отбракованы.
   - **Piper Puriso** — кастомный мужской голос, дистилляция Supertonic M1
     в Piper. 6 клипов, GigaAM не слышит «хей луна» (0/6: «филна»,
@@ -239,6 +239,6 @@ wake_model/checkpoints
     Piper нет.
 - Итог для этапа 1: синтетика на Silero (4 голоса, все темпы) + Piper
   irina/ruslan (только номинальный темп) + Supertonic M1/M2/M5 — 9
-  подтверждённых голосов. Сверху 11 кандидатов Silero CIS; решение после
+  подтверждённых голосов. Сверху 9 кандидатов Silero CIS; решение после
   прослушивания. Реальные записи этапа 2 по-прежнему обязательны.
 

@@ -23,9 +23,9 @@
   нормальное слияние слов, а не ошибка произношения. По прослушиванию
   прошли **M1, M2, M5**.
 - Silero v5_cis_base: 29 голосов `ru_*` (носители из СНГ, у части акцент).
-  После автоматического QC и прослушивания в шортлисте 11 голосов:
-  albina, marat, nurgul, oksana, vika, aigul, alfia, eduard, roman,
-  sibday, zhadyra. alfia2, onaoy, ramilia, gamat отбракованы на слух.
+  После автоматического QC и прослушивания в шортлисте 9 голосов:
+  marat, nurgul, oksana, vika, aigul, alfia, roman, sibday, zhadyra.
+  albina, eduard, alfia2, onaoy, ramilia, gamat отбракованы на слух.
 - Кастомный Piper Puriso (дистилляция Supertonic M1 в ruslan): 6 клипов,
   GigaAM не слышит «хей луна» ни в одном (0/6, варианты «филна/кшилма»),
   поэтому голос отбракован. Официальных новых русских голосов Piper нет.
@@ -36,7 +36,7 @@
 Итог по голосам для синтетики этапа 1: **9 подтверждённых** — Silero
 aidar, baya, eugene, xenia (все темпы) + Piper irina, ruslan (только
 номинальный темп, `length_scale` ≈ 1.0) + Supertonic M1, M2, M5. Сверху —
-11 голосов Silero CIS в статусе прослушивания. Даже с ними этап 2
+9 голосов Silero CIS в статусе прослушивания. Даже с ними этап 2
 (реальные 3–5 голосов) остаётся обязательным.
 
 ## Результаты QC
@@ -94,14 +94,14 @@ Silero v5_cis_base, 58 клипов (`data/silero_cis_probe/qc_report.txt`):
 
 | Группа | Голосов | Клипов | Точно «хей луна» |
 |---|---:|---:|---:|
-| 2 из 2 | 5 | 10 | 10 |
-| 1 из 2 | 6 | 12 | 6 |
-| отбракованы | 18 | 36 | 4 |
+| 2 из 2 | 4 | 8 | 8 |
+| 1 из 2 | 5 | 10 | 5 |
+| отбракованы | 20 | 40 | 7 |
 
 В шортлист попали голоса, где GigaAM уверенно слышит «хей луна» хотя бы
 в одном темпе. Часть голосов произносит «фей/фи» вместо «хей» — такие
-отброшены автоматически; alfia2, onaoy, ramilia, gamat отбракованы после
-прослушивания.
+отброшены автоматически; albina, eduard, alfia2, onaoy, ramilia, gamat
+отбракованы после прослушивания.
 
 Piper Puriso, 6 клипов (`data/puriso_probe/qc_report.txt`): 0/6 точных,
 1/6 с «луна»; GigaAM слышит «филна», «кшилма», «челуна». Голос
@@ -113,7 +113,7 @@ Piper Puriso, 6 клипов (`data/puriso_probe/qc_report.txt`): 0/6 точны
   настройки, разброс параметров.
 - `data/listen_tts.html` — Silero против Piper.
 - `data/listen_supertonic.html` — Supertonic 3, 10 голосов, три темпа.
-- `data/listen_silero_cis.html` — Silero v5_cis_base, 11 голосов
+- `data/listen_silero_cis.html` — Silero v5_cis_base, 9 голосов
   в шортлисте.
 
 ## Структура
