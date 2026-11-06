@@ -132,7 +132,9 @@ wake_model/
 │   ├── synthesize.py        синтез Piper (irina)
 │   ├── synthesize_silero.py синтез Silero v5_ru и v5_cis_base
 │   ├── synthesize_supertonic.py синтез Supertonic (M5)
-│   └── check_qc.py          длительность, пик, клиппинг, GigaAM
+│   ├── check_qc.py          длительность, пик, клиппинг, GigaAM
+│   ├── collect_positives.py сборка manifest после QC
+│   └── make_listen_positives.py страница выборочного прослушивания
 ├── data/                    клипы и отчёты (gitignore)
 ├── features/                memmap фич (gitignore)
 └── checkpoints/             чекпоинты обучения (gitignore)
@@ -163,6 +165,20 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --pr
 # Supertonic: 3 клипа, M5 × plain/slow/fast
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 3 --out wake_model\data\supertonic_probe_new --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe_new
+
+# Этап 1: около 3040 синтетических позитивов на 14 голосах
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 1280 --out wake_model\data\positives_tts\silero_ru --clean
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 1280 --out wake_model\data\positives_tts\silero_cis --clean
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 240 --out wake_model\data\positives_tts\supertonic --clean
+.\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 240 --out wake_model\data\positives_tts\piper --clean --no-html
+
+# QC каждого каталога, затем единый manifest
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_ru
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_cis
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\supertonic
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\piper
+.\.venv\Scripts\python.exe wake_model\scripts\collect_positives.py
+.\.venv\Scripts\python.exe wake_model\scripts\make_listen_positives.py
 ```
 
 ## Версии

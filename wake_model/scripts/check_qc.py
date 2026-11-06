@@ -62,8 +62,9 @@ def load_metadata(out: Path) -> dict[str, dict]:
 def classify(text: str) -> tuple[bool, bool, bool]:
     """Возвращает (есть «луна», есть «хей/эй», точное совпадение)."""
     tokens = normalize(text).split()
-    has_luna = any(token.startswith("лун") for token in tokens)
-    has_hey = any(token in HEY for token in tokens)
+    has_luna = any("лун" in token for token in tokens)
+    has_hey = any(
+        token in HEY or token.startswith(("хей", "хэй")) for token in tokens)
     return has_luna, has_hey, tokens == ["хей", "луна"]
 
 
@@ -187,8 +188,8 @@ def main() -> int:
 
     csv_path = out / "qc_files.csv"
     fields = [
-        "file", "voice", "duration_s", "peak_db", "rms_db", "text",
-        "has_luna", "has_hey", "exact", "variant",
+        "file", "voice", "duration_s", "peak_db", "rms_db", "clipped", "text",
+        "has_luna", "has_hey", "exact", "variant", "rate_pct", "pitch_pct",
         "length_scale", "noise_scale", "noise_w",
     ]
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
@@ -202,6 +203,7 @@ def main() -> int:
                 "duration_s": f"{row['duration']:.3f}",
                 "peak_db": f"{row['peak_db']:.1f}",
                 "rms_db": f"{row['rms_db']:.1f}",
+                "clipped": row["clipped"],
                 "text": row["text"],
                 "has_luna": int(row["has_luna"]),
                 "has_hey": int(row["has_hey"]),

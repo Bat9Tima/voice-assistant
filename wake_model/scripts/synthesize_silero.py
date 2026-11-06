@@ -46,21 +46,30 @@ def load_model(version: str):
     return model
 
 
-def ssml_for(variant: str, text: str, break_ms: int) -> tuple[str | None, str | None]:
+def ssml_for(variant: str, text: str, break_ms: int,
+             rate_value: float, pitch_value: float
+             ) -> tuple[str | None, str | None]:
     """Возвращает (text, ssml_text) для apply_tts."""
     clean = escape(text)
-    if variant == "slow":
-        return None, f'<speak><prosody rate="slow">{clean}</prosody></speak>'
-    if variant == "fast":
-        return None, f'<speak><prosody rate="fast">{clean}</prosody></speak>'
+    inner = clean
     if variant == "break":
         words = text.split()
         if len(words) < 2:
             return text, None
         first = escape(words[0])
         rest = escape(" ".join(words[1:]))
-        return None, f'<speak>{first}<break time="{break_ms}ms"/>{rest}</speak>'
-    return text, None
+        inner = f'{first}<break time="{break_ms}ms"/>{rest}'
+    attrs = []
+    if abs(rate_value - 1.0) > 1e-4:
+        attrs.append(f'rate="{rate_value * 100:.0f}%"')
+    if abs(pitch_value) > 1e-4:
+        sign = "+" if pitch_value > 0 else "-"
+        attrs.append(f'pitch="{sign}{abs(pitch_value) * 100:.0f}%"')
+    if not attrs and variant != "break":
+        return text, None
+    prosody = f'<prosody {" ".join(attrs)}>' if attrs else ""
+    close = "</prosody>" if attrs else ""
+    return None, f"<speak>{prosody}{inner}{close}</speak>"
 
 
 def write_wav(path: Path, pcm: np.ndarray, rate: int) -> None:
@@ -136,6 +145,7 @@ def main() -> int:
     variants = args.variant or profile["variants"]
     combos = [(voice, variant) for variant in variants for voice in voices]
     break_range = profile.get("break_ms", [150, 400])
+    pitch_range = profile.get("pitch", [0.0, 0.0])
     rng = random.Random(args.seed)
 
     torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
@@ -146,7 +156,10 @@ def main() -> int:
     for index in range(args.count):
         voice, variant = combos[index % len(combos)]
         break_ms = rng.randint(*break_range)
-        text, ssml = ssml_for(variant, args.text, break_ms)
+        rate_value = rng.uniform(*profile["rate"].get(variant, [1.0, 1.0]))
+        pitch_value = rng.uniform(*pitch_range)
+        text, ssml = ssml_for(variant, args.text, break_ms,
+                              rate_value, pitch_value)
         if ssml:
             audio = model.apply_tts(ssml_text=ssml, speaker=voice,
                                     sample_rate=PIPER_RATE)
@@ -172,6 +185,8 @@ def main() -> int:
             "file": name,
             "voice": voice,
             "variant": variant,
+            "rate_pct": f"{rate_value * 100:.0f}",
+            "pitch_pct": f"{pitch_value * 100:+.1f}",
             "text": args.text,
             "break_ms": break_ms if variant == "break" else "",
             "duration_s": f"{len(pcm) / rate:.3f}",
