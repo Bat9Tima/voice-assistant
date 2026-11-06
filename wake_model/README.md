@@ -20,8 +20,8 @@
 - Supertonic 3: современный локальный ONNX-TTS на 31 язык, 10 голосов
   (F1–F5, M1–M5), русский поддерживается. Пробные 30 клипов: GigaAM
   слышит в основном слитное «хейлуна», точное совпадение 6/30; это
-  нормальное слияние слов, а не ошибка произношения. Решение — за
-  прослушиванием.
+  нормальное слияние слов, а не ошибка произношения. По прослушиванию
+  прошли **M1, M2, M5**.
 - Silero v5_cis_base: 29 голосов `ru_*` (носители из СНГ, у части акцент).
   После автоматического QC и прослушивания в шортлисте 11 голосов:
   albina, marat, nurgul, oksana, vika, aigul, alfia, eduard, roman,
@@ -33,10 +33,10 @@
   и 58 клипов Silero CIS; автоматическая проверка (длительность, пик,
   клиппинг, GigaAM) и страницы для прослушивания.
 
-Итог по голосам для синтетики этапа 1: **6 подтверждённых** — Silero
+Итог по голосам для синтетики этапа 1: **9 подтверждённых** — Silero
 aidar, baya, eugene, xenia (все темпы) + Piper irina, ruslan (только
-номинальный темп, `length_scale` ≈ 1.0). Сверху — 10 голосов Supertonic
-и 11 голосов Silero CIS в статусе прослушивания. Даже с ними этап 2
+номинальный темп, `length_scale` ≈ 1.0) + Supertonic M1, M2, M5. Сверху —
+11 голосов Silero CIS в статусе прослушивания. Даже с ними этап 2
 (реальные 3–5 голосов) остаётся обязательным.
 
 ## Результаты QC
@@ -88,6 +88,7 @@ Supertonic 3, 30 клипов (`data/supertonic_probe/qc_report.txt`):
 18 из 30 клипов GigaAM записала как «хейлуна» — слова слились, отдельной
 ошибки «кей» нет. По вариантам точных совпадений: plain 4/10, slow 1/10,
 fast 1/10; медленный и быстрый темп стоит сузить после прослушивания.
+По прослушиванию выбраны **M1, M2, M5**.
 
 Silero v5_cis_base, 58 клипов (`data/silero_cis_probe/qc_report.txt`):
 
@@ -125,7 +126,7 @@ wake_model/
 │   ├── setup.ps1            venv + Piper + голоса
 │   ├── synthesize.py        синтез Piper (irina/ruslan)
 │   ├── synthesize_silero.py синтез Silero (4 голоса, SSML)
-│   ├── synthesize_supertonic.py синтез Supertonic (10 голосов)
+│   ├── synthesize_supertonic.py синтез Supertonic (M1/M2/M5)
 │   └── check_qc.py          длительность, пик, клиппинг, GigaAM
 ├── data/                    клипы и отчёты (gitignore)
 ├── features/                memmap фич (gitignore)
@@ -150,9 +151,9 @@ powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 9 --out wake_model\data\silero_probe_new
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_probe_new
 
-# Supertonic: 30 клипов, 10 голосов × plain/slow/fast
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 30 --out wake_model\data\supertonic_probe --clean
-.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe
+# Supertonic: 9 клипов, M1/M2/M5 × plain/slow/fast
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 9 --out wake_model\data\supertonic_probe_new --clean
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe_new
 ```
 
 ## Версии
@@ -177,7 +178,7 @@ OpenRAIL-M (использование с ограничениями, для л�
 
 Этап 1: 3–10 тыс. синтетических «хей луна» на подтверждённых голосах
 Silero (aidar/baya/eugene/xenia) с вариантами `plain`, `slow`, `fast`,
-`break`. После прослушивания к ним добавятся голоса Supertonic 3 и
-Silero v5_cis_base; Piper irina/ruslan — небольшая добавка только при
-`length_scale` ≈ 1.0. Затем аугментации (скорость, питч, шум, RIR) и
+`break`, Supertonic (M1/M2/M5) и Piper irina/ruslan (только
+`length_scale` ≈ 1.0). После прослушивания к ним могут добавиться голоса
+Silero v5_cis_base. Затем аугментации (скорость, питч, шум, RIR) и
 реальные записи этапа 2.
