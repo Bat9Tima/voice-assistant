@@ -574,6 +574,31 @@ energy_threshold» — она считается по нижнему проце�
 
 Лог: `logs\assistant.log` (открывается из меню трея).
 
+### Оценка wake word и команды
+
+Датасет пишется по `tools\record_dataset\README.md` (план A–O, сессии s1–s7).
+Потом:
+
+```powershell
+.\.venv\Scripts\python.exe tools\record_dataset\qc.py
+.\.venv\Scripts\python.exe tools\wake_eval.py --json results.json
+.\.venv\Scripts\python.exe tools\verify_all.py        # wake + команды целиком
+```
+
+- `qc.py` проверяет формат и уровни, пишет `qc_report.txt` рядом с датасетом.
+- `wake_eval.py` меряет FRR (пропущенные «хей луна») и FAR (ложные
+  срабатывания), с разбивкой по блокам, условиям (тишина/вентилятор/музыка/ТВ)
+  и дистанции. Ориентир: FRR до ~10% на 2–3 м терпимо, FAR важнее держать
+  низким — ложные будят ассистента.
+- Руководствуйся решением: если после блоков M/N FAR/FRR не устраивают —
+  пора обучать openWakeWord, ориентир 3–5 голосов, 300+ позитивов.
+
+Бэкап датасета (безопасно: только читает, пишет zip в соседнюю папку):
+
+```powershell
+.\.venv\Scripts\python.exe tools\backup_dataset.py
+```
+
 ## Как это устроено
 
 ```

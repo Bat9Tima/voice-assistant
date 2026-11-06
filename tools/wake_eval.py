@@ -48,6 +48,11 @@ def read_pcm(path: Path) -> bytes | None:
 
 
 def feed(det: WakeWordDetector, pcm: bytes) -> bool:
+    """Прогоняет аудио непрерывным потоком шагами по 0.5 с.
+
+    Хвостовой кусок короче шага не подаётся: датасетные файлы всегда
+    длиннее 0.5 с, а недостающие байты компенсирует TAIL_SILENCE.
+    """
     hit = False
     for i in range(0, len(pcm) - STEP + 1, STEP):
         if det.feed(pcm[i:i + STEP]):
@@ -104,38 +109,28 @@ def group_report(
         print(f"    {key:<16} {rate(hits, len(rows))}")
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Оценка Vosk wake word")
     parser.add_argument("--labels", type=Path,
                         default=DEFAULT_DATASET / "labels.csv")
     parser.add_argument("--audio", type=Path, default=None)
     parser.add_argument("--json", type=Path, default=None)
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
+
+def resolve_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     labels_path = args.labels.expanduser().resolve()
     audio = (args.audio or labels_path.parent / "audio").expanduser().resolve()
-    if not labels_path.exists():
-        print(f"Нет файла разметки: {labels_path}")
-        return 2
-    if not audio.exists():
-        print(f"Нет папки с аудио: {audio}")
-        return 2
+    return labels_path, audio
 
-    with open(labels_path, encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f, delimiter=";"))
-    rows = [r for r in rows if (audio / r["file"]).exists()]
-    if not rows:
-        print("В разметке нет файлов, которые есть в audio/.")
-        return 2
 
-    logging.basicConfig(level=logging.WARNING)
-    cfg = load_config()
-    det = WakeWordDetector(
-        VOSK_DIR,
-        cfg["wake_aliases"],
-        sample_rate=int(cfg["audio"]["sample_rate"]),
-        confusables=cfg.get("wake_confusables") or [],
-    )
+def evaluate(
+    rows: list[dict],
+    audio: Path,
+    det: WakeWordDetector,
+    labels_path: Path | None = None,
+) -> tuple[list[dict], list[dict], dict]:
+    """Прогоняет разметку через детектор, возвращает (позитивы, негативы, json)."""
     feed(det, LEAD_SILENCE * 2)
 
     positives: list[dict] = []
@@ -160,6 +155,27 @@ def main() -> int:
             "hit": detect(det, pcm),
         })
 
+    misses = [item for item in positives if not item["hit"]]
+    false = [item for item in negatives if item["hit"]]
+    payload = {
+        "labels": str(labels_path) if labels_path
+        else str(audio.parent / "labels.csv"),
+        "positives": len(positives),
+        "negatives": len(negatives),
+        "misses": [item["file"] for item in misses],
+        "false_accepts": [item["file"] for item in false],
+        "frr": len(misses) / len(positives) if positives else None,
+        "far": len(false) / len(negatives) if negatives else None,
+    }
+    return positives, negatives, payload
+
+
+def print_report(
+    labels_path: Path,
+    positives: list[dict],
+    negatives: list[dict],
+    payload: dict,
+) -> None:
     misses = [item for item in positives if not item["hit"]]
     false = [item for item in negatives if item["hit"]]
 
@@ -190,20 +206,45 @@ def main() -> int:
             print(f"    {item['file']}: {item['block']}, "
                   f"{item['condition']}, {item['distance']}")
 
+
+def write_json(path: Path, payload: dict) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    labels_path, audio = resolve_paths(args)
+    if not labels_path.exists():
+        print(f"Нет файла разметки: {labels_path}")
+        return 2
+    if not audio.exists():
+        print(f"Нет папки с аудио: {audio}")
+        return 2
+
+    with open(labels_path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f, delimiter=";"))
+    rows = [r for r in rows if (audio / r["file"]).exists()]
+    if not rows:
+        print("В разметке нет файлов, которые есть в audio/.")
+        return 2
+
+    logging.basicConfig(level=logging.WARNING)
+    cfg = load_config()
+    det = WakeWordDetector(
+        VOSK_DIR,
+        cfg["wake_aliases"],
+        sample_rate=int(cfg["audio"]["sample_rate"]),
+        confusables=cfg.get("wake_confusables") or [],
+    )
+    positives, negatives, payload = evaluate(
+        rows, audio, det, labels_path=labels_path)
+    print_report(labels_path, positives, negatives, payload)
+
     if args.json:
-        payload = {
-            "labels": str(labels_path),
-            "positives": len(positives),
-            "negatives": len(negatives),
-            "misses": [item["file"] for item in misses],
-            "false_accepts": [item["file"] for item in false],
-            "frr": len(misses) / len(positives) if positives else None,
-            "far": len(false) / len(negatives) if negatives else None,
-        }
-        args.json.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json(args.json, payload)
         print(f"\nJSON: {args.json}")
     return 0
 
