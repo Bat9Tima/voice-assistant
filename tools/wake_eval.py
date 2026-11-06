@@ -148,7 +148,8 @@ def evaluate(
         target.append({
             "file": row["file"],
             "block": row.get("block") or "?",
-            "condition": row.get("condition") or "unknown",
+            # Старые A–L писались в тишине и не содержат колонки condition.
+            "condition": row.get("condition") or "silence",
             "distance": distance_label(row.get("distance_cm")),
             "level": row.get("level") or "?",
             "hit": detect(det, pcm),

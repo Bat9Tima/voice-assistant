@@ -27,10 +27,23 @@ REPORT = BASE / "qc_report.txt"
 
 LEVEL_RANGES = record.LEVEL_RANGES
 FRAME = int(0.02 * record.RATE)
+# Старые A–L не содержат этих колонок; пусто = запись в тишине, собой, в комнате.
+DEFAULTS = {
+    "condition": record.DEFAULT_CONDITION,
+    "speaker": record.DEFAULT_SPEAKER,
+    "room": record.DEFAULT_ROOM,
+}
 
 
 def dbfs(value: float) -> float:
     return 20.0 * np.log10(max(float(value), 1e-9))
+
+
+def same_label_value(key: str, actual: str, wanted: str) -> bool:
+    """Совпадает ли значение разметки с планом (пустое = default для A–L)."""
+    if actual.strip() == wanted:
+        return True
+    return not actual.strip() and wanted == DEFAULTS.get(key)
 
 
 def read_wav(path: Path) -> tuple[np.ndarray, dict]:
@@ -139,7 +152,13 @@ def main() -> int:
                 # В старых labels.csv новых колонок ещё нет — не считаем это ошибкой.
                 if key not in row:
                     continue
-                if str(row.get(key, "")) != str(expected.get(key, "")):
+                actual = str(row.get(key, ""))
+                wanted = str(expected.get(key, ""))
+                # Старые строки A–L писались до появления condition/speaker/room:
+                # пустое значение там означает условие плана по умолчанию.
+                if same_label_value(key, actual, wanted):
+                    continue
+                if actual != wanted:
                     labels_mismatch.append(
                         f"{name}: {key} = {row.get(key)!r}, "
                         f"в плане {expected.get(key)!r}"

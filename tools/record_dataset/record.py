@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import shutil
 import sys
 import time
 import wave
@@ -199,7 +200,8 @@ HINTS = {
     "J": "Голосом, обычная громкость. Цифру называйте словом.",
     "K": "Обычный голос. Это команды из повседневного набора.",
     "L": "Это НЕ должно срабатывать. Говорите как обычно.",
-    "M": "Wake word в разных условиях. Соблюдайте дистанцию и фон из пометки.",
+    "M": "Wake word в разных условиях. Стоять на месте, лицом к микрофону; "
+         "оба слова одинаково громко. Соблюдайте дистанцию и фон из пометки.",
     "N": "Это НЕ должно срабатывать. Говорите как обычно; для «ФОН» — просто включите фон.",
     "O": "Команды в фоне и на расстоянии. Говорите как всегда.",
 }
@@ -847,18 +849,61 @@ def cmd_calibrate() -> None:
         mic.stop()
 
 
-def cmd_record(session: str) -> None:
-    rows = load_plan(rebuild=False)
+def parse_only(tokens: list[str]) -> tuple[set[int], set[str]]:
+    """Разбирает --only: номера дублей и/или имена файлов без .wav."""
+    indices: set[int] = set()
+    names: set[str] = set()
+    for token in tokens:
+        token = token.strip()
+        if not token or not any(ch.isalnum() for ch in token):
+            continue
+        if token.isdigit():
+            indices.add(int(token))
+            continue
+        name = Path(token).name
+        if name.lower().endswith(".wav"):
+            name = name[:-4]
+        names.add(name)
+    return indices, names
+
+
+def select_rows(rows: list[dict], session: str = "all",
+                only: list[str] | None = None) -> list[dict]:
+    """Строки плана для сессии; при --only — только указанные дубли."""
     selected = [
         row for row in rows
         if session == "all" or row["session"] == session
     ]
-    pending = [row for row in selected if row["status"] != "done"]
+    if not only:
+        return selected
+    indices, names = parse_only(only)
+    return [
+        row for row in selected
+        if int(row["index"]) in indices
+        or str(row["file"]) in names
+        or Path(str(row["file"])).stem in names
+    ]
+
+
+def cmd_record(session: str, only: list[str] | None = None) -> None:
+    rows = load_plan(rebuild=False)
+    selected = select_rows(rows, session, only)
+    if only:
+        pending = selected
+        print(f"Перезапись: {len(pending)} из {len(rows)}")
+    else:
+        pending = [row for row in selected if row["status"] != "done"]
     if not pending:
-        print(f"Сессия {session}: всё уже записано.")
+        if only:
+            print(f"Не найдено дублей: {', '.join(only)}")
+        else:
+            print(f"Сессия {session}: всё уже записано.")
         return
 
-    print(f"Сессия {session}: осталось {len(pending)} из {len(selected)}")
+    if only:
+        print("Старые файлы сохраняются в _redo.")
+    else:
+        print(f"Сессия {session}: осталось {len(pending)} из {len(selected)}")
     print("Пробел — запись/стоп. После старта подождите полсекунды и говорите.")
 
     mic = make_mic()
@@ -954,7 +999,16 @@ def cmd_record(session: str) -> None:
                     write_csv(rows)
                     break
 
-                save_wav(OUT / "audio" / row["file"], out)
+                if only:
+                    # Перезапись по --only: старый дубль не теряем.
+                    target = OUT / "audio" / row["file"]
+                    backup = OUT / "_redo" / row["file"]
+                    if target.exists() and not backup.exists():
+                        backup.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(target, backup)
+                    save_wav(target, out)
+                else:
+                    save_wav(OUT / "audio" / row["file"], out)
                 row["status"] = "done"
                 row["peak_db"] = f"{peak:.1f}"
                 row["rms_db"] = f"{rms:.1f}"
@@ -984,6 +1038,8 @@ def main() -> int:
                         help="добавить второй круг (2 м, цифры, новые команды)")
     parser.add_argument("--extend3", action="store_true",
                         help="добавить третий круг (wake в условиях, негативы, команды в фоне)")
+    parser.add_argument("--only", default="",
+                        help="перезаписать конкретные дубли: номера или имена через запятую")
     args = parser.parse_args()
 
     global OUT
@@ -1015,7 +1071,8 @@ def main() -> int:
     if session not in ("all", "s1", "s2", "s3", "s4", "s5", "s6", "s7"):
         print("Сессия: s1–s7 или all")
         return 1
-    cmd_record(session)
+    only = [part for part in args.only.replace(";", ",").split(",") if part.strip()]
+    cmd_record(session, only)
     return 0
 
 

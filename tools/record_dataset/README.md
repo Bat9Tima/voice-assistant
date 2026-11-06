@@ -25,7 +25,11 @@ start.cmd --extend       добавить второй круг (2 м, цифр�
 start.cmd --session s4  записать второй круг
 start.cmd --extend3      добавить третий круг (M/N/O: условия, негативы, команды)
 start.cmd --session s5  записать wake в условиях
+start.cmd --only 168,169,170   перезаписать конкретные дубли (номера или имена)
 ```
+
+При `--only` старые файлы сохраняются в `_redo\`, а выбранные дубли
+записываются заново независимо от статуса `done`.
 
 Датасет по умолчанию: `C:\Users\TimAS\Documents\VoiceDataset`
 (папка `audio\`, файлы `labels.csv` и `environment.txt`).
