@@ -49,12 +49,15 @@ def read_pcm(path: Path) -> bytes | None:
 def feed(det: WakeWordDetector, pcm: bytes) -> bool:
     """Прогоняет аудио непрерывным потоком шагами по 0.5 с.
 
-    Хвостовой кусок короче шага не подаётся: датасетные файлы всегда
-    длиннее 0.5 с, а недостающие байты компенсирует TAIL_SILENCE.
+    Последний неполный кусок дополняется тишиной: Vosk ждёт непрерывный
+    поток, а без хвоста фраза у самого конца файла может не распознаться.
     """
     hit = False
-    for i in range(0, len(pcm) - STEP + 1, STEP):
-        if det.feed(pcm[i:i + STEP]):
+    for i in range(0, len(pcm), STEP):
+        chunk = pcm[i:i + STEP]
+        if len(chunk) < STEP:
+            chunk += b"\x00" * (STEP - len(chunk))
+        if det.feed(chunk):
             hit = True
     return hit
 

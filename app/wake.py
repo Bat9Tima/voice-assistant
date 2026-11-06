@@ -40,20 +40,26 @@ class WakeWordDetector:
         if not self.aliases:
             raise ValueError("В config.json не заданы wake_aliases")
 
+        self.sample_rate = int(sample_rate)
         vosk.SetLogLevel(-1)
         self.model = vosk.Model(str(model_dir))
         # Если в грамматике только «луна», декодер обязан услышать её даже
         # в «уна» или «дума». Похожие слова дают ему альтернативу.
         extra = [normalize(word) for word in (confusables or []) if normalize(word)]
         vocabulary = list(dict.fromkeys([*self.aliases, *extra]))
-        grammar = json.dumps([*vocabulary, "[unk]"], ensure_ascii=False)
-        self.recognizer = vosk.KaldiRecognizer(self.model, sample_rate, grammar)
-        self.recognizer.SetWords(True)
+        self.grammar = json.dumps([*vocabulary, "[unk]"], ensure_ascii=False)
+        self.recognizer = self._new_recognizer()
         log.info(
             "Детектор ключевого слова готов: %s (похожих слов: %d)",
             ", ".join(self.aliases),
             len(extra),
         )
+
+    def _new_recognizer(self):
+        recognizer = vosk.KaldiRecognizer(
+            self.model, self.sample_rate, self.grammar)
+        recognizer.SetWords(True)
+        return recognizer
 
     def feed(self, pcm: bytes) -> bool:
         if not pcm:
@@ -73,7 +79,10 @@ class WakeWordDetector:
         return False
 
     def reset(self) -> None:
-        self.recognizer.Reset()
+        # Vosk Reset() оставляет часть состояния: после команды следующая
+        # фраза может распознаться хуже. Новый recognizer стоит доли мс,
+        # зато поток начинается с чистого листа.
+        self.recognizer = self._new_recognizer()
 
 
 class OpenWakeWordDetector:

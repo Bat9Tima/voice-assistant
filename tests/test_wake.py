@@ -57,6 +57,16 @@ class WakeMatchTest(unittest.TestCase):
         self.assertFalse(self.detector("луна").feed(b""))
 
 
+class WakeResetTest(unittest.TestCase):
+    def test_reset_creates_fresh_recognizer(self) -> None:
+        detector = WakeWordDetector.__new__(WakeWordDetector)
+        detector.recognizer = object()
+        created = object()
+        detector._new_recognizer = lambda: created
+        detector.reset()
+        self.assertIs(detector.recognizer, created)
+
+
 class FakeOpenWakeWordModel:
     def __init__(self, score: float) -> None:
         self.score = score

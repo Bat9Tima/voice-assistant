@@ -139,7 +139,13 @@ class HelpersTest(unittest.TestCase):
         det = StubDetector()
         pcm = b"\x01\x02" * 10000  # 20000 байт = 2 полных шага + 4000 остатка
         self.assertFalse(we.feed(det, pcm))
-        self.assertEqual(det.sizes, [STEP, STEP])
+        self.assertEqual(det.sizes, [STEP, STEP, STEP])
+
+    def test_feed_pads_last_chunk_with_silence(self) -> None:
+        det = StubDetector()
+        pcm = b"\x01\x02" * 1000  # 2000 байт — меньше шага
+        self.assertFalse(we.feed(det, pcm))
+        self.assertEqual(det.sizes, [STEP])
 
     def test_feed_propagates_hit_from_any_chunk(self) -> None:
         det = StubDetector()
@@ -155,10 +161,9 @@ class HelpersTest(unittest.TestCase):
         hit = we.detect(det, pcm)
         self.assertFalse(hit)
         self.assertEqual(det.resets, 2)
-        # lead 32 000 -> 4 шага, pcm короче шага не подаётся вовсе
-        # (в датасете файлы ≥ 1.5 с, хвостовой <0.5 с остаток не влияет),
+        # lead 32 000 -> 4 шага, pcm 2 000 -> один дополненный шаг,
         # tail 32 000 -> ещё 4 шага.
-        self.assertEqual(det.sizes, [STEP] * 8)
+        self.assertEqual(det.sizes, [STEP] * 9)
 
 
 class EvaluateTest(DatasetTestCase):
