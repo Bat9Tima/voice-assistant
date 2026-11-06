@@ -1,8 +1,9 @@
 # wake_model — своя модель openWakeWord «хей луна»
 
-Этап 0 «Окружение» выполнен 6 ноября 2026. Полный план —
-`docs/openwakeword_plan.md`. Vosk пока остаётся основным wake-движком;
-эта папка не влияет на работу ассистента.
+Этап 0 «Окружение» и этап 1 «Синтетические позитивы» выполнены
+6–7 ноября 2026. Полный план — `docs/openwakeword_plan.md`. Vosk пока
+остаётся основным wake-движком; эта папка не влияет на работу ассистента.
+Этап 2 (реальные записи) не начат.
 
 ## Что готово
 
@@ -34,8 +35,34 @@
   и 58 клипов Silero CIS; автоматическая проверка (длительность, пик,
   клиппинг, GigaAM) и страницы для прослушивания.
 
+## Этап 1: синтетические позитивы
+
+Сгенерировано **4320** клипов «хей луна», после QC в manifest оставлено
+**3353** (78 %), из них точное совпадение по ASR — 2452 (73 %):
+
+| Источник | Голосов | Оставлено | Точно «хей луна» |
+|---|---:|---:|---:|
+| Silero v5_ru | 4 | 1406 | 953 |
+| Silero v5_cis_base | 8 | 1434 | 1166 |
+| Supertonic 3 | 1 | 238 | 94 |
+| Piper | 1 | 275 | 239 |
+
+По голосам: aidar 342, baya 359, eugene 360, xenia 345, marat/nurgul/
+oksana/alfia по 200, vika 183, aigul 182, roman 180, M5 238, irina 275,
+zhadyra 89. Клипов zhadyra меньше: её `plain` часто проглатывает «лу»,
+поэтому добор шёл только в `slow`.
+
+Silero детерминирован: 3353 клипа — это 1069 уникальных волн, остальное
+повторы SSML-настроек. Повторы не удаляются: на этапе 4 они получат
+разные аугментации (темп, питч, шум, RIR). При разбиении train/val/test
+учитывать хеш исходной волны, чтобы копии не попали в разные выборки.
+
+QC-отчёт: `data/positives_tts/*/qc_report.txt`, manifest:
+`data/positives_tts/manifest.csv` (локально, gitignore).
+
 Итог по голосам для синтетики этапа 1: **14 подтверждённых** — Silero
-v5_ru aidar, baya, eugene, xenia (все темпы) + Silero v5_cis_base marat,
+v5_ru aidar, baya, eugene, xenia (plain/slow/break; `fast` отбракован
+после массового QC) + Silero v5_cis_base marat,
 nurgul, oksana, vika, aigul, alfia, roman, zhadyra (plain/slow) + Piper
 irina (только номинальный темп, `length_scale` ≈ 1.0) + Supertonic M5
 (все темпы). Непроверенных кандидатов не осталось. Этап 2 (реальные
@@ -68,8 +95,9 @@ Silero, 20 клипов (`data/silero_probe/qc_report.txt`):
 | kseniya | 4 | 0 | 1 |
 
 Первый прогон делался на всех пяти голосах и четырёх вариантах. По
-прослушиванию в `config.yaml` оставлены aidar/baya/eugene/xenia и все
-четыре варианта; kseniya отбракована. GigaAM ошибается и на реальных
+прослушиванию в `config.yaml` оставлены aidar/baya/eugene/xenia;
+kseniya отбракована. Позже массовый QC забраковал вариант `fast` —
+на нём часто проглатывается «лу». GigaAM ошибается и на реальных
 записях, поэтому это фильтр, а не приговор; окончательное решение — за
 прослушиванием.
 
@@ -120,6 +148,8 @@ Piper Puriso, 6 клипов (`data/puriso_probe/qc_report.txt`): 0/6 точны
   в шортлисте.
 - `data/listen_control.html` — контрольный список: 14 подтверждённых
   голосов, кандидатов не осталось.
+- `data/positives_tts/listen_samples.html` — выборочный контроль этапа 1:
+  по два клипа на голос.
 
 ## Структура
 
@@ -154,8 +184,8 @@ powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 .\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 100 --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\piper_qc
 
-# Silero v5_ru: 16 клипов, 4 голоса × plain/slow/fast/break
-wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 16 --out wake_model\data\silero_probe_new --clean
+# Silero v5_ru: 12 клипов, 4 голоса × plain/slow/break
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 12 --out wake_model\data\silero_probe_new --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\silero_probe_new
 
 # Silero v5_cis_base: 16 клипов, 8 голосов × plain/slow
@@ -166,17 +196,26 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --pr
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 3 --out wake_model\data\supertonic_probe_new --clean
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\supertonic_probe_new
 
-# Этап 1: около 3040 синтетических позитивов на 14 голосах
+# Этап 1: 4320 синтетических позитивов на 14 голосах.
+# База — 3040 клипов:
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 1280 --out wake_model\data\positives_tts\silero_ru --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --count 1280 --out wake_model\data\positives_tts\silero_cis --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_supertonic.py --count 240 --out wake_model\data\positives_tts\supertonic --clean
 .\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 240 --out wake_model\data\positives_tts\piper --clean --no-html
+
+# Добор — 1280 клипов (Silero 480, CIS slow 320, Piper 480):
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --count 480 --seed 1 --out wake_model\data\positives_tts\silero_ru_extra --clean
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --profile cis --variant slow --count 320 --seed 1 --out wake_model\data\positives_tts\silero_cis_extra --clean
+.\.venv\Scripts\python.exe wake_model\scripts\synthesize.py --count 480 --seed 1 --out wake_model\data\positives_tts\piper_extra --clean --no-html
 
 # QC каждого каталога, затем единый manifest
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_ru
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_cis
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\supertonic
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\piper
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_ru_extra
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_cis_extra
+.\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\piper_extra
 .\.venv\Scripts\python.exe wake_model\scripts\collect_positives.py
 .\.venv\Scripts\python.exe wake_model\scripts\make_listen_positives.py
 ```
@@ -201,8 +240,11 @@ OpenRAIL-M (использование с ограничениями, для л�
 
 ## Дальше
 
-Этап 1: 3–10 тыс. синтетических «хей луна» на 14 подтверждённых голосах:
-Silero v5_ru (aidar/baya/eugene/xenia; `plain`, `slow`, `fast`, `break`),
-Silero v5_cis_base (8 голосов; `plain`, `slow`), Supertonic M5 (все
-темпы) и Piper irina (только `length_scale` ≈ 1.0). Затем аугментации
-(скорость, питч, шум, RIR) и реальные записи этапа 2.
+Этап 1 выполнен: 3353 чистых синтетических «хей луна» на 14 голосах
+(см. выше). Дальше:
+
+- этап 2 — 300–500 реальных позитивов от 3–5 человек (нужно разрешение
+  пользователя и сессии записи);
+- этап 3 — негативы: 20–50 ч ТВ/музыки/речи/улицы и публичные корпуса;
+- этап 4 — аугментации: скорость, питч, шум, RIR;
+- затем датасет, обучение на Colab и сравнение с Vosk.

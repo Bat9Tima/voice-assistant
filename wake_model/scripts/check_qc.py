@@ -209,7 +209,10 @@ def main() -> int:
                 "has_hey": int(row["has_hey"]),
                 "exact": int(row["exact"]),
             }
-            record.update({key: row["params"].get(key, "") for key in fields[9:]})
+            record.update({key: row["params"].get(key, "")
+                           for key in ("variant", "rate_pct", "pitch_pct",
+                                       "length_scale", "noise_scale",
+                                       "noise_w")})
             writer.writerow(record)
     print(f"По файлам: {csv_path}")
     return 1 if problems else 0

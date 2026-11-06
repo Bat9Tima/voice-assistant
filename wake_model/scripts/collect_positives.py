@@ -48,10 +48,14 @@ def main() -> int:
     parser.add_argument("--asr-exempt", action="append", default=["eugene"],
                         help="голоса, для которых GigaAM не фильтр "
                              "(по умолчанию eugene: его речь ASR слышит плохо)")
+    parser.add_argument("--drop", action="append", default=["silero_ru:fast"],
+                        help="исключить сочетание source:variant "
+                             "(по умолчанию silero_ru:fast)")
     args = parser.parse_args()
 
     root: Path = args.root
     exempt = set(args.asr_exempt)
+    dropped = set(args.drop)
     qc_files = sorted(root.glob("*/qc_files.csv"))
     if not qc_files:
         print(f"Нет qc_files.csv в {root}", file=sys.stderr)
@@ -66,6 +70,8 @@ def main() -> int:
             clipped = int(row.get("clipped") or 0)
             has_luna, has_hey, exact = classify(row.get("text", ""))
             reasons = []
+            if f"{source}:{row.get('variant', '')}" in dropped:
+                reasons.append("исключён вариант")
             if not (args.min_duration <= duration <= args.max_duration):
                 reasons.append("длительность")
             if not (args.min_peak <= peak <= args.max_peak):
