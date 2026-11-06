@@ -25,23 +25,52 @@ voices:
   - ru_RU-ruslan-medium
 
 # Основной синтез для обучения. Silero v5 даёт 5 голосов и SSML-управление
-# темпом/паузами; Piper остаётся дополнительным источником двух голосов.
+# темпом/паузами; Supertonic 3 — 10 современных голосов и параметр speed;
+# Piper остаётся дополнительным источником двух голосов.
+# Supertonic и Silero CIS пока кандидаты: решение после прослушивания.
 silero:
   model: v5_ru
-  # eugene и kseniya не прошли QC («силна/килуна»), fast — слишком быстро.
+  # kseniya не прошла прослушивание: «кей» во всех темпах.
+  # Остальные четыре голоса проверены на слух — годятся.
   voices:
     - aidar
     - baya
+    - eugene
     - xenia
   variants:
     - plain
     - slow
+    - fast
     - break
   break_ms: [150, 400]
 
+supertonic:
+  model: supertonic-3
+  voices:
+    - F1
+    - F2
+    - F3
+    - F4
+    - F5
+    - M1
+    - M2
+    - M3
+    - M4
+    - M5
+  variants:
+    - plain
+    - slow
+    - fast
+  speed:
+    plain: [0.98, 1.02]
+    slow: [0.90, 0.95]
+    fast: [1.05, 1.10]
+  total_steps: 8
+
 # Диапазоны для этапа 0 и синтетических позитивов этапа 1.
 synthesis:
-  length_scale: [0.8, 1.2]
+  # Piper ломает «хей» при изменении темпа, поэтому только около 1.0.
+  length_scale: [0.98, 1.02]
   noise_scale: [0.5, 0.8]
   noise_w: [0.6, 1.0]
   pause_probability: 0.25      # доля клипов «хей, луна» с паузой
