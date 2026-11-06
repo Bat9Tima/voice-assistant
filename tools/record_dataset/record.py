@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Гид по записи датасета для голосового ассистента.
 
 Пишет WAV 16 кГц / моно / 16 бит через тот же путь захвата, что и ассистент
@@ -944,7 +943,7 @@ def cmd_record(session: str) -> None:
                         "S — пропустить · Q — выход",
                         allowed=("space", "redo", "play", "skip", "quit"),
                     ),
-                    lambda: play(out),
+                    lambda out=out: play(out),
                 )
                 if result == "quit":
                     return

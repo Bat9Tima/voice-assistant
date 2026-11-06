@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Проверка живого пути без очистки микрофона: сигнал попадает в запись."""
 
 from __future__ import annotations
@@ -14,10 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from baseline import Router, expected_intent, intent_ok  # noqa: E402
+
 from app.config import load_config  # noqa: E402
 from app.stt import GigaAMTranscriber  # noqa: E402
 from app.text import strip_wake_word  # noqa: E402
-from baseline import Router, expected_intent, intent_ok  # noqa: E402
 
 AUDIO = Path.home() / "Documents" / "VoiceDataset" / "audio"
 ALIASES = ["хей луна", "эй луна"]

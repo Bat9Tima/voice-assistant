@@ -183,7 +183,7 @@ def _gigaam_words(
             current = []
             current_probs = []
 
-    for index, (token, timestamp) in enumerate(zip(tokens, timestamps)):
+    for index, (token, timestamp) in enumerate(zip(tokens, timestamps, strict=False)):
         token = str(token)
         timestamp = float(timestamp)
         probability = float(probs[index]) if index < len(probs) else 0.0
@@ -744,7 +744,7 @@ class ParallelTranscriber:
                 futures.append(self._executor.submit(self.locator.load))
             russian_future = futures[0]
             russian_future.result()
-            for name, future in zip(("english", "locator"), futures[1:]):
+            for name, future in zip(("english", "locator"), futures[1:], strict=False):
                 try:
                     future.result()
                 except Exception as exc:  # noqa: BLE001

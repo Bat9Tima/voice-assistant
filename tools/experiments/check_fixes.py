@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Проверка текстовых правок на уже распознанных текстах baseline.
 
 STT детерминирован, поэтому можно взять сохранённые тексты и прогнать
@@ -19,9 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from baseline import Router, expected_intent, intent_ok, word_error  # noqa: E402
+
 from app.config import load_config  # noqa: E402
 from app.text import normalize, strip_wake_word  # noqa: E402
-from baseline import Router, expected_intent, intent_ok, word_error  # noqa: E402
 
 ALIASES = ["хей луна", "хэй луна", "эй луна"]
 DATA = json.loads((ROOT / "tools" / "baseline_results.json").read_text(encoding="utf-8"))

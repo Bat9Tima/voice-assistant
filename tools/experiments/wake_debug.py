@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Диагностика одного файла: что слышит Vosk на разных уровнях громкости."""
 
 from __future__ import annotations

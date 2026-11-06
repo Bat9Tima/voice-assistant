@@ -112,7 +112,7 @@ class SileroVad:
         cls,
         model: str | Path | None = None,
         threshold: float = 0.5,
-    ) -> "SileroVad | None":
+    ) -> SileroVad | None:
         path = ensure_model(model)
         if path is None:
             return None

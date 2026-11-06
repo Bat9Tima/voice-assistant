@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Проверка: портит ли beep 880 Гц слово «саундклауда» в живой команде."""
 
 from __future__ import annotations

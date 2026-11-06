@@ -4,7 +4,6 @@ import argparse
 import logging
 import logging.handlers
 import math
-import os
 import queue
 import re
 import sys

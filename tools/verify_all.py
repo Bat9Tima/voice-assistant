@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Итоговая проверка после правок: wake + команды на всём датасете.
 
 Wake — настоящий WakeWordDetector из config.json в непрерывном потоке.
@@ -22,11 +21,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from baseline import Router, expected_intent, intent_ok, word_error  # noqa: E402
+
 from app.config import VOSK_DIR, load_config  # noqa: E402
 from app.stt import GigaAMTranscriber  # noqa: E402
 from app.text import canonicalize, normalize, strip_wake_word  # noqa: E402
 from app.wake import WakeWordDetector  # noqa: E402
-from baseline import Router, expected_intent, intent_ok, word_error  # noqa: E402
 
 AUDIO = Path.home() / "Documents" / "VoiceDataset" / "audio"
 SIL_1S = b"\x00\x00" * 16000
@@ -66,7 +66,6 @@ def main() -> int:
              encoding="utf-8-sig", newline=""),
         delimiter=";",
     ))
-    by_file = {r["file"]: r for r in labels}
     labels = [r for r in labels if (AUDIO / r["file"]).exists()]
     cache = {r["file"]: read_pcm(r["file"]) for r in labels}
     for block, label in (("M", "M условия"), ("N", "N негативы")):

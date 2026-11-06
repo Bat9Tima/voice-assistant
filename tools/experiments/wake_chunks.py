@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Почему конкретный файл не срабатывает: чанки и текст Vosk."""
 
 from __future__ import annotations

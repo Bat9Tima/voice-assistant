@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 import queue
@@ -53,7 +52,7 @@ class BrowserController(threading.Thread):
         self.last_error: str | None = None
 
     # ------------------------------------------------------------------ life
-    def start(self) -> "BrowserController":
+    def start(self) -> BrowserController:
         if not self._launched:
             self._launched = True
             super().start()

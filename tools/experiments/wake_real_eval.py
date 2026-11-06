@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Сравнение вариантов алиасов для настоящего WakeWordDetector."""
 
 from __future__ import annotations

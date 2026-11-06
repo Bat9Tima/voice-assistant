@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Подбор wake_confusables для Vosk на записанном датасете.
 
 Проверяем recall на настоящих «хей луна» и ложные срабатывания на H.
@@ -73,7 +72,7 @@ def main() -> int:
         rec = vosk.KaldiRecognizer(model, 16000, grammar)
         rec.SetWords(True)
 
-        def hit(name: str) -> bool:
+        def hit(name: str, rec=rec) -> bool:
             rec.Reset()
             pcm = cache[name]
             step = 4000
@@ -85,7 +84,7 @@ def main() -> int:
                 text = normalize(raw)
                 if text and any(
                     fuzzy_contains(text, alias, max_distance=limit)
-                    for alias, limit in zip(prepared, limits)
+                    for alias, limit in zip(prepared, limits, strict=False)
                 ):
                     return True
             return False

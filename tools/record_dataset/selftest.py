@@ -1,10 +1,8 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """Самотесты рекордера. Не трогают датасет: пишут только во временную папку."""
 
 from __future__ import annotations
 
-import math
 import sys
 import tempfile
 import wave

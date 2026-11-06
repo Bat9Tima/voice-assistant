@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """QC датасета: формат, уровни, обрезка, дубли, соответствие разметке.
 
 Только читает audio/ и labels.csv. Отчёт пишет рядом с датасетом:
@@ -267,7 +266,7 @@ def main() -> int:
             if not str(row.get(key) or "").strip():
                 issues["нет метаданных"].append(f"{row['file']}: {key}")
 
-    for digest, names in hashes.items():
+    for _digest, names in hashes.items():
         if len(names) > 1:
             issues["одинаковые файлы"].append(", ".join(names))
 
@@ -312,7 +311,6 @@ def main() -> int:
     add(f"{'блок':<5}{'N':>4}{'пик медиана':>14}{'SNR медиана':>14}"
         f"{'длит. медиана':>16}{'проблем':>10}")
     by_block: dict[str, list[dict]] = defaultdict(list)
-    flagged: Counter = Counter()
     for item in stats:
         by_block[item["block"]].append(item)
     for block in sorted(by_block):

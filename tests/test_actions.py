@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.actions import ActionRouter, VOLUME_STEP, parse_volume_percent
+from app.actions import VOLUME_STEP, ActionRouter, parse_volume_percent
 
 
 class FakeBrowser:
@@ -308,7 +308,7 @@ class SoundCloudNoiseFallbackTest(unittest.TestCase):
                 return {"ok": True, "data": {"tabs": tabs}}
             return {"ok": True, "data": {}}
 
-    def make_router(self, urls: list[str]) -> tuple[ActionRouter, "SoundCloudNoiseFallbackTest.TabsBrowser"]:
+    def make_router(self, urls: list[str]) -> tuple[ActionRouter, SoundCloudNoiseFallbackTest.TabsBrowser]:
         browser = self.TabsBrowser(urls)
         return ActionRouter({}, browser), browser
 

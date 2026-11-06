@@ -5,7 +5,6 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from app.actions import ActionRouter
 from app.dictionary import Dictionary, get_dictionary, reset_dictionary

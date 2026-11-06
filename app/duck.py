@@ -82,7 +82,7 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
         self._active = False
         self._lock = threading.RLock()
 
-    def __enter__(self) -> "AppVolumeDucker":
+    def __enter__(self) -> AppVolumeDucker:
         self.duck()
         return self
 

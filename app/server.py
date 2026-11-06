@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 
 log = logging.getLogger(__name__)
 
