@@ -140,6 +140,27 @@ class SessionTest(unittest.TestCase):
         self.assertEqual({path.name for path, _ in loaded},
                          {active.name, backup.name})
 
+    def test_resume_can_clear_limit(self) -> None:
+        from unittest.mock import patch
+
+        sessions = self.root / "sessions"
+        sessions.mkdir()
+        path = sessions / "anna_laptop.json"
+        session = {
+            "speaker": "anna",
+            "mic": "laptop",
+            "status": "paused",
+            "limit": 20,
+            "settings": {},
+            "plan": [dict(CELL)],
+            "takes": [],
+        }
+        path.write_text(json.dumps(session, ensure_ascii=False),
+                        encoding="utf-8")
+        with patch.object(rec, "run_session", return_value=0) as run:
+            self.assertEqual(rec.resume_latest(self.root, None, None, 0), 0)
+        self.assertEqual(run.call_args.args[0]["limit"], 0)
+
     def test_accepted_hashes_include_previous_sessions(self) -> None:
         sessions = self.root / "sessions"
         sessions.mkdir()

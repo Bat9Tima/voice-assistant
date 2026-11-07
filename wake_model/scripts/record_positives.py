@@ -844,7 +844,12 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
                 return 2
             if args.device:
                 session["device"] = args.device
-                save_session(path, session)
+            if args.limit is not None:
+                if int(args.limit) < 0:
+                    print("--limit должен быть ≥ 0", file=sys.stderr)
+                    return 2
+                session["limit"] = int(args.limit)
+            save_session(path, session)
             print(f"Продолжаю сессию {path.name}")
             return run_session(session, path, root)
         else:
@@ -861,7 +866,8 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
     if takes_per_cell < 1:
         print("--takes-per-cell должен быть ≥ 1", file=sys.stderr)
         return 2
-    if int(args.limit or 0) < 0:
+    limit = int(args.limit) if args.limit is not None else 0
+    if limit < 0:
         print("--limit должен быть ≥ 0", file=sys.stderr)
         return 2
     device_arg = args.device
@@ -905,7 +911,7 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
         "settings": settings,
         "calibration": calibration,
         "asr_hints": bool(args.asr_hints),
-        "limit": int(args.limit or 0),
+        "limit": limit,
         "plan": build_plan(speaker, mic, settings, takes_per_cell,
                            bool(args.with_extra), int(args.seed)),
         "takes": [],
@@ -916,7 +922,7 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
 
 
 def resume_latest(root: Path, explicit: Path | None,
-                  device: str | None) -> int:
+                  device: str | None, limit: int | None = None) -> int:
     path = explicit or find_latest_session(root)
     if path is None:
         print(f"Нет незавершённых сессий в {sessions_dir(root)}",
@@ -932,6 +938,11 @@ def resume_latest(root: Path, explicit: Path | None,
         return 2
     if device:
         session["device"] = device
+    if limit is not None:
+        if limit < 0:
+            print("--limit должен быть ≥ 0", file=sys.stderr)
+            return 2
+        session["limit"] = limit
     if session.get("status") == "complete" and next_cell(session) is None:
         print("Сессия уже завершена.")
         return 0
@@ -1345,8 +1356,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="каталог positives_real (по умолчанию data)")
     parser.add_argument("--takes-per-cell", type=int, default=None,
                         help="дублей на ячейку (по умолчанию 3)")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="остановиться после N принятых дублей")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="остановиться после N принятых дублей (0 — без лимита)")
     parser.add_argument("--with-extra", dest="with_extra",
                         action="store_true", default=True,
                         help="блок «эй луна» (по умолчанию включён)")
@@ -1387,7 +1398,7 @@ def main(argv: list[str] | None = None) -> int:
             return review(review_path.parent, review_path)
         return review(review_path)
     if args.resume:
-        return resume_latest(root, args.session, args.device)
+        return resume_latest(root, args.session, args.device, args.limit)
     if args.setup:
         if not args.speaker:
             print("Для --setup нужен --speaker", file=sys.stderr)

@@ -251,11 +251,20 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --pr
 
 # Этап 2: реальные записи (основной venv: sounddevice + GigaAM-QC)
 .\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --list-devices
-.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic laptop
-.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic studio --device "USB"
-.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --resume
+
+# Пилот: 20 дублей, затем QC и прослушивание
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic laptop --limit 20
 .\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --finalize
 .\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --review
+
+# Продолжить полную сессию: снять лимит
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --resume --limit 0
+
+# Второй микрофон: тот же пилот, затем полная сессия
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic studio --device "fifine" --limit 20
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --finalize
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --review
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --resume --limit 0
 ```
 
 ## Версии
