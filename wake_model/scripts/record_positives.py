@@ -12,9 +12,15 @@
     --review [ПУТЬ]         прослушать manifest и забраковать лишнее
     --finalize              raw → 16 кГц, обрезка, QC, manifest, страница
 
+По умолчанию --setup/--resume открывают локальную веб-страницу записи:
+селектор пары диктор × микрофон, прогресс только выбранной пары,
+кнопки «принять/переснять/брак» и плейбек. Флаги UI: --ui-port, --no-browser;
+старый консольный цикл — --console.
+
 Пример:
     python wake_model/scripts/record_positives.py --list-devices
     python wake_model/scripts/record_positives.py --setup --speaker anna --mic laptop
+    python wake_model/scripts/record_positives.py --resume --console
     python wake_model/scripts/record_positives.py --finalize
 """
 
@@ -30,11 +36,15 @@ import queue
 import random
 import re
 import sys
+import threading
 import time
 import wave
+import webbrowser
 from collections import Counter, defaultdict
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 import yaml
@@ -52,6 +62,7 @@ except ImportError:  # pragma: no cover - Windows only
     msvcrt = None
 
 RATE = 16000
+DEFAULT_UI_PORT = 8622
 HEY = {"хей", "хэй", "эй", "хэ", "хе", "ей", "ай", "а"}
 
 FIELDS = [
@@ -206,6 +217,28 @@ def next_cell(session: dict) -> dict | None:
         if cell["accepted"] < cell["target"]:
             return cell
     return None
+
+
+def cell_by_id(session: dict, cell_id: str) -> dict | None:
+    for cell in session["plan"]:
+        if cell["id"] == cell_id:
+            return cell
+    return None
+
+
+def run_status(session: dict) -> str:
+    """Статус прогона без изменения журнала."""
+    if next_cell(session) is None:
+        return "complete"
+    limit = int(session.get("limit") or 0)
+    if limit and total_accepted(session) >= limit:
+        return "paused"
+    return "active"
+
+
+def refresh_run_status(session: dict) -> str:
+    session["status"] = run_status(session)
+    return session["status"]
 
 
 # --------------------------------------------------------------------------
@@ -664,6 +697,52 @@ class AsrHints:
             return None
 
 
+def prepare_take(root: Path, session: dict, cell: dict, device: int | None,
+                 asr: AsrHints | None, known_hashes: set[str]) -> dict:
+    """Записывает дубль в raw/ и возвращает pending — без записи в журнал."""
+    settings = session["settings"]
+    take, name = next_take(root, session, cell)
+    pcm, rate = capture_take(device, float(settings["window_s"]),
+                             float(settings["countdown_s"]))
+    rel_file = f"raw/{name}"
+    write_wav(root / rel_file, pcm, rate)
+    metrics = pcm_metrics(pcm, rate, settings["trim_threshold_db"],
+                          settings["trim_padding"])
+    text = asr.text(pcm, rate) if asr is not None and asr.enabled else None
+    duplicate = metrics["pcm_md5"] in known_hashes
+    warnings = evaluate_take(metrics, text, duplicate, settings)
+    return {
+        "cell": cell["id"],
+        "take": take,
+        "file": rel_file,
+        "phrase": cell["phrase"],
+        "distance_m": cell["distance_m"],
+        "condition": cell["condition"],
+        "level": cell["level"],
+        "metrics": metrics,
+        "text": text,
+        "duplicate": duplicate,
+        "warnings": warnings,
+    }
+
+
+def apply_take_decision(session: dict, path: Path, pending: dict,
+                        decision: str, note: str = "",
+                        known_hashes: set[str] | None = None) -> None:
+    """Пишет решение по pending-дублю в журнал и сохраняет сессию."""
+    if decision not in ("accepted", "rejected"):
+        raise ValueError(f"Неизвестное решение: {decision}")
+    cell = cell_by_id(session, pending["cell"])
+    if cell is None:
+        raise ValueError(f"В журнале нет ячейки {pending['cell']}")
+    register_take(session, cell, int(pending["take"]), pending["file"],
+                  decision, pending["metrics"], note, pending["warnings"])
+    if decision == "accepted" and known_hashes is not None:
+        known_hashes.add(str(pending["metrics"]["pcm_md5"]))
+    refresh_run_status(session)
+    save_session(path, session)
+
+
 def level_hint(metrics: dict) -> str:
     """Подсказка по уровню пилота: −18…−3 dBFS — норма."""
     if metrics["clipped"]:
@@ -784,39 +863,25 @@ def run_session(session: dict, path: Path, root: Path) -> int:
         if key not in (" ", "\r", "\n"):
             continue
 
-        take, name = next_take(root, session, cell)
         print(f"  Запись {settings['window_s']:.1f} с…")
         try:
-            pcm, rate = capture_take(
-                device, float(settings["window_s"]),
-                float(settings["countdown_s"]))
+            pending = prepare_take(root, session, cell, device, asr,
+                                   known_hashes)
         except Exception as exc:
             print(f"Ошибка записи: {exc}")
             continue
 
-        rel_file = f"raw/{name}"
-        raw_path = root / rel_file
-        write_wav(raw_path, pcm, rate)
-        metrics = pcm_metrics(
-            pcm, rate, settings["trim_threshold_db"],
-            settings["trim_padding"])
-        text = asr.text(pcm, rate) if asr.enabled else None
-        duplicate = metrics["pcm_md5"] in known_hashes
-        warnings = evaluate_take(metrics, text, duplicate, settings)
-
-        decision, note = review_take(raw_path, metrics, warnings)
+        decision, note = review_take(
+            root / pending["file"], pending["metrics"], pending["warnings"])
         if decision == "quit":
-            register_take(session, cell, take, rel_file, "rejected",
-                          metrics, note, warnings)
+            apply_take_decision(session, path, pending, "rejected", note,
+                                known_hashes)
             session["status"] = "paused"
             save_session(path, session)
             print("Сессия приостановлена, продолжить: --resume")
             return 0
-        register_take(session, cell, take, rel_file, decision, metrics,
-                      note, warnings)
-        if decision == "accepted":
-            known_hashes.add(metrics["pcm_md5"])
-        save_session(path, session)
+        apply_take_decision(session, path, pending, decision, note,
+                            known_hashes)
         if decision == "accepted":
             print("  Принято.")
         else:
@@ -827,7 +892,7 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
     rec = recording_config(cfg)
     try:
         speaker = token(args.speaker, "--speaker")
-        mic = token(args.mic, "--mic")
+        mic = token(args.mic or "laptop", "--mic")
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -918,7 +983,9 @@ def start_session(args: argparse.Namespace, cfg: dict, root: Path) -> int:
     }
     save_session(path, session)
     print(f"Сессия: {path}")
-    return run_session(session, path, root)
+    if args.console:
+        return run_session(session, path, root)
+    return run_ui_session(root, path, args)
 
 
 def resume_latest(root: Path, explicit: Path | None,
@@ -949,6 +1016,858 @@ def resume_latest(root: Path, explicit: Path | None,
     session["status"] = "active"
     save_session(path, session)
     return run_session(session, path, root)
+
+
+# --------------------------------------------------------------------------
+# Веб-интерфейс записи
+# --------------------------------------------------------------------------
+
+def active_sessions(root: Path) -> list[tuple[Path, dict]]:
+    """Активные журналы (без архивных `.bak.json`), по возрастанию mtime."""
+    result: list[tuple[Path, dict]] = []
+    paths = sorted(sessions_dir(root).glob("*.json"),
+                   key=lambda p: p.stat().st_mtime)
+    for path in paths:
+        if "." in path.stem:
+            continue
+        try:
+            result.append((path, load_json(path)))
+        except Exception as exc:
+            print(f"Пропускаю битый журнал {path.name}: {exc}")
+    return result
+
+
+def session_snapshot(session: dict) -> dict:
+    """Состояние одной пары для страницы — без данных других пар."""
+    refresh_cells(session)
+    cells = []
+    done = 0
+    for cell in session["plan"]:
+        is_done = cell["accepted"] >= cell["target"]
+        done += int(is_done)
+        cells.append({
+            "id": cell["id"],
+            "phrase": cell["phrase"],
+            "distance_m": cell["distance_m"],
+            "condition": cell["condition"],
+            "level": cell["level"],
+            "accepted": cell["accepted"],
+            "target": cell["target"],
+            "done": is_done,
+        })
+    current = next_cell(session)
+    return {
+        "speaker": session["speaker"],
+        "mic": session["mic"],
+        "status": run_status(session),
+        "accepted": total_accepted(session),
+        "limit": int(session.get("limit") or 0),
+        "cells": cells,
+        "cells_done": done,
+        "cells_total": len(cells),
+        "current": None if current is None else {
+            "id": current["id"],
+            "phrase": current["phrase"],
+            "distance_m": current["distance_m"],
+            "condition": current["condition"],
+            "level": current["level"],
+            "accepted": current["accepted"],
+            "target": current["target"],
+        },
+        "noise_floor_db": (session.get("calibration") or {}).get(
+            "noise_floor_db"),
+        "target_min": int(session.get("settings", {}).get("target_min") or 0),
+        "target_max": int(session.get("settings", {}).get("target_max") or 0),
+    }
+
+
+def pending_snapshot(pending: dict | None) -> dict | None:
+    if pending is None:
+        return None
+    metrics = pending["metrics"]
+    return {
+        "file": pending["file"],
+        "audio_url": "/audio/" + pending["file"].replace("\\", "/"),
+        "take": int(pending["take"]),
+        "phrase": pending["phrase"],
+        "distance_m": pending["distance_m"],
+        "condition": pending["condition"],
+        "level": pending["level"],
+        "duration_s": round(float(metrics["duration_s"]), 2),
+        "speech_s": round(float(metrics["speech_s"]), 2),
+        "peak_db": round(float(metrics["peak_db"]), 1),
+        "rms_db": round(float(metrics["rms_db"]), 1),
+        "clipping": int(metrics["clipped"]),
+        "text": pending.get("text"),
+        "duplicate": bool(pending.get("duplicate")),
+        "warnings": list(pending.get("warnings") or []),
+    }
+
+
+class UIState:
+    """Все активные пары, выбранная пара и незавершённый дубль."""
+
+    def __init__(self, root: Path, sessions: list[tuple[Path, dict]],
+                 selected: Path) -> None:
+        self.root = root
+        self.lock = threading.RLock()
+        self.sessions = dict(sessions)
+        if selected not in self.sessions:
+            raise KeyError(f"Нет сессии {selected}")
+        self.selected = selected
+        self.pending: dict | None = None
+        self.known_hashes = accepted_hashes(root)
+        self.asr = AsrHints(False)
+        self.asr.enabled = bool(self.session.get("asr_hints"))
+
+    @property
+    def session(self) -> dict:
+        with self.lock:
+            return self.sessions[self.selected]
+
+    def index(self) -> list[dict]:
+        with self.lock:
+            items = [{
+                "speaker": session["speaker"],
+                "mic": session["mic"],
+                "status": run_status(session),
+                "accepted": total_accepted(session),
+                "limit": int(session.get("limit") or 0),
+            } for session in self.sessions.values()]
+        return sorted(items, key=lambda item: (item["speaker"], item["mic"]))
+
+    def selected_pair(self) -> dict:
+        with self.lock:
+            session = self.session
+            return {"speaker": session["speaker"], "mic": session["mic"]}
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return session_snapshot(self.session)
+
+    def pending_snapshot(self) -> dict | None:
+        with self.lock:
+            return pending_snapshot(self.pending)
+
+    def select(self, speaker: str, mic: str) -> None:
+        with self.lock:
+            if self.pending is not None:
+                raise RuntimeError(
+                    "Сначала примите, переснимите или отбросьте дубль")
+            for path, session in self.sessions.items():
+                if (session.get("speaker") == speaker
+                        and session.get("mic") == mic):
+                    self.selected = path
+                    return
+            raise KeyError(f"{speaker} × {mic}")
+
+    def record(self) -> None:
+        with self.lock:
+            if self.pending is not None:
+                raise RuntimeError(
+                    "Сначала примите, переснимите или отбросьте дубль")
+            session = self.session
+            status = run_status(session)
+            if status == "complete":
+                raise RuntimeError("План этой пары выполнен")
+            if status == "paused":
+                raise RuntimeError("Достигнут лимит принятых дублей")
+            cell = next_cell(session)
+            if cell is None:
+                raise RuntimeError("План этой пары выполнен")
+            try:
+                device = resolve_device(session.get("device"))
+            except ValueError as exc:
+                raise RuntimeError(f"Микрофон: {exc}") from exc
+            self.asr.enabled = bool(session.get("asr_hints"))
+            try:
+                self.pending = prepare_take(
+                    self.root, session, cell, device, self.asr,
+                    self.known_hashes)
+            except Exception as exc:
+                raise RuntimeError(f"Ошибка записи: {exc}") from exc
+
+    def decide(self, decision: str, notes: str = "") -> None:
+        with self.lock:
+            if self.pending is None:
+                raise RuntimeError("Нет дубля для решения")
+            if decision == "accept":
+                status, note = "accepted", ""
+            elif decision == "retake":
+                status, note = "rejected", "переснято"
+            elif decision == "reject":
+                status, note = "rejected", " ".join(notes.split()) or "брак"
+            else:
+                raise ValueError("Решение: accept, retake или reject")
+            apply_take_decision(self.session, self.selected, self.pending,
+                                status, note, self.known_hashes)
+            self.pending = None
+
+    def drop(self) -> None:
+        with self.lock:
+            if self.pending is None:
+                raise RuntimeError("Нет дубля")
+            self.pending = None
+
+
+UI_PAGE = """<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Запись «хей луна»</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #14161a; color: #e8e8e8;
+         font: 15px/1.45 "Segoe UI", sans-serif; }
+  header { padding: 18px 20px 10px; border-bottom: 1px solid #262b33; }
+  h1 { margin: 0 0 12px; font-size: 20px; font-weight: 600; }
+  h1 .sub { color: #7f8794; font-size: 13px; font-weight: 400;
+            margin-left: 8px; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px 20px 40px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  label { color: #a8adb5; font-size: 13px; }
+  select { background: #1c2129; color: #e8e8e8; border: 1px solid #333a45;
+           border-radius: 8px; padding: 8px 10px; font-size: 14px;
+           min-width: 260px; }
+  select:disabled { color: #6f7786; }
+  .chip { border-radius: 999px; padding: 3px 10px; font-size: 12px;
+          background: #242a33; color: #b9c0ca; }
+  .chip.complete { background: #12351f; color: #7ee2a8; }
+  .chip.paused { background: #3a2a12; color: #ffc46b; }
+  .panel { background: #1a1e25; border: 1px solid #262b33;
+           border-radius: 12px; padding: 16px; margin: 14px 0; }
+  .progress-head { display: flex; justify-content: space-between;
+                   gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .progress-head b { font-weight: 600; }
+  #counters { color: #9aa2ae; font-size: 13px; }
+  .cells { display: grid; grid-template-columns: repeat(auto-fill,
+           minmax(52px, 1fr)); gap: 6px; }
+  .cell { background: #222833; border-radius: 6px; text-align: center;
+          padding: 5px 0; font-size: 11px; color: #98a0ac; }
+  .cell.done { background: #173524; color: #86e0ae; }
+  .cell.now { outline: 2px solid #4b7bec; color: #dbe7ff; }
+  .hint { color: #a8adb5; margin-bottom: 12px; min-height: 22px; }
+  .big { width: 100%; padding: 16px; font-size: 18px; font-weight: 600;
+         border: 0; border-radius: 10px; background: #2f6fed; color: #fff;
+         cursor: pointer; }
+  .big:disabled { background: #2a3140; color: #6f7786; cursor: default; }
+  .pending h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
+  .pending.hidden { display: none; }
+  audio { width: 100%; margin: 4px 0 8px; }
+  .meta { color: #8f96a3; font-size: 13px; }
+  .warnings { margin: 8px 0 0; padding-left: 18px; color: #ffc46b;
+              font-size: 13px; }
+  .buttons { margin-top: 12px; }
+  button.act { border: 1px solid #333a45; background: #242a33; color: #e8e8e8;
+               border-radius: 8px; padding: 9px 14px; font-size: 14px;
+               cursor: pointer; }
+  button.act:hover { background: #2c3440; }
+  button.ok { background: #1d6b3a; border-color: #2b8f51; }
+  button.bad { background: #6b2626; border-color: #8f3737; }
+  button.act kbd { font: inherit; color: #98a0ac; margin-left: 6px;
+                   font-size: 11px; }
+  footer { display: flex; justify-content: space-between; gap: 12px;
+           flex-wrap: wrap; max-width: 860px; margin: 0 auto;
+           padding: 0 20px 24px; color: #7f8794; font-size: 12px; }
+  #quit { background: none; border: 0; color: #7f8794; cursor: pointer;
+          text-decoration: underline; font-size: 12px; padding: 0; }
+  .toast { position: fixed; right: 18px; bottom: 18px; padding: 10px 14px;
+           border-radius: 8px; background: #22351f; color: #bfe8c8;
+           font-size: 13px; box-shadow: 0 4px 18px #0008; }
+  .toast.bad { background: #3a2020; color: #ffc9c9; }
+  .toast.hidden { display: none; }
+</style>
+<header>
+  <h1>Запись «хей луна» <span class="sub">этап 2 · реальные позитивы</span></h1>
+  <div class="row">
+    <label for="pair">Пара диктор × микрофон</label>
+    <select id="pair"></select>
+    <span id="status" class="chip">…</span>
+  </div>
+</header>
+<main>
+  <section class="panel">
+    <div class="progress-head">
+      <b id="cell-title">Загрузка…</b>
+      <span id="counters"></span>
+    </div>
+    <div id="cells" class="cells"></div>
+  </section>
+  <section class="panel">
+    <div id="hint" class="hint"></div>
+    <button id="record" class="big" disabled>Записать</button>
+  </section>
+  <section id="pending" class="panel pending hidden">
+    <h2>Дубль <span id="take-title"></span></h2>
+    <audio id="player" controls preload="auto"></audio>
+    <div id="metrics" class="meta"></div>
+    <ul id="warnings" class="warnings"></ul>
+    <div class="row buttons">
+      <button id="accept" class="act ok">Принять<kbd>Enter</kbd></button>
+      <button id="retake" class="act">Переснять<kbd>R</kbd></button>
+      <button id="reject" class="act bad">Брак…<kbd>X</kbd></button>
+      <button id="drop" class="act">Отбросить<kbd>Esc</kbd></button>
+    </div>
+  </section>
+  <div id="toast" class="toast hidden"></div>
+</main>
+<footer>
+  <button id="quit" type="button">Завершить сессию</button>
+  <span>Enter — записать/принять · R — переснять · X — брак · Esc — отбросить дубль</span>
+</footer>
+<script>
+(function () {
+  "use strict";
+  var CONDITION = {quiet: "тишина", music: "музыка", tv: "телевизор"};
+  var LEVEL = {norm: "обычный", sub: "тихий"};
+  var STATUS = {active: "идёт", paused: "лимит", complete: "план выполнен"};
+  var state = null;
+  var recording = false;
+  var busy = false;
+  var toastTimer = null;
+
+  function $(id) { return document.getElementById(id); }
+
+  function distance(value) {
+    return (Math.round(value * 10) / 10).toString().replace(".", ",");
+  }
+
+  function api(path, body) {
+    var options = {cache: "no-store"};
+    if (body !== undefined) {
+      options.method = "POST";
+      options.headers = {"Content-Type": "application/json"};
+      options.body = JSON.stringify(body);
+    }
+    return fetch(path, options).then(function (response) {
+      return response.json().catch(function () { return {}; })
+        .then(function (data) {
+          if (!response.ok) {
+            throw new Error(data.error || ("HTTP " + response.status));
+          }
+          return data;
+        });
+    });
+  }
+
+  function toast(text, bad) {
+    var box = $("toast");
+    box.textContent = text;
+    box.className = "toast" + (bad ? " bad" : "");
+    if (toastTimer) { clearTimeout(toastTimer); }
+    toastTimer = setTimeout(function () {
+      box.className = "toast hidden";
+    }, 3200);
+  }
+
+  function renderPairs(data) {
+    var select = $("pair");
+    select.innerHTML = "";
+    data.pairs.forEach(function (pair) {
+      var option = document.createElement("option");
+      option.value = pair.speaker + "|" + pair.mic;
+      var suffix = pair.limit
+        ? pair.accepted + "/" + pair.limit
+        : String(pair.accepted);
+      option.textContent = pair.speaker + " × " + pair.mic + " — " + suffix;
+      if (data.selected && pair.speaker === data.selected.speaker
+          && pair.mic === data.selected.mic) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    });
+    select.disabled = Boolean(data.pending) || recording || busy
+      || data.pairs.length < 2;
+  }
+
+  function renderSession(session, pending) {
+    var status = $("status");
+    status.textContent = STATUS[session.status] || session.status;
+    status.className = "chip " + session.status;
+
+    var current = session.current;
+    if (current) {
+      $("cell-title").textContent = "Ячейка " + (session.cells_done + 1)
+        + "/" + session.cells_total + ": " + current.phrase + " · "
+        + distance(current.distance_m) + " м · "
+        + (CONDITION[current.condition] || current.condition) + " · "
+        + (LEVEL[current.level] || current.level);
+    } else {
+      $("cell-title").textContent = "План этой пары выполнен";
+    }
+    var counters = "Принято " + session.accepted;
+    if (session.limit) { counters += " из " + session.limit; }
+    counters += " · ячеек " + session.cells_done + "/" + session.cells_total;
+    $("counters").textContent = counters;
+
+    var cells = $("cells");
+    cells.innerHTML = "";
+    session.cells.forEach(function (cell) {
+      var div = document.createElement("div");
+      div.className = "cell" + (cell.done ? " done" : "")
+        + (current && cell.id === current.id ? " now" : "");
+      div.textContent = cell.accepted + "/" + cell.target;
+      div.title = cell.phrase + " · " + distance(cell.distance_m) + " м · "
+        + (CONDITION[cell.condition] || cell.condition) + " · "
+        + (LEVEL[cell.level] || cell.level);
+      cells.appendChild(div);
+    });
+
+    var button = $("record");
+    var enabled = !pending && session.status === "active"
+      && !recording && !busy;
+    button.disabled = !enabled;
+    if (recording) {
+      button.textContent = "Записываю…";
+    } else if (pending) {
+      button.textContent = "Сначала решите судьбу дубля";
+    } else if (session.status === "complete") {
+      button.textContent = "План выполнен";
+    } else if (session.status === "paused") {
+      button.textContent = "Лимит достигнут";
+    } else if (current) {
+      button.textContent = "Записать «" + current.phrase + "»";
+    } else {
+      button.textContent = "Записать";
+    }
+
+    var hint = $("hint");
+    if (session.status === "complete") {
+      hint.textContent = "Все ячейки этой пары закрыты. Выберите другую пару.";
+    } else if (session.status === "paused") {
+      hint.textContent = "Достигнут лимит принятых дублей. Снять: "
+        + "--resume --limit 0.";
+    } else if (current) {
+      hint.textContent = "Скажите «" + current.phrase + "» с "
+        + distance(current.distance_m) + " м · "
+        + (CONDITION[current.condition] || current.condition) + " · "
+        + (LEVEL[current.level] || current.level)
+        + ". Отсчёт 2 с, запись 3 с.";
+    } else {
+      hint.textContent = "";
+    }
+  }
+
+  function renderPending(pending) {
+    var box = $("pending");
+    if (!pending) {
+      box.className = "panel pending hidden";
+      return;
+    }
+    box.className = "panel pending";
+    $("take-title").textContent = "№" + pending.take + " · " + pending.phrase
+      + " · " + distance(pending.distance_m) + " м · "
+      + (CONDITION[pending.condition] || pending.condition) + " · "
+      + (LEVEL[pending.level] || pending.level);
+    var player = $("player");
+    if (player.getAttribute("src") !== pending.audio_url) {
+      player.setAttribute("src", pending.audio_url);
+      player.load();
+    }
+    $("metrics").textContent = "пик " + pending.peak_db + " dBFS · RMS "
+      + pending.rms_db + " dBFS · речь " + pending.speech_s + " с · "
+      + pending.duration_s + " с";
+    var list = $("warnings");
+    list.innerHTML = "";
+    pending.warnings.forEach(function (warning) {
+      var item = document.createElement("li");
+      item.textContent = warning;
+      list.appendChild(item);
+    });
+    if (pending.text) {
+      var asr = document.createElement("li");
+      asr.textContent = "ASR: «" + pending.text + "»";
+      list.appendChild(asr);
+    }
+  }
+
+  function render(data) {
+    if (!data || !data.session) { return; }
+    state = data;
+    renderPairs(data);
+    renderSession(data.session, data.pending);
+    renderPending(data.pending);
+  }
+
+  function refresh() {
+    if (recording || busy || document.hidden) { return; }
+    api("/api/state").then(render).catch(function () {});
+  }
+
+  function record() {
+    if (!state || state.pending || recording || busy) { return; }
+    recording = true;
+    render(state);
+    api("/api/record", {}).then(function (data) {
+      render(data);
+      $("player").play().catch(function () {});
+      toast("Дубль записан — примите, переснимите или забракуйте");
+    }).catch(function (error) {
+      toast(error.message, true);
+    }).finally(function () {
+      recording = false;
+      render(state);
+    });
+  }
+
+  function decide(kind) {
+    if (!state || !state.pending || busy) { return; }
+    var notes = "";
+    if (kind === "reject") {
+      notes = window.prompt("Комментарий к браку (необязательно):") || "";
+    }
+    busy = true;
+    render(state);
+    api("/api/decide", {decision: kind, notes: notes}).then(function (data) {
+      render(data);
+      toast(kind === "accept" ? "Дубль принят"
+        : (kind === "retake" ? "Пересъёмка" : "Брак записан"),
+        kind !== "accept");
+    }).catch(function (error) {
+      toast(error.message, true);
+    }).finally(function () {
+      busy = false;
+      render(state);
+    });
+  }
+
+  function drop() {
+    if (!state || !state.pending || busy) { return; }
+    busy = true;
+    render(state);
+    api("/api/stop", {}).then(function (data) {
+      render(data);
+      toast("Дубль отброшен (в журнал не попал)");
+    }).catch(function (error) {
+      toast(error.message, true);
+    }).finally(function () {
+      busy = false;
+      render(state);
+    });
+  }
+
+  $("pair").addEventListener("change", function () {
+    var parts = $("pair").value.split("|");
+    busy = true;
+    api("/api/select", {speaker: parts[0], mic: parts[1]}).then(function (data) {
+      render(data);
+      toast("Пара: " + parts[0] + " × " + parts[1]);
+    }).catch(function (error) {
+      toast(error.message, true);
+      refresh();
+    }).finally(function () { busy = false; refresh(); });
+  });
+
+  $("record").addEventListener("click", record);
+  $("accept").addEventListener("click", function () { decide("accept"); });
+  $("retake").addEventListener("click", function () { decide("retake"); });
+  $("reject").addEventListener("click", function () { decide("reject"); });
+  $("drop").addEventListener("click", drop);
+
+  $("quit").addEventListener("click", function () {
+    if (!window.confirm("Завершить сессию? Принятые дубли сохранены; "
+        + "незавершённый дубль будет отброшен.")) { return; }
+    api("/api/shutdown", {}).catch(function () {}).finally(function () {
+      document.body.innerHTML = "<main><h1>Сессия завершена</h1>"
+        + "<p>Принятые дубли сохранены. Страницу можно закрыть.</p></main>";
+    });
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.target && /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName)) {
+      return;
+    }
+    var pending = state && state.pending;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (recording || busy) { return; }
+      if (pending) { decide("accept"); } else { record(); }
+    } else if (event.key === "r" || event.key === "R"
+               || event.key === "к" || event.key === "К") {
+      if (pending) { decide("retake"); }
+    } else if (event.key === "x" || event.key === "X"
+               || event.key === "ч" || event.key === "Ч") {
+      if (pending) { decide("reject"); }
+    } else if (event.key === "Escape") {
+      if (pending) { drop(); }
+    }
+  });
+
+  setInterval(refresh, 2000);
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", refresh);
+  refresh();
+}());
+</script>
+</html>
+"""
+
+
+class _UIHandler(BaseHTTPRequestHandler):
+    server: _UIHTTPServer
+
+    def log_message(self, fmt: str, *args) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            if path in ("/", "/index.html"):
+                self._send_bytes(UI_PAGE.encode("utf-8"),
+                                 "text/html; charset=utf-8")
+            elif path == "/api/state":
+                self._send_json(self._payload())
+            elif path == "/api/index":
+                door = self.server.door
+                self._send_json({"pairs": door.index(),
+                                 "selected": door.selected_pair()})
+            elif path.startswith("/audio/"):
+                self._send_audio(unquote(path[len("/audio/"):]))
+            else:
+                self._send_json({"error": "Не найдено"}, 404)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            data = json.loads(raw.decode("utf-8") or "{}")
+            if not isinstance(data, dict):
+                raise ValueError
+        except (ValueError, UnicodeDecodeError):
+            self._send_json({"error": "Некорректный JSON"}, 400)
+            return
+        door = self.server.door
+        try:
+            if path == "/api/select":
+                door.select(str(data.get("speaker", "")),
+                            str(data.get("mic", "")))
+            elif path == "/api/record":
+                door.record()
+            elif path == "/api/decide":
+                door.decide(str(data.get("decision", "")),
+                            str(data.get("notes") or ""))
+            elif path == "/api/stop":
+                door.drop()
+            elif path == "/api/shutdown":
+                self._send_json({"ok": True})
+                threading.Thread(target=self.server.shutdown,
+                                 daemon=True).start()
+                return
+            else:
+                self._send_json({"error": "Не найдено"}, 404)
+                return
+        except KeyError as exc:
+            self._send_json({"error": f"Нет пары {exc}"}, 404)
+            return
+        except RuntimeError as exc:
+            self._send_json({"error": str(exc)}, 409)
+            return
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        except Exception as exc:
+            self._send_json({"error": f"Ошибка: {exc}"}, 500)
+            return
+        self._send_json(self._payload())
+
+    def _payload(self) -> dict:
+        door = self.server.door
+        return {
+            "pairs": door.index(),
+            "selected": door.selected_pair(),
+            "session": door.snapshot(),
+            "pending": door.pending_snapshot(),
+        }
+
+    def _send_json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send_bytes(body, "application/json; charset=utf-8", status)
+
+    def _send_bytes(self, body: bytes, content_type: str, status: int = 200,
+                    extra: dict | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_audio(self, rel: str) -> None:
+        rel = rel.replace("\\", "/")
+        base = self.server.door.root.resolve()
+        target = (base / rel).resolve()
+        if base != target and base not in target.parents:
+            self._send_json({"error": "Путь вне каталога данных"}, 400)
+            return
+        if not target.is_file() or target.suffix.lower() != ".wav":
+            self._send_json({"error": "Файл не найден"}, 404)
+            return
+        size = target.stat().st_size
+        start, end, status = 0, size - 1, 200
+        header = (self.headers.get("Range") or "").strip()
+        match = re.match(r"bytes=(\d*)-(\d*)$", header)
+        if match and size:
+            if match.group(1):
+                start = int(match.group(1))
+            if match.group(2):
+                end = min(int(match.group(2)), size - 1)
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            status = 206
+        length = end - start + 1 if size else 0
+        self.send_response(status)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with open(target, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(65536, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
+
+class _UIHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: tuple[str, int], door: UIState) -> None:
+        super().__init__(address, _UIHandler)
+        self.door = door
+
+
+def serve_ui(state: UIState, port: int, open_browser: bool) -> int:
+    server = None
+    error = None
+    for candidate in range(port, port + 10):
+        try:
+            server = _UIHTTPServer(("127.0.0.1", candidate), state)
+            break
+        except OSError as exc:
+            error = exc
+    if server is None:
+        print(f"Не удалось открыть порт {port}…{port + 9}: {error}",
+              file=sys.stderr)
+        return 2
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    session = state.session
+    print()
+    print(f"Веб-интерфейс: {url}")
+    print(f"Пара: {session['speaker']} × {session['mic']}")
+    print("Пары и прогресс — на странице; остановить: Ctrl+C.")
+    if open_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        server.serve_forever(poll_interval=0.25)
+    except KeyboardInterrupt:
+        print()
+    finally:
+        server.server_close()
+    session = state.session
+    if state.pending is not None:
+        print("Незавершённый дубль отброшен (журнал не изменён).")
+    print(f"Сессия {session['speaker']} × {session['mic']}: "
+          f"принято {total_accepted(session)} дублей.")
+    print("Продолжить: --resume")
+    return 0
+
+
+def ui_initial_session(root: Path, args: argparse.Namespace) -> Path | None:
+    if args.session is not None:
+        return args.session if args.session.exists() else None
+    if args.speaker:
+        try:
+            speaker = token(args.speaker, "--speaker")
+            mic = token(args.mic or "laptop", "--mic")
+        except ValueError:
+            return None
+        path = session_file(root, speaker, mic)
+        return path if path.exists() else None
+    candidates = active_sessions(root)
+    if args.mic:
+        try:
+            mic = token(args.mic, "--mic")
+        except ValueError:
+            return None
+        candidates = [(path, session) for path, session in candidates
+                      if session.get("mic") == mic]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0].stat().st_mtime)[0]
+
+
+def resume_ui(root: Path, args: argparse.Namespace) -> int:
+    path = ui_initial_session(root, args)
+    if path is None:
+        print("Нет подходящей активной сессии (проверьте "
+              "--speaker/--mic/--session).", file=sys.stderr)
+        return 2
+    try:
+        session = load_json(path)
+    except Exception as exc:
+        print(f"Не читается журнал {path}: {exc}", file=sys.stderr)
+        return 2
+    if session.get("status") == "complete" and next_cell(session) is None:
+        print("Сессия уже завершена.")
+        return 0
+    if args.device:
+        session["device"] = args.device
+    if args.limit is not None:
+        if int(args.limit) < 0:
+            print("--limit должен быть ≥ 0", file=sys.stderr)
+            return 2
+        session["limit"] = int(args.limit)
+    refresh_run_status(session)
+    save_session(path, session)
+    return run_ui_session(root, path, args)
+
+
+def run_ui_session(root: Path, initial: Path | None,
+                   args: argparse.Namespace) -> int:
+    active = [(path.resolve(), session)
+              for path, session in active_sessions(root)]
+    initial_path = initial if initial is not None else ui_initial_session(
+        root, args)
+    if initial_path is not None:
+        initial_path = initial_path.resolve()
+        if all(path != initial_path for path, _ in active):
+            if not initial_path.exists():
+                print(f"Нет сессии: {initial_path}", file=sys.stderr)
+                return 2
+            try:
+                active.append((initial_path, load_json(initial_path)))
+            except Exception as exc:
+                print(f"Не читается журнал {initial_path}: {exc}",
+                      file=sys.stderr)
+                return 2
+    if not active:
+        print(f"Нет активных сессий в {sessions_dir(root)}", file=sys.stderr)
+        print("Начните новую: --setup --speaker ID --mic ID",
+              file=sys.stderr)
+        return 2
+    if initial_path is None:
+        initial_path = max(active, key=lambda item: item[0].stat().st_mtime)[0]
+    active.sort(key=lambda item: item[0].stat().st_mtime)
+    state = UIState(root, active, initial_path)
+    return serve_ui(state, int(args.ui_port), not args.no_browser)
 
 
 # --------------------------------------------------------------------------
@@ -1346,8 +2265,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--finalize", action="store_true",
                         help="raw → 16 кГц, QC, manifest, страница")
     parser.add_argument("--speaker", help="id диктора (anna, tim, …)")
-    parser.add_argument("--mic", default="laptop",
-                        help="id микрофона (laptop, studio, …)")
+    parser.add_argument("--mic", default=None,
+                        help="id микрофона (laptop, studio, …; "
+                             "по умолчанию laptop)")
     parser.add_argument("--device", default=None,
                         help="индекс или часть имени входного устройства")
     parser.add_argument("--session", type=Path, default=None,
@@ -1378,6 +2298,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="финализация без GigaAM")
     parser.add_argument("--seed", type=int, default=0,
                         help="порядок ячеек внутри блока")
+    parser.add_argument("--console", action="store_true",
+                        help="консольный цикл вместо веб-интерфейса")
+    parser.add_argument("--ui", action="store_true",
+                        help="веб-интерфейс (режим по умолчанию)")
+    parser.add_argument("--ui-port", type=int, default=DEFAULT_UI_PORT,
+                        help=f"порт веб-интерфейса "
+                             f"(по умолчанию {DEFAULT_UI_PORT})")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="не открывать браузер автоматически")
     return parser.parse_args(argv)
 
 
@@ -1398,15 +2327,18 @@ def main(argv: list[str] | None = None) -> int:
             return review(review_path.parent, review_path)
         return review(review_path)
     if args.resume:
-        return resume_latest(root, args.session, args.device, args.limit)
+        if args.console:
+            return resume_latest(root, args.session, args.device, args.limit)
+        return resume_ui(root, args)
     if args.setup:
         if not args.speaker:
             print("Для --setup нужен --speaker", file=sys.stderr)
             return 2
         return start_session(args, cfg, root)
-
-    parse_args(["--help"])
-    return 0
+    if args.console:
+        parse_args(["--help"])
+        return 0
+    return run_ui_session(root, None, args)
 
 
 if __name__ == "__main__":

@@ -40,7 +40,10 @@ Vosk пока остаётся основным wake-движком; эта па
 - `scripts/record_positives.py` — рекордер этапа 2: сессия «диктор ×
   микрофон», калибровка фона, пилот уровня, матрица 24 ячеек, плейбек и
   приём/пересдача, журнал с `--resume`, финализация в 16 кГц и QC.
-  Спецификация — `docs/stage2_recording_spec.md`.
+  По умолчанию открывается локальная веб-страница записи (селектор пары
+  диктор × микрофон, прогресс только выбранной пары, кнопки
+  «принять/переснять/брак», плейбек); `--console` возвращает консольный
+  цикл. Спецификация — `docs/stage2_recording_spec.md`.
 
 ## Этап 1: синтетические позитивы
 
@@ -251,6 +254,11 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --pr
 
 # Этап 2: реальные записи (основной venv: sounddevice + GigaAM-QC)
 .\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --list-devices
+
+# --setup/--resume открывают локальную веб-страницу (по умолчанию).
+# Пары диктор × микрофон переключаются на странице; прогресс показывается
+# только для выбранной пары. --console — старый консольный цикл,
+# --ui-port N и --no-browser — порт и автозапуск браузера.
 
 # Пилот: 20 дублей, затем QC и прослушивание
 .\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic laptop --limit 20

@@ -4,8 +4,12 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -34,6 +38,33 @@ CELL = {
     "attempts": 0,
     "status": "pending",
 }
+
+METRICS = {
+    "duration_s": 3.0, "speech_s": 1.2, "peak_db": -10.0,
+    "rms_db": -25.0, "clipped": 0, "pcm_md5": "hash",
+}
+
+
+def _session(speaker: str = "anna", mic: str = "laptop",
+             target: int = 1) -> dict:
+    return {
+        "speaker": speaker,
+        "mic": mic,
+        "settings": dict(rec.DEFAULTS),
+        "status": "active",
+        "limit": 0,
+        "takes": [],
+        "plan": [dict(CELL, target=target)],
+    }
+
+
+def _pending() -> dict:
+    return {
+        "cell": CELL["id"], "take": 1, "file": "raw/x.wav",
+        "phrase": "хей луна", "distance_m": 0.5, "condition": "quiet",
+        "level": "norm", "metrics": dict(METRICS), "text": None,
+        "duplicate": False, "warnings": [],
+    }
 
 
 class TokenTest(unittest.TestCase):
@@ -141,8 +172,6 @@ class SessionTest(unittest.TestCase):
                          {active.name, backup.name})
 
     def test_resume_can_clear_limit(self) -> None:
-        from unittest.mock import patch
-
         sessions = self.root / "sessions"
         sessions.mkdir()
         path = sessions / "anna_laptop.json"
@@ -296,6 +325,232 @@ class ExclusionTest(unittest.TestCase):
                              {"processed/a/one.wav", "processed/a/two.wav"})
             text = path.read_text(encoding="utf-8")
             self.assertIn("# шум с улицы", text)
+
+
+class UIHelpersTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "positives_real"
+        (self.root / "raw").mkdir(parents=True)
+        (self.root / "sessions").mkdir()
+        self.session = _session()
+        self.path = self.root / "sessions" / "anna_laptop.json"
+        self.pcm = np.zeros(48000, dtype=np.int16)
+        self.pcm[8000:40000] = 8000
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_prepare_take_pending_until_decision(self) -> None:
+        with patch.object(rec, "capture_take",
+                          return_value=(self.pcm, 16000)):
+            pending = rec.prepare_take(
+                self.root, self.session, self.session["plan"][0],
+                None, None, set())
+        self.assertEqual(pending["take"], 1)
+        self.assertEqual(
+            pending["file"], "raw/anna_laptop_d05_quiet_norm_001.wav")
+        self.assertTrue((self.root / pending["file"]).exists())
+        self.assertEqual(self.session["takes"], [])
+        self.assertEqual(self.session["plan"][0]["accepted"], 0)
+
+        hashes: set[str] = set()
+        rec.save_session(self.path, self.session)
+        rec.apply_take_decision(self.session, self.path, pending,
+                                "accepted", "", hashes)
+        self.assertEqual(self.session["takes"][0]["status"], "accepted")
+        self.assertEqual(self.session["plan"][0]["accepted"], 1)
+        self.assertIn(pending["metrics"]["pcm_md5"], hashes)
+        saved = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["takes"][0]["status"], "accepted")
+        self.assertEqual(saved["status"], "complete")
+
+    def test_run_status_complete_and_limit(self) -> None:
+        session = _session()
+        rec.register_take(session, session["plan"][0], 1, "raw/a.wav",
+                          "accepted", dict(METRICS))
+        self.assertEqual(rec.refresh_run_status(session), "complete")
+
+        limited = _session(target=3)
+        limited["limit"] = 1
+        rec.register_take(limited, limited["plan"][0], 1, "raw/b.wav",
+                          "accepted", dict(METRICS, pcm_md5="other"))
+        self.assertEqual(rec.refresh_run_status(limited), "paused")
+
+    def test_snapshot_isolated_per_pair(self) -> None:
+        anna = _session("anna", "laptop")
+        tim = _session("tim", "studio")
+        rec.register_take(anna, anna["plan"][0], 1, "raw/a.wav",
+                          "accepted", dict(METRICS))
+        snap_anna = rec.session_snapshot(anna)
+        snap_tim = rec.session_snapshot(tim)
+        self.assertEqual(snap_anna["speaker"], "anna")
+        self.assertEqual(snap_anna["accepted"], 1)
+        self.assertEqual(snap_anna["cells_done"], 1)
+        self.assertEqual(snap_tim["speaker"], "tim")
+        self.assertEqual(snap_tim["accepted"], 0)
+        self.assertEqual(snap_tim["cells_done"], 0)
+
+
+class UIStateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "positives_real"
+        (self.root / "sessions").mkdir(parents=True)
+        (self.root / "raw").mkdir()
+        self.path_a = self.root / "sessions" / "anna_laptop.json"
+        self.path_b = self.root / "sessions" / "tim_studio.json"
+        rec.save_session(self.path_a, _session("anna", "laptop"))
+        rec.save_session(self.path_b, _session("tim", "studio"))
+        self.state = rec.UIState(
+            self.root,
+            [(self.path_a, rec.load_json(self.path_a)),
+             (self.path_b, rec.load_json(self.path_b))],
+            self.path_a,
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_select_switches_pair(self) -> None:
+        self.state.select("tim", "studio")
+        self.assertEqual(self.state.selected_pair(),
+                         {"speaker": "tim", "mic": "studio"})
+
+    def test_pending_blocks_select_until_dropped(self) -> None:
+        self.state.pending = _pending()
+        with self.assertRaises(RuntimeError):
+            self.state.select("tim", "studio")
+        self.state.drop()
+        self.assertIsNone(self.state.pending)
+        self.state.select("tim", "studio")
+        self.assertEqual(self.state.selected_pair()["speaker"], "tim")
+
+    def test_decide_writes_only_selected_pair(self) -> None:
+        self.state.pending = _pending()
+        self.state.decide("accept")
+        anna = rec.load_json(self.path_a)
+        tim = rec.load_json(self.path_b)
+        self.assertEqual(anna["takes"][0]["status"], "accepted")
+        self.assertEqual(anna["plan"][0]["accepted"], 1)
+        self.assertEqual(tim["takes"], [])
+
+
+class UIServerTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "positives_real"
+        (self.root / "sessions").mkdir(parents=True)
+        (self.root / "raw").mkdir()
+        self.path_a = self.root / "sessions" / "anna_laptop.json"
+        self.path_b = self.root / "sessions" / "tim_studio.json"
+        anna = _session("anna", "laptop")
+        rec.register_take(anna, anna["plan"][0], 1, "raw/a.wav",
+                          "accepted", dict(METRICS))
+        rec.save_session(self.path_a, anna)
+        rec.save_session(self.path_b, _session("tim", "studio"))
+        self.state = rec.UIState(
+            self.root,
+            [(self.path_a, rec.load_json(self.path_a)),
+             (self.path_b, rec.load_json(self.path_b))],
+            self.path_a,
+        )
+        self.server = rec._UIHTTPServer(("127.0.0.1", 0), self.state)
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        self.tmp.cleanup()
+
+    def _get(self, path: str) -> dict:
+        with urllib.request.urlopen(self.base + path, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> dict:
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            self.base + path, data=data, method="POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def test_state_shows_only_selected_pair(self) -> None:
+        data = self._get("/api/state")
+        self.assertEqual(data["selected"],
+                         {"speaker": "anna", "mic": "laptop"})
+        self.assertEqual(data["session"]["speaker"], "anna")
+        self.assertEqual(data["session"]["accepted"], 1)
+        self.assertEqual(data["session"]["cells_done"], 1)
+        self.assertEqual(len(data["pairs"]), 2)
+        self.assertIsNone(data["pending"])
+
+    def test_switch_hides_previous_pair_progress(self) -> None:
+        before = self._get("/api/state")
+        self.assertEqual(before["session"]["accepted"], 1)
+        data = self._post("/api/select",
+                          {"speaker": "tim", "mic": "studio"})
+        self.assertEqual(data["session"]["speaker"], "tim")
+        self.assertEqual(data["session"]["accepted"], 0)
+        self.assertEqual(data["session"]["cells_done"], 0)
+        again = self._get("/api/state")
+        self.assertEqual(again["session"]["accepted"], 0)
+
+    def test_page_contains_pair_selector(self) -> None:
+        with urllib.request.urlopen(self.base + "/", timeout=5) as response:
+            page = response.read().decode("utf-8")
+        self.assertIn('id="pair"', page)
+        self.assertIn("Пара диктор × микрофон", page)
+        self.assertIn("/api/state", page)
+
+    def test_select_switches_pair(self) -> None:
+        data = self._post("/api/select",
+                          {"speaker": "tim", "mic": "studio"})
+        self.assertEqual(data["selected"]["speaker"], "tim")
+        self.assertEqual(data["session"]["mic"], "studio")
+        again = self._get("/api/state")
+        self.assertEqual(again["session"]["speaker"], "tim")
+
+    def test_pending_blocks_select_until_dropped(self) -> None:
+        self.state.pending = _pending()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post("/api/select", {"speaker": "tim", "mic": "studio"})
+        self.assertEqual(caught.exception.code, 409)
+        self._post("/api/stop", {})
+        self.assertIsNone(self.state.pending)
+        data = self._post("/api/select",
+                          {"speaker": "tim", "mic": "studio"})
+        self.assertEqual(data["selected"]["speaker"], "tim")
+
+    def test_audio_serves_wav_and_blocks_escape(self) -> None:
+        rec.write_wav(self.root / "raw" / "a.wav",
+                      np.zeros(160, dtype=np.int16), 16000)
+        with urllib.request.urlopen(self.base + "/audio/raw/a.wav",
+                                    timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read()[:4], b"RIFF")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/audio/../secret.wav",
+                                   timeout=5)
+        self.assertEqual(caught.exception.code, 400)
+
+
+class CLITest(unittest.TestCase):
+    def test_ui_is_default(self) -> None:
+        args = rec.parse_args([])
+        self.assertFalse(args.console)
+        self.assertEqual(args.ui_port, rec.DEFAULT_UI_PORT)
+        self.assertFalse(args.no_browser)
+        self.assertIsNone(args.mic)
+
+    def test_console_and_port(self) -> None:
+        args = rec.parse_args(["--console", "--ui-port", "9000"])
+        self.assertTrue(args.console)
+        self.assertEqual(args.ui_port, 9000)
 
 
 if __name__ == "__main__":
