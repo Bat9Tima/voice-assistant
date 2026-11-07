@@ -80,8 +80,9 @@ supertonic:
   total_steps: 8
 
 # Дополнительные русские голоса Silero из модели СНГ. Все проверены на слух.
-# Не прошли прослушивание: bogdan, dmitriy, igor, karina, safarhuja, miyau,
-# а также albina, eduard, alfia2, onaoy, ramilia, gamat, sibday, kseniya.
+# Не прошли прослушивание: bogdan, dmitriy, igor, karina, kejilgan,
+# safarhuja, miyau, а также albina, eduard, alfia2, onaoy, ramilia,
+# gamat, sibday, kseniya.
 silero_cis:
   model: v5_cis_base
   voices:
@@ -95,7 +96,6 @@ silero_cis:
     - ru_zhadyra
     - ru_alexandr
     - ru_ekaterina
-    - ru_kejilgan
     - ru_kermen
     - ru_saida
     - ru_zara

@@ -152,7 +152,9 @@ def existing_hashes(root: Path, skip: Path) -> set[str]:
     for path in root.glob("*/*.wav"):
         if path.parent == skip:
             continue
-        seen.add(hashlib.md5(path.read_bytes()).hexdigest())
+        with wave.open(str(path), "rb") as f:
+            pcm = f.readframes(f.getnframes())
+        seen.add(hashlib.md5(pcm).hexdigest())
     return seen
 
 

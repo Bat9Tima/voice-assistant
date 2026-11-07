@@ -52,7 +52,7 @@ oksana/alfia по 200, vika 183, aigul 182, roman 180, M5 238, irina 273,
 zhadyra 89. Клипов zhadyra меньше: её `plain` часто проглатывает «лу»,
 поэтому добор шёл только в `slow`.
 
-Silero детерминирован: 3351 клип — это 1067 уникальных волн, остальное
+Silero детерминирован: 3351 клип этапа 1 — это 1067 уникальных волн, остальное
 повторы SSML-настроек. Повторы не удаляются: на этапе 4 они получат
 разные аугментации (темп, питч, шум, RIR). При разбиении train/val/test
 учитывать хеш исходной волны, чтобы копии не попали в разные выборки.
@@ -62,16 +62,16 @@ QC-отчёт: `data/positives_tts/*/qc_report.txt`, manifest:
 после прослушивания — `data/positives_tts/exclude.txt` (по строке
 `source/file`); `collect_positives.py` помечает их `kept=0`.
 
-Итог по голосам для синтетики: **22 подтверждённых** — Silero
+Итог по голосам для синтетики: **21 подтверждённый** — Silero
 v5_ru aidar, baya, eugene, xenia (plain/slow/break; `fast` отбракован
 после массового QC) + Silero v5_cis_base marat,
 nurgul, oksana, vika, aigul, alfia, roman, zhadyra, alexandr, ekaterina,
-kejilgan, kermen, saida, zara, zhazira, zinaida (plain/slow) + Piper
+kermen, saida, zara, zhazira, zinaida (plain/slow) + Piper
 irina (только номинальный темп, `length_scale` ≈ 1.0; прослушивание
 пройдено, 2 клипа исключены) + Supertonic M5 (все темпы). CIS-кандидаты
-прослушаны: 8 из 14 прошли, 6 отбракованы — bogdan, dmitriy, igor,
-karina, safarhuja, miyau. Этап 2 (реальные 3–5 голосов) по-прежнему
-обязателен.
+прослушаны: 7 из 14 прошли, 7 отбракованы — bogdan, dmitriy, igor,
+karina, kejilgan, safarhuja, miyau. Этап 2 (реальные 3–5 голосов)
+по-прежнему обязателен.
 
 ### Добор уникальных волн (этап 1.5)
 
@@ -85,6 +85,19 @@ Silero квантует темп до 5 %, питч — до 1 %, поэтому
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --grid --profile silero --clean
 wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --grid --profile cis --clean
 ```
+
+Итог этапа 1.5: сгенерировано 2030 волн, после QC оставлено 1793.
+Вместе с этапом 1 — **5144 клипа, 4119 точных «хей луна», 2782
+уникальных волны, 21 голос**. Дубли сохранены для аугментации этапа 4.
+
+| Партия | Оставлено | Точно «хей луна» |
+|---|---:|---:|
+| Silero v5_ru, сетка | 364 | 265 |
+| Silero CIS, 8 голосов | 755 | 746 |
+| Silero CIS, 7 новых голосов | 674 | 656 |
+
+У roman (66 уникальных) и zara (62) меньше: сетка часто даёт «фей/сей
+луна», такие клипы отсеивает ASR-фильтр.
 
 ## Результаты QC
 
@@ -168,12 +181,14 @@ Piper Puriso, 6 клипов (`data/stage0/puriso_probe/qc_report.txt`): 0/6 т�
 - `data/stage0/listen_control.html` — контрольный список: 14
   голосов этапа 1.
 - `data/stage0/listen_cis_candidates.html` — 14 CIS-голосов, отбракованных
-  только по ASR; 8 прошли, 6 отбракованы (bogdan, dmitriy, igor, karina,
-  safarhuja, miyau).
+  только по ASR; 7 прошли, 7 отбракованы (bogdan, dmitriy, igor, karina,
+  kejilgan, safarhuja, miyau).
 - `data/positives_tts/listen_samples.html` — выборочный контроль этапа 1:
   по два клипа на голос.
 - `data/positives_tts/listen_piper_stage1.html` — Piper irina, 24
   случайных клипа этапа 1.
+- `data/positives_tts/listen_grid.html` — этап 1.5: по два клипа на голос
+  из сетки (темп/питч/пауза).
 
 ## Структура
 
@@ -268,8 +283,8 @@ OpenRAIL-M (использование с ограничениями, для л�
 
 ## Дальше
 
-Этап 1 выполнен: 3351 чистый синтетический «хей луна» на 14 голосах
-(см. выше). Дальше:
+Этапы 1 и 1.5 выполнены: 5144 синтетических «хей луна» (2782 уникальных
+волны) на 21 голосе. Дальше:
 
 - этап 2 — 300–500 реальных позитивов от 3–5 человек (нужно разрешение
   пользователя и сессии записи);
