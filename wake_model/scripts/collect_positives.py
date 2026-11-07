@@ -37,6 +37,18 @@ def read_qc(path: Path) -> list[dict]:
         return list(csv.DictReader(f, delimiter=";"))
 
 
+def read_exclusions(path: Path) -> set[str]:
+    """Пути, забракованные на слух: по одному на строку, # — комментарий."""
+    if not path.exists():
+        return set()
+    result: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        value = line.split("#", 1)[0].strip()
+        if value:
+            result.add(value.replace("\\", "/"))
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path,
@@ -51,11 +63,15 @@ def main() -> int:
     parser.add_argument("--drop", action="append", default=["silero_ru:fast"],
                         help="исключить сочетание source:variant "
                              "(по умолчанию silero_ru:fast)")
+    parser.add_argument("--exclude-file", type=Path, default=None,
+                        help="список путей, забракованных на слух "
+                             "(по умолчанию <root>/exclude.txt)")
     args = parser.parse_args()
 
     root: Path = args.root
     exempt = set(args.asr_exempt)
     dropped = set(args.drop)
+    excluded = read_exclusions(args.exclude_file or root / "exclude.txt")
     qc_files = sorted(root.glob("*/qc_files.csv"))
     if not qc_files:
         print(f"Нет qc_files.csv в {root}", file=sys.stderr)
@@ -69,9 +85,12 @@ def main() -> int:
             peak = float(row["peak_db"])
             clipped = int(row.get("clipped") or 0)
             has_luna, has_hey, exact = classify(row.get("text", ""))
+            rel = f"{source}/{row['file']}"
             reasons = []
             if f"{source}:{row.get('variant', '')}" in dropped:
                 reasons.append("исключён вариант")
+            if rel in excluded:
+                reasons.append("исключено вручную")
             if not (args.min_duration <= duration <= args.max_duration):
                 reasons.append("длительность")
             if not (args.min_peak <= peak <= args.max_peak):
