@@ -258,6 +258,9 @@ wake_model/checkpoints
 - Итог для этапа 1: 14 подтверждённых голосов — Silero v5_ru (4 голоса,
   plain/slow/break; `fast` отбракован) + Silero v5_cis_base (8 голосов,
   plain/slow) + Piper irina (только номинальный темп) + Supertonic M5
-  (все темпы). Непроверенных кандидатов не осталось. Реальные записи
-  этапа 2 по-прежнему обязательны.
+  (все темпы). После прослушивания CIS-кандидатов добавлены ещё 8 голосов:
+  alexandr, ekaterina, kejilgan, kermen, saida, zara, zhazira, zinaida;
+  6 отбракованы (bogdan, dmitriy, igor, karina, safarhuja, miyau).
+  Итого для синтеза 22 голоса. Реальные записи этапа 2 по-прежнему
+  обязательны.
 

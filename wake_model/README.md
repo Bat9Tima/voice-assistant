@@ -62,15 +62,16 @@ QC-отчёт: `data/positives_tts/*/qc_report.txt`, manifest:
 после прослушивания — `data/positives_tts/exclude.txt` (по строке
 `source/file`); `collect_positives.py` помечает их `kept=0`.
 
-Итог по голосам для синтетики этапа 1: **14 подтверждённых** — Silero
+Итог по голосам для синтетики: **22 подтверждённых** — Silero
 v5_ru aidar, baya, eugene, xenia (plain/slow/break; `fast` отбракован
 после массового QC) + Silero v5_cis_base marat,
-nurgul, oksana, vika, aigul, alfia, roman, zhadyra (plain/slow) + Piper
-irina (только номинальный темп, `length_scale` ≈ 1.0) + Supertonic M5
-(все темпы). Плюс 14 CIS-голосов, отбракованных только автоматическим
-ASR-фильтром, ждут прослушивания:
-`data/stage0/listen_cis_candidates.html`. Этап 2 (реальные 3–5 голосов)
-по-прежнему обязателен.
+nurgul, oksana, vika, aigul, alfia, roman, zhadyra, alexandr, ekaterina,
+kejilgan, kermen, saida, zara, zhazira, zinaida (plain/slow) + Piper
+irina (только номинальный темп, `length_scale` ≈ 1.0; прослушивание
+пройдено, 2 клипа исключены) + Supertonic M5 (все темпы). CIS-кандидаты
+прослушаны: 8 из 14 прошли, 6 отбракованы — bogdan, dmitriy, igor,
+karina, safarhuja, miyau. Этап 2 (реальные 3–5 голосов) по-прежнему
+обязателен.
 
 ### Добор уникальных волн (этап 1.5)
 
@@ -165,9 +166,10 @@ Piper Puriso, 6 клипов (`data/stage0/puriso_probe/qc_report.txt`): 0/6 т�
 - `data/stage0/listen_silero_cis.html` — Silero v5_cis_base, 8 голосов
   в шортлисте.
 - `data/stage0/listen_control.html` — контрольный список: 14
-  подтверждённых голосов, кандидатов не осталось.
+  голосов этапа 1.
 - `data/stage0/listen_cis_candidates.html` — 14 CIS-голосов, отбракованных
-  только по ASR; ждут решения на слух.
+  только по ASR; 8 прошли, 6 отбракованы (bogdan, dmitriy, igor, karina,
+  safarhuja, miyau).
 - `data/positives_tts/listen_samples.html` — выборочный контроль этапа 1:
   по два клипа на голос.
 - `data/positives_tts/listen_piper_stage1.html` — Piper irina, 24
