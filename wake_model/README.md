@@ -67,8 +67,23 @@ v5_ru aidar, baya, eugene, xenia (plain/slow/break; `fast` отбракован
 после массового QC) + Silero v5_cis_base marat,
 nurgul, oksana, vika, aigul, alfia, roman, zhadyra (plain/slow) + Piper
 irina (только номинальный темп, `length_scale` ≈ 1.0) + Supertonic M5
-(все темпы). Непроверенных кандидатов не осталось. Этап 2 (реальные
-3–5 голосов) по-прежнему обязателен.
+(все темпы). Плюс 14 CIS-голосов, отбракованных только автоматическим
+ASR-фильтром, ждут прослушивания:
+`data/stage0/listen_cis_candidates.html`. Этап 2 (реальные 3–5 голосов)
+по-прежнему обязателен.
+
+### Добор уникальных волн (этап 1.5)
+
+Silero квантует темп до 5 %, питч — до 1 %, поэтому случайный jitter
+быстро упирается в байт-копии. Режим `--grid` перебирает
+детерминированную сетку «темп × питч × пауза `break_ms`»: пауза даёт
+новую волну почти на каждое значение. Скрипт пропускает волны, уже
+существующие в `data/positives_tts`, и добирает `grid.target` на голос.
+
+```powershell
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --grid --profile silero --clean
+wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --grid --profile cis --clean
+```
 
 ## Результаты QC
 
@@ -151,6 +166,8 @@ Piper Puriso, 6 клипов (`data/stage0/puriso_probe/qc_report.txt`): 0/6 т�
   в шортлисте.
 - `data/stage0/listen_control.html` — контрольный список: 14
   подтверждённых голосов, кандидатов не осталось.
+- `data/stage0/listen_cis_candidates.html` — 14 CIS-голосов, отбракованных
+  только по ASR; ждут решения на слух.
 - `data/positives_tts/listen_samples.html` — выборочный контроль этапа 1:
   по два клипа на голос.
 - `data/positives_tts/listen_piper_stage1.html` — Piper irina, 24
