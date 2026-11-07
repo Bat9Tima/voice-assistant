@@ -3,7 +3,8 @@
 Этапы 0–1.5 (окружение, синтетические позитивы и добор уникальных волн)
 выполнены 6–7 ноября 2026. Полный план — `docs/openwakeword_plan.md`.
 Vosk пока остаётся основным wake-движком; эта папка не влияет на работу
-ассистента. Этап 2 (реальные записи) не начат.
+ассистента. Инструмент этапа 2 (реальные записи) готов, сами сессии ещё
+не начаты.
 
 ## Что готово
 
@@ -36,6 +37,10 @@ Vosk пока остаётся основным wake-движком; эта па
 - На этапе 0 сгенерировано 100 клипов Piper (архив), 20 клипов Silero,
   30 клипов Supertonic и 58 клипов Silero CIS; автоматическая проверка
   (длительность, пик, клиппинг, GigaAM) и страницы для прослушивания.
+- `scripts/record_positives.py` — рекордер этапа 2: сессия «диктор ×
+  микрофон», калибровка фона, пилот уровня, матрица 24 ячеек, плейбек и
+  приём/пересдача, журнал с `--resume`, финализация в 16 кГц и QC.
+  Спецификация — `docs/stage2_recording_spec.md`.
 
 ## Этап 1: синтетические позитивы
 
@@ -192,11 +197,13 @@ wake_model/
 │   ├── synthesize_supertonic.py синтез Supertonic (M5)
 │   ├── check_qc.py          длительность, пик, клиппинг, GigaAM
 │   ├── collect_positives.py сборка manifest после QC
-│   └── make_listen_positives.py страница выборочного прослушивания
+│   ├── make_listen_positives.py страница выборочного прослушивания
+│   └── record_positives.py  запись реальных позитивов этапа 2
 ├── data/                    клипы и отчёты (gitignore)
 │   ├── stage0/              архив этапа 0: пробы QC и страницы прослушивания
 │   ├── positives_tts/       синтетика этапа 1 + manifest.csv
-│   ├── positive/, negative/, rir/ — заготовки этапов 2–4
+│   ├── positives_real/      реальные записи этапа 2 + manifest.csv
+│   └── negative/, rir/      заготовки этапов 3–4
 ├── features/                memmap фич (gitignore)
 └── checkpoints/             чекпоинты обучения (gitignore)
 ```
@@ -241,6 +248,14 @@ wake_model\.venv\Scripts\python.exe wake_model\scripts\synthesize_silero.py --pr
 .\.venv\Scripts\python.exe wake_model\scripts\check_qc.py --dir wake_model\data\positives_tts\silero_cis_extra
 .\.venv\Scripts\python.exe wake_model\scripts\collect_positives.py
 .\.venv\Scripts\python.exe wake_model\scripts\make_listen_positives.py
+
+# Этап 2: реальные записи (основной venv: sounddevice + GigaAM-QC)
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --list-devices
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic laptop
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --setup --speaker anna --mic studio --device "USB"
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --resume
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --finalize
+.\.venv\Scripts\python.exe wake_model\scripts\record_positives.py --review
 ```
 
 ## Версии
@@ -263,8 +278,8 @@ OpenRAIL-M (использование с ограничениями, для л�
 Этапы 1 и 1.5 выполнены: 4871 синтетический «хей луна» (2509 уникальных
 волн) на 20 голосах. Дальше:
 
-- этап 2 — 300–500 реальных позитивов от 3–5 человек (нужно разрешение
-  пользователя и сессии записи);
+- этап 2 — пилот 20 дублей на обоих микрофонах, затем 3–5 дикторов по
+  60–100 дублей на микрофон (инструмент готов, нужны сессии записи);
 - этап 3 — негативы: 20–50 ч ТВ/музыки/речи/улицы и публичные корпуса;
 - этап 4 — аугментации: скорость, питч, шум, RIR;
 - затем датасет, обучение на Colab и сравнение с Vosk.

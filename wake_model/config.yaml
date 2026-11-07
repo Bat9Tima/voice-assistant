@@ -116,6 +116,28 @@ silero_cis:
     break_ms: [100, 150, 200, 250, 300, 350, 400, 450, 500]
     target: 110
 
+# Этап 2: запись реальных позитивов (wake_model/scripts/record_positives.py).
+# Матрица: дистанция × фон × уровень голоса; фон — внешний блок сессии.
+recording:
+  phrase: "хей луна"
+  extra_phrase: "эй луна"       # опциональный блок для решения на этапе 7
+  extra_takes: 2
+  window_s: 3.0                # фиксированное окно записи
+  countdown_s: 2.0             # отсчёт перед маркером старта
+  calibration_s: 5.0           # фон для noise floor
+  takes_per_cell: 3            # 2–3 по ТЗ
+  distances_m: [0.5, 1.0, 1.5, 2.0]
+  conditions: [quiet, music, tv]
+  levels: [norm, sub]
+  trim_threshold_db: -40.0     # как у синтетики: порог относительно пика
+  trim_padding: 0.03
+  lead_silence: 0.30
+  tail_silence: 0.30
+  min_speech_s: 0.70
+  max_speech_s: 2.50
+  target_min: 60               # дублей на диктора × микрофон
+  target_max: 100
+
 # Диапазоны для этапа 0 и синтетических позитивов этапа 1.
 synthesis:
   # Исторические параметры Piper; в текущем датасете не используются.
