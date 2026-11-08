@@ -19,6 +19,14 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $env:PYTHONUTF8 = "1"
 
+# --- конфигурация: у каждой машины свой config.json (в git не хранится) ---
+$configExample = Join-Path $root "config.example.json"
+$configPath = Join-Path $root "config.json"
+if (-not (Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath $configExample)) {
+    Copy-Item -LiteralPath $configExample -Destination $configPath
+    Write-Host "Создан config.json из config.example.json" -ForegroundColor DarkGray
+}
+
 # SHA-256 рабочих файлов моделей, снятые с проверенной установки.
 # Если upstream поменяет версию по тем же ссылкам — обновите хэши.
 $SHA_VOSK_RU = "36D67B53DC90D96EA48097F9E17E7C5937689AD76CB8BED25091317BBAF25919"

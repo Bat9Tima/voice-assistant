@@ -94,7 +94,9 @@ Vosk (wake word, офлайн) ──► GigaAM v3 (STT, офлайн)
 
 `install.cmd` вызовет `setup.ps1`, который создаст `.venv`, поставит
 зависимости и скачает модели Vosk RU и GigaAM v3, затем настроит автозапуск и
-запустит ассистента. Модели хранятся в `%LOCALAPPDATA%\VoiceAssistant\models`
+запустит ассистента. Если `config.json` ещё нет, он будет создан из
+`config.example.json` — дальше это локальные настройки машины, в git они не
+попадают. Модели хранятся в `%LOCALAPPDATA%\VoiceAssistant\models`
 (не в папке проекта): Vosk и sherpa-onnx на Windows плохо работают с
 кириллицей в путях, а папка проекта может быть названа по-русски.
 
@@ -119,6 +121,37 @@ Vosk (wake word, офлайн) ──► GigaAM v3 (STT, офлайн)
 `vosk-model-small-en-us-0.15.zip` (если ставили английский) и
 `gigaam-v3.tar.bz2`. После распаковки установщик сверяет SHA-256 ключевых
 файлов моделей, поэтому битый архив не установится молча.
+
+### Синхронизация между ПК (GitHub)
+
+Если ассистент стоит на двух машинах, код удобно держать в одном приватном
+репозитории GitHub. Модели, `.venv`, `logs`, `state` и `config.json` в git не
+попадают: у каждой машины своё окружение и свои настройки (микрофон, Chrome).
+
+Первичная настройка (один раз):
+
+```powershell
+# 1. На github.com создайте пустой приватный репозиторий voice-assistant.
+# 2. На основном ПК привяжите его и отправьте код:
+git remote add origin https://github.com/<логин>/voice-assistant.git
+git push -u origin main --tags
+
+# 3. На втором ПК:
+git clone https://github.com/<логин>/voice-assistant.git
+cd voice-assistant
+.\install.cmd
+```
+
+Ежедневная работа:
+
+```powershell
+.\sync-pull.cmd   # получить изменения перед работой
+.\sync-push.cmd   # отправить свои изменения после работы
+```
+
+`sync-push.cmd` сам делает коммит, подтягивает свежие правки и выполняет push.
+После `sync-pull.cmd` перезапустите ассистента. Если обе машины правили один
+и тот же файл, git сообщит о конфликте — его нужно разобрать вручную.
 
 ```
 %LOCALAPPDATA%\VoiceAssistant\models\

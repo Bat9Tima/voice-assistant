@@ -222,14 +222,14 @@ try {
                     Write-Host "  - обновлено: $dirName"
                 }
             }
-            foreach ($fileName in @("requirements.txt", "requirements-whisper.txt", "requirements-dev.txt", "pyproject.toml", "README.md")) {
+            foreach ($fileName in @("config.example.json", "requirements.txt", "requirements-whisper.txt", "requirements-dev.txt", "pyproject.toml", "README.md")) {
                 $from = Join-Path $sourceRoot $fileName
                 if (Test-Path -LiteralPath $from) {
                     Copy-Item -LiteralPath $from -Destination $root -Force
                     Write-Host "  - обновлено: $fileName"
                 }
             }
-            foreach ($fileName in @("config.json", "opencode.json", "AGENTS.md", ".gitignore", "install.cmd", "uninstall.cmd")) {
+            foreach ($fileName in @("config.example.json", "opencode.json", "AGENTS.md", ".gitignore", "install.cmd", "uninstall.cmd")) {
                 $from = Join-Path $sourceRoot $fileName
                 $to = Join-Path $root $fileName
                 if ((Test-Path -LiteralPath $from) -and -not (Test-Path -LiteralPath $to)) {
