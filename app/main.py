@@ -167,6 +167,7 @@ class Assistant:
             "stt_loaded": self.stt.loaded,
             "stt_english_loaded": getattr(self.stt, "english_loaded", False),
             "wake_loaded": self.wake is not None,
+            "tray": self.tray.status() if self.tray is not None else None,
         }
 
     def notify(self, message: str, title: str = "Ассистент") -> None:

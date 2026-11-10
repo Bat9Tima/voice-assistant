@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
 import unittest
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
@@ -47,6 +50,43 @@ class FakeLocalLLM:
         if self.error is not None:
             raise self.error
         return self.plan_result
+
+
+class FakeTray:
+    def __init__(self, status: dict[str, Any]) -> None:
+        self._status = status
+
+    def status(self) -> dict[str, Any]:
+        return self._status
+
+
+class TrayStatusTest(unittest.TestCase):
+    @staticmethod
+    def make(tray: Any) -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        assistant.tray = tray
+        assistant.cfg = {"wake_word": "хей луна", "hotkey": "ctrl+alt+space"}
+        assistant.stt = SimpleNamespace(loaded=False)
+        assistant.wake = None
+        assistant._state_lock = threading.Lock()
+        assistant._state = "starting"
+        assistant._paused = False
+        return assistant
+
+    def test_status_exposes_tray_state(self) -> None:
+        self.assertIsNone(self.make(None).status()["tray"])
+
+        tray_status = {
+            "available": True,
+            "running": True,
+            "error": None,
+            "restarts": 2,
+        }
+        status = self.make(FakeTray(tray_status)).status()
+        self.assertEqual(
+            set(status["tray"]), {"available", "running", "error", "restarts"}
+        )
+        self.assertEqual(status["tray"], tray_status)
 
 
 class AgentTriggerRoutingTest(unittest.TestCase):
