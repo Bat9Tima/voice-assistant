@@ -8,3 +8,7 @@ __pycache__/
 
 # Сгенерированные отчёты инструментов
 tools/*_results.json
+
+# Тяжёлые локальные данные: не коммитим
+VoiceAssistantTools/
+VoiceDataset_backups/

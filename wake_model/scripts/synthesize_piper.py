@@ -1,8 +1,9 @@
 """Генерация клипов Piper для QC и будущих синтетических позитивов.
 
 Piper запускается отдельным процессом: бинарник 2023.11.14-2 не умеет
-работать с кириллическими путями к exe/модели, поэтому они лежат в
-ASCII-каталоге VoiceAssistantTools. Путь к готовому WAV может быть любым.
+работать с кириллическими путями к exe/модели, поэтому инструменты
+вынесены в untracked-папку VoiceAssistantTools в корне проекта, а корень
+проекта должен оставаться ASCII. Путь к готовому WAV может быть любым.
 
 Пример:
     python wake_model/scripts/synthesize_piper.py --count 100
@@ -34,8 +35,17 @@ def load_config() -> dict:
 
     piper = os.environ.get("PIPER_EXE") or cfg["paths"]["piper"]
     voices = os.environ.get("PIPER_VOICES") or cfg["paths"]["voices"]
-    cfg["paths"]["piper"] = Path(os.path.expandvars(piper))
-    cfg["paths"]["voices"] = Path(os.path.expandvars(voices))
+    # В config.yaml пути к инструментам относительны корня проекта:
+    # абсолютный путь с кириллицей ломает piper.exe. Переопределения
+    # PIPER_EXE/PIPER_VOICES могут быть абсолютными — их не трогаем.
+    piper_path = Path(os.path.expandvars(piper))
+    voices_path = Path(os.path.expandvars(voices))
+    if not piper_path.is_absolute():
+        piper_path = PROJECT / piper_path
+    if not voices_path.is_absolute():
+        voices_path = PROJECT / voices_path
+    cfg["paths"]["piper"] = piper_path
+    cfg["paths"]["voices"] = voices_path
     for key in ("data", "features", "checkpoints"):
         cfg["paths"][key] = ROOT / cfg["paths"][key]
     return cfg

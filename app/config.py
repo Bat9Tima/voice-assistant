@@ -19,8 +19,8 @@ WHISPER_DIR = MODELS_DIR / "whisper"
 GIGAAM_DIR = MODELS_DIR / "sherpa-onnx-nemo-transducer-giga-am-v3-russian-2025-12-16"
 
 DEFAULTS: dict[str, Any] = {
-    "wake_word": "окей ассистент",
-    "wake_aliases": ["окей ассистент", "ок ассистент", "эй ассистент"],
+    "wake_word": "хей луна",
+    "wake_aliases": ["хей луна", "эй луна"],
     # vosk — распознаёт речь и ищет фразу в тексте; openwakeword — лёгкая
     # модель под одну конкретную фразу.
     "wake_engine": "vosk",
@@ -97,6 +97,18 @@ DEFAULTS: dict[str, Any] = {
         "cli": "",
         "timeout_sec": 180,
         "standalone": False,
+    },
+    # Свободные команды: локальная instruct-модель через OpenAI-совместимый
+    # API (Ollama/LM Studio). Модель только выбирает действие из белого
+    # списка, исполняет его ActionRouter.
+    "llm": {
+        "enabled": False,
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen2.5:7b-instruct",
+        "api_key": "",
+        "timeout_sec": 8,
+        "temperature": 0.0,
+        "max_tokens": 256,
     },
 }
 

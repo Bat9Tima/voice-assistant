@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app.actions import CommandResult
+from app.local_llm import LocalLLMError, LocalPlan
 from app.main import Assistant
 
 
@@ -11,10 +12,16 @@ class FakeRouter:
     def __init__(self, result: CommandResult | None = None) -> None:
         self.result = result
         self.seen: list[str] = []
+        self.plan_result = CommandResult(True, True, "Выполнено")
+        self.plans: list[tuple[str, dict]] = []
 
     def handle(self, text: str) -> CommandResult | None:
         self.seen.append(text)
         return self.result
+
+    def execute_plan(self, action: str, args: dict) -> CommandResult:
+        self.plans.append((action, args))
+        return self.plan_result
 
 
 class FakeBrain:
@@ -27,11 +34,27 @@ class FakeBrain:
         return self.answer
 
 
+class FakeLocalLLM:
+    def __init__(
+        self, plan: LocalPlan | None = None, error: Exception | None = None
+    ) -> None:
+        self.plan_result = plan
+        self.error = error
+        self.seen: list[str] = []
+
+    def plan(self, text: str) -> LocalPlan | None:
+        self.seen.append(text)
+        if self.error is not None:
+            raise self.error
+        return self.plan_result
+
+
 class AgentTriggerRoutingTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
         assistant.brain = FakeBrain()
+        assistant.local_llm = FakeLocalLLM()
         assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
@@ -77,6 +100,50 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         message = assistant.run_text("открой гугель")
         self.assertEqual(message, "Открываю Google")
         self.assertEqual(assistant.router.seen, ["открой гугл"])
+
+    def test_free_form_command_uses_local_llm(self) -> None:
+        assistant = self.make()
+        assistant.local_llm = FakeLocalLLM(
+            LocalPlan("youtube", {"query": "lo-fi", "index": 1})
+        )
+        assistant.router.plan_result = CommandResult(
+            True, True, "Включаю на YouTube: lo-fi"
+        )
+        message = assistant.run_text("вруби лофай на ютубе")
+        self.assertEqual(message, "Включаю на YouTube: lo-fi")
+        self.assertEqual(assistant.local_llm.seen, ["вруби лоуфай на ютубе"])
+        self.assertEqual(
+            assistant.router.plans,
+            [("youtube", {"query": "lo-fi", "index": 1})],
+        )
+
+    def test_local_llm_none_falls_back(self) -> None:
+        assistant = self.make()
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("сделай что-нибудь странное")
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(
+            assistant.local_llm.seen, ["сделай что нибудь странное"]
+        )
+        beep.assert_called_once_with(320, 120)
+
+    def test_router_command_skips_local_llm(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.run_text("открой ютуб")
+        self.assertEqual(assistant.local_llm.seen, [])
+
+    def test_local_llm_error_falls_back(self) -> None:
+        assistant = self.make()
+        assistant.local_llm = FakeLocalLLM(error=LocalLLMError("нет сервера"))
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("вруби музыку")
+        self.assertEqual(message, "Не понял команду")
+        beep.assert_called_once_with(320, 120)
+
+    def test_agent_trigger_skips_local_llm(self) -> None:
+        assistant = self.make()
+        assistant.run_text("спроси агента, какая погода")
+        self.assertEqual(assistant.local_llm.seen, [])
 
 
 if __name__ == "__main__":

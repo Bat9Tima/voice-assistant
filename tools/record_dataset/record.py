@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - Windows only
     msvcrt = None
 
 RATE = 16000
-PROJECT = Path(r"C:\Users\TimAS\Documents\Проект по умолчанию")
+PROJECT = Path(__file__).resolve().parents[2]
 BASE = Path(__file__).resolve().parent
 DEFAULT_OUT = Path.home() / "Documents" / "VoiceDataset"
 

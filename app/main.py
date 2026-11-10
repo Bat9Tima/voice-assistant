@@ -18,6 +18,7 @@ from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .duck import AppVolumeDucker
+from .local_llm import LocalLLM, LocalLLMError
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -106,6 +107,7 @@ class Assistant:
         self.browser = BrowserController(cfg)
         self.router = ActionRouter(cfg, self.browser)
         self.brain = OpenCodeBrain(cfg)
+        self.local_llm = LocalLLM(cfg)
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -230,7 +232,7 @@ class Assistant:
             self.mic = None  # type: ignore[assignment]
 
         aliases = self.cfg.get("wake_aliases") or [
-            self.cfg.get("wake_word", "окей ассистент")
+            self.cfg.get("wake_word", "хей луна")
         ]
         engine = str(self.cfg.get("wake_engine", "vosk")).lower()
         if engine == "openwakeword":
@@ -261,7 +263,7 @@ class Assistant:
 
         self.set_state("idle")
         self.notify(
-            f"Ассистент запущен. Скажите «{self.cfg.get('wake_word', 'окей ассистент')}» "
+            f"Ассистент запущен. Скажите «{self.cfg.get('wake_word', 'хей луна')}» "
             f"или нажмите {self.cfg['hotkey']}."
         )
         beep(880, 90)
@@ -593,6 +595,24 @@ class Assistant:
 
             result = self.router.handle(text)
             if result is not None:
+                message = result.message
+                if message:
+                    self.notify(message)
+                if not result.ok:
+                    beep(320, 120)
+                return message
+
+            plan = None
+            local_llm = getattr(self, "local_llm", None)
+            if local_llm is not None:
+                try:
+                    plan = local_llm.plan(text)
+                except LocalLLMError as exc:
+                    log.warning("Локальная LLM: %s", exc)
+                except Exception:  # noqa: BLE001
+                    log.exception("Ошибка локальной LLM")
+            if plan is not None:
+                result = self.router.execute_plan(plan.action, plan.args)
                 message = result.message
                 if message:
                     self.notify(message)

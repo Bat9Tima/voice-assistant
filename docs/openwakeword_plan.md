@@ -252,8 +252,8 @@ Silero v5_ru, Silero v5_cis_base и Supertonic M5. Синтетика звучи
 - Учебный venv: Python 3.12.10, torch 2.15.0+cpu, torchinfo, torchmetrics,
   openwakeword 0.6.0. CUDA нет.
 - Piper 2023.11.14-2 и 4 голоса `ru_RU`. Piper падает на кириллических
-  путях, поэтому инструменты лежат в
-  `%USERPROFILE%\Documents\VoiceAssistantTools`.
+  путях, поэтому инструменты лежат в untracked-папке `VoiceAssistantTools/`
+  в корне проекта (корень должен оставаться ASCII).
 - Проверка Piper: 100 клипов. Все голоса отбракованы: **irina** после
   повторного прослушивания исключена полностью, **ruslan** не прошёл
   контроль, **denis/dmitri** звучат как «кей/цей луна». В датасете

@@ -114,6 +114,16 @@ def parse_volume_percent(text: str) -> int | None:
     return to_percent(total)
 
 
+def _as_int(value: Any, default: int) -> int:
+    """Мягкое приведение к int для аргументов локальной LLM."""
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class CommandResult:
     handled: bool
@@ -229,6 +239,125 @@ class ActionRouter:
 
         self.context.clear()
         return None
+
+    def execute_plan(
+        self, action: str, args: dict[str, Any] | None = None
+    ) -> CommandResult:
+        """Выполняет действие, выбранное локальной LLM.
+
+        Аргументы уже проверены LocalLLM; здесь только защита от прямых
+        вызовов и преобразование в существующие команды браузера.
+        """
+        action = (action or "").strip().lower()
+        args = dict(args or {})
+
+        if action == "open_site":
+            site = str(args.get("site") or "").strip().lower()
+            url = SITE_URLS.get(site)
+            if not url:
+                return CommandResult(True, False, f"Неизвестный сайт: {site}")
+            self.context.remember("media", "open_site", site=site)
+            return self._simple("goto", f"Открываю {site}", url=url)
+
+        if action == "goto":
+            url = str(args.get("url") or "").strip()
+            if not re.match(r"^https?://", url, re.IGNORECASE):
+                return CommandResult(
+                    True, False, "Поддерживаются только http(s)-адреса"
+                )
+            return self._simple("goto", "Открываю сайт", url=url)
+
+        if action in {"youtube", "soundcloud"}:
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return CommandResult(True, False, "Пустой поисковый запрос")
+            index = max(1, min(20, _as_int(args.get("index"), 1)))
+            if action == "youtube":
+                self._remember_youtube_search(query)
+                return self._simple(
+                    "youtube",
+                    f"Включаю на YouTube: {query}",
+                    query=query,
+                    index=index,
+                )
+            self.context.remember(
+                "search",
+                "soundcloud_search",
+                site="soundcloud",
+                query=query,
+                index=1,
+            )
+            self._remember_media("soundcloud_search", site="soundcloud")
+            return self._simple(
+                "soundcloud",
+                f"Включаю на SoundCloud: {query}",
+                query=query,
+                index=index,
+            )
+
+        if action == "google":
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return CommandResult(True, False, "Пустой поисковый запрос")
+            self._remember_google_search(query)
+            return self._simple("google", f"Ищу: {query}", query=query)
+
+        if action in {"play", "pause", "next", "prev"}:
+            messages = {
+                "play": "Продолжаю",
+                "pause": "Пауза",
+                "next": "Следующее видео",
+                "prev": "Предыдущее видео",
+            }
+            self._remember_media(action)
+            return self._simple(action, messages[action])
+
+        if action == "newtab":
+            return self._simple("newtab", "Открываю новую вкладку")
+        if action == "closetab":
+            return self._simple("closetab", "Закрываю вкладку")
+        if action == "tab":
+            index = _as_int(args.get("index"), 0)
+            if index < 1 or index > 99:
+                return CommandResult(True, False, "Неверный номер вкладки")
+            self.context.remember("media", "switch_tab", site="browser")
+            return self._simple(
+                "tab", f"Переключаюсь на вкладку {index}", index=index
+            )
+        if action == "back":
+            return self._simple("back", "Назад")
+        if action == "forward":
+            return self._simple("forward", "Вперёд")
+        if action == "reload":
+            return self._simple("reload", "Обновляю страницу")
+        if action == "scroll":
+            direction = str(args.get("direction") or "down").strip().lower()
+            if direction not in {"up", "down"}:
+                direction = "down"
+            message = "Листаю вверх" if direction == "up" else "Листаю вниз"
+            return self._simple("scroll", message, direction=direction)
+        if action == "volume":
+            level = _as_int(args.get("level"), -1)
+            if level < 0 or level > 100:
+                return CommandResult(True, False, "Неверная громкость")
+            self._remember_system_volume()
+            return self._set_volume(level / 100)
+        if action in {"volume_up", "volume_down"}:
+            self._remember_system_volume()
+            delta = VOLUME_STEP if action == "volume_up" else -VOLUME_STEP
+            return self._change_volume(delta)
+        if action in {"mute", "unmute"}:
+            self._remember_system_volume()
+            return self._set_mute(action == "mute")
+        if action == "status":
+            ok, data, error = self._call_browser("status")
+            if not ok:
+                return CommandResult(True, False, f"Ошибка: {error}")
+            title = data.get("title") or "(без названия)"
+            url = data.get("url") or ""
+            return CommandResult(True, True, f"{title} — {url}")
+
+        return CommandResult(True, False, f"Неизвестное действие: {action}")
 
     # --------------------------------------------------------------- intents
     def _handle_intent(self, match: IntentMatch) -> CommandResult | None:

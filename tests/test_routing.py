@@ -89,7 +89,9 @@ class ConfigTest(unittest.TestCase):
         cfg = load_config()
         self.assertIn(cfg["wake_word"], cfg["wake_aliases"])
         self.assertTrue(cfg["browser"]["profile_dir"])
-        self.assertEqual(DEFAULTS["wake_word"], "окей ассистент")
+        self.assertEqual(DEFAULTS["wake_word"], "хей луна")
+        self.assertFalse(cfg["llm"]["enabled"])
+        self.assertIn("11434", cfg["llm"]["base_url"])
 
 
 if __name__ == "__main__":

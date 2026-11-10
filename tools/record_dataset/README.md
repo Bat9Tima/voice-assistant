@@ -31,7 +31,7 @@ start.cmd --only 168,169,170   перезаписать конкретные д�
 При `--only` старые файлы сохраняются в `_redo\`, а выбранные дубли
 записываются заново независимо от статуса `done`.
 
-Датасет по умолчанию: `C:\Users\TimAS\Documents\VoiceDataset`
+Датасет по умолчанию: `%USERPROFILE%\Documents\VoiceDataset`
 (папка `audio\`, файлы `labels.csv` и `environment.txt`).
 
 ## Клавиши

@@ -1,15 +1,16 @@
 # Настройки проекта собственной wake-модели openWakeWord.
 #
 # Инструменты Piper (архив, в датасете не используются) лежат в
-# ASCII-каталоге за пределами репозитория: piper.exe (2023.11.14-2)
-# падает на путях с кириллицей, а путь проекта содержит «Проект по
-# умолчанию». Пути можно переопределить PIPER_EXE и PIPER_VOICES.
+# untracked-папке VoiceAssistantTools в корне проекта; пути ниже
+# относительны корня проекта. piper.exe (2023.11.14-2) падает на
+# кириллических путях, поэтому корень проекта должен оставаться ASCII.
+# Пути можно переопределить PIPER_EXE и PIPER_VOICES.
 
 phrase: "хей луна"
 
 paths:
-  piper: "%USERPROFILE%/Documents/VoiceAssistantTools/piper/piper.exe"
-  voices: "%USERPROFILE%/Documents/VoiceAssistantTools/voices"
+  piper: "VoiceAssistantTools/piper/piper.exe"
+  voices: "VoiceAssistantTools/voices"
   data: "data"
   features: "features"
   checkpoints: "checkpoints"

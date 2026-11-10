@@ -2,18 +2,22 @@
 #
 #   powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 #
-# Piper и голоса кладутся в ASCII-каталог: piper.exe 2023.11.14-2 падает
-# на кириллических путях, а путь проекта содержит «Проект по умолчанию».
+# Piper и голоса кладутся в untracked-папку VoiceAssistantTools в корне
+# проекта: piper.exe 2023.11.14-2 падает на кириллических путях, поэтому
+# корень проекта должен оставаться ASCII. Другой каталог — через -ToolsDir.
 
 param(
     [string]$Python = "",
-    [string]$ToolsDir = (Join-Path $HOME "Documents\VoiceAssistantTools"),
+    [string]$ToolsDir = "",
     [switch]$SkipPiper,
     [switch]$SkipVenv
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $ToolsDir) {
+    $ToolsDir = Join-Path (Split-Path -Parent $root) "VoiceAssistantTools"
+}
 $piperVersion = "2023.11.14-2"
 $voices = @("denis", "dmitri", "irina", "ruslan")
 

@@ -18,6 +18,7 @@ from .config import (
     WHISPER_DIR,
     load_config,
 )
+from .local_llm import LocalLLM
 from .stt import create_transcriber
 from .vad import ensure_model
 from .wake import WakeWordDetector
@@ -172,6 +173,16 @@ def main(argv: list[str] | None = None) -> int:
     brain = OpenCodeBrain(cfg)
     print(f"  CLI: {brain.cli or 'НЕ найден'}")
     print(f"  Агент: {brain.agent}")
+
+    print("\n[Локальная LLM]")
+    llm_cfg = cfg.get("llm") or {}
+    if not llm_cfg.get("enabled"):
+        print("  Выключена (llm.enabled = false)")
+    else:
+        llm = LocalLLM(cfg)
+        print(f"  URL: {llm.base_url}")
+        print(f"  Модель: {llm.model or 'НЕ задана'}")
+        print("  Сервер: " + ("доступен" if llm.available() else "НЕ доступен"))
 
     print("\n[HTTP-мост]")
     control = cfg["control"]
