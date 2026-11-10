@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from unittest.mock import Mock, call
 
@@ -23,6 +24,23 @@ class FakeToaster:
 
     def show_toast(self, toast: FakeToast) -> None:
         self.shown.append(toast)
+
+
+@unittest.skipUnless(sys.platform == "win32", "только Windows")
+class TrayMessageFilterTest(unittest.TestCase):
+    def test_patch_replaces_and_is_idempotent(self) -> None:
+        from pystray._util import win32
+
+        original = win32.ChangeWindowMessageFilterEx
+        try:
+            TrayUI._patch_message_filter()
+            patched = win32.ChangeWindowMessageFilterEx
+            self.assertEqual(patched.__name__, "_allow_message_filter")
+            self.assertTrue(patched(0, 0, 0, None))
+            TrayUI._patch_message_filter()
+            self.assertIs(win32.ChangeWindowMessageFilterEx, patched)
+        finally:
+            win32.ChangeWindowMessageFilterEx = original
 
 
 class TrayNotifyTest(unittest.TestCase):

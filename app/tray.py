@@ -59,6 +59,7 @@ class TrayUI:
         self._notify_lock = threading.Lock()
         self._toaster = None
         self._toast_class = None
+        self._error: Exception | None = None
 
     def _init_toasts(self) -> None:
         try:
@@ -70,8 +71,37 @@ class TrayUI:
         except Exception as exc:  # noqa: BLE001
             log.debug("Windows Toast недоступен, остаюсь на pystray: %s", exc)
 
+    @staticmethod
+    def _patch_message_filter() -> None:
+        """Обходит WinError 5 при создании окна pystray.
+
+        ChangeWindowMessageFilterEx нужен только для приёма broadcast-сообщений
+        при запуске с повышенными правами. На некоторых сборках Windows вызов
+        запрещён, и тогда pystray вообще не показывает иконку. Для обычного
+        запуска фильтр не обязателен, поэтому подменяем его безопасной заглушкой.
+        """
+        try:
+            from pystray._util import win32
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Не удалось загрузить win32-хелперы pystray: %s", exc)
+            return
+        if getattr(win32.ChangeWindowMessageFilterEx, "__name__", "") == (
+            "_allow_message_filter"
+        ):
+            return
+
+        def _allow_message_filter(hwnd, message, action, change_filter_struct):
+            return True
+
+        try:
+            win32.ChangeWindowMessageFilterEx = _allow_message_filter
+            log.debug("Обход ChangeWindowMessageFilterEx включён")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Не удалось включить обход ChangeWindowMessageFilterEx: %s", exc)
+
     def start(self) -> None:
         self._init_toasts()
+        self._patch_message_filter()
         try:
             import pystray
         except Exception as exc:  # noqa: BLE001
@@ -101,13 +131,16 @@ class TrayUI:
             try:
                 assert self.icon is not None
                 self.icon.run(setup=setup)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                self._error = exc
                 log.exception("Трей остановился с ошибкой")
 
         self._thread = threading.Thread(target=run, daemon=True, name="tray")
         self._thread.start()
-        self._ready.wait(timeout=3)
-        log.info("Трей запущен")
+        if self._ready.wait(timeout=3):
+            log.info("Трей запущен")
+        else:
+            log.warning("Трей не запустился: %s", self._error or "таймаут")
 
     def set_state(self, state: str) -> None:
         if self.icon is None:
