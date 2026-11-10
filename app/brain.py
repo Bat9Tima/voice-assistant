@@ -84,6 +84,11 @@ class OpenCodeBrain:
         digest.update(self.agent.encode("utf-8"))
         digest.update(b"\0")
         digest.update(self.model.encode("utf-8"))
+        digest.update(b"\0")
+        # Сессия OpenCode привязана к папке, в которой создана. После переноса
+        # проекта старую сессию открыть нельзя (Location not found), поэтому
+        # корень входит в отпечаток и автоматически сбрасывает её.
+        digest.update(str(ROOT).encode("utf-8"))
         return digest.hexdigest()
 
     def _load_session(self) -> str | None:
@@ -93,6 +98,10 @@ class OpenCodeBrain:
             return None
         session_id = data.get("session_id")
         stored = str(data.get("signature") or "")
+        stored_root = str(data.get("root") or "")
+        if session_id and stored_root and stored_root != str(ROOT):
+            log.info("Папка проекта изменилась — начинаю новую сессию OpenCode")
+            return None
         if session_id and self.signature and stored != self.signature:
             log.info("Промпт агента изменился — начинаю новую сессию OpenCode")
             return None
@@ -100,7 +109,7 @@ class OpenCodeBrain:
 
     def _save_session(self, session_id: str | None) -> None:
         self.session_id = session_id
-        payload = {"session_id": session_id}
+        payload = {"session_id": session_id, "root": str(ROOT)}
         if self.signature:
             payload["signature"] = self.signature
         try:
@@ -142,6 +151,16 @@ class OpenCodeBrain:
             cmd.extend(["--session", session_id])
         cmd.append(text)
         return cmd
+
+    @staticmethod
+    def _stale_session_error(text: str, session_id: str | None) -> bool:
+        """Сессия существует, но привязана к другой папке?"""
+        if not session_id:
+            return False
+        lowered = (text or "").lower()
+        if "not found" not in lowered:
+            return False
+        return "session" in lowered or "location" in lowered
 
     def _run(self, text: str, session_id: str | None) -> str | None:
         cmd = self._command(text, session_id)
@@ -202,10 +221,11 @@ class OpenCodeBrain:
             return texts[-1]
 
         stderr = (completed.stderr or "").strip()
+        details = "\n".join([*errors, stderr])
+        if self._stale_session_error(details, session_id):
+            log.warning("Сессия OpenCode не найдена в текущей папке, создаю новую")
+            return None
         if completed.returncode != 0:
-            if "session" in stderr.lower() and "not found" in stderr.lower() and session_id:
-                log.warning("Сессия OpenCode не найдена, создаю новую")
-                return None
             if errors:
                 detail = errors[-1][:500]
             elif stderr:

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.brain import OpenCodeBrain, OpenCodeError
+from app.config import ROOT
 
 
 def make_brain(
@@ -74,6 +75,27 @@ class BrainRunTest(unittest.TestCase):
         with patch("app.brain.subprocess.run", return_value=completed):
             self.assertIsNone(make_brain()._run("привет", "ses_1"))
 
+    def test_location_not_found_returns_none(self) -> None:
+        stdout = (
+            '{"type":"error","sessionID":"ses_1","error":'
+            '{"type":"unknown","message":'
+            '"Location not found: C:\\\\old"}}\n'
+        )
+        completed = subprocess.CompletedProcess([], 1, stdout=stdout, stderr="")
+        with patch("app.brain.subprocess.run", return_value=completed):
+            self.assertIsNone(make_brain()._run("привет", "ses_1"))
+
+    def test_location_not_found_without_session_is_reported(self) -> None:
+        stdout = (
+            '{"type":"error","sessionID":"ses_1","error":'
+            '{"type":"unknown","message":'
+            '"Location not found: C:\\\\old"}}\n'
+        )
+        completed = subprocess.CompletedProcess([], 1, stdout=stdout, stderr="")
+        with patch("app.brain.subprocess.run", return_value=completed):
+            with self.assertRaises(OpenCodeError):
+                make_brain()._run("привет", None)
+
 
 class BrainSessionTest(unittest.TestCase):
     def _brain(self, signature: str) -> OpenCodeBrain:
@@ -105,6 +127,20 @@ class BrainSessionTest(unittest.TestCase):
                 # Если промпт недоступен, отпечатка нет и сессия сохраняется.
                 self.assertEqual(self._brain("")._load_session(), "ses_1")
 
+    def test_other_project_root_drops_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.json"
+            path.write_text(
+                json.dumps(
+                    {"session_id": "ses_1", "signature": "abc", "root": "C:\\old"}
+                ),
+                encoding="utf-8",
+            )
+            with patch("app.brain.SESSION_FILE", path), patch(
+                "app.brain.ROOT", Path(tmp) / "new"
+            ):
+                self.assertIsNone(self._brain("abc")._load_session())
+
     def test_saved_session_keeps_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session.json"
@@ -112,7 +148,9 @@ class BrainSessionTest(unittest.TestCase):
                 brain = self._brain("abc")
                 brain._save_session("ses_2")
                 data = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(data, {"session_id": "ses_2", "signature": "abc"})
+                self.assertEqual(data["session_id"], "ses_2")
+                self.assertEqual(data["signature"], "abc")
+                self.assertEqual(data["root"], str(ROOT))
 
 
 if __name__ == "__main__":
