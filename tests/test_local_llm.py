@@ -204,6 +204,43 @@ class LocalLLMHttpTest(unittest.TestCase):
         ):
             self.assertEqual(llm._chat("включи"), '{"action": "play"}')
 
+    def test_chat_sends_keep_alive(self) -> None:
+        body = json.dumps(
+            {"choices": [{"message": {"content": '{"action": "play"}'}}]}
+        ).encode("utf-8")
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(body=body)
+
+        llm = make_llm()
+        with patch(
+            "app.local_llm.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            llm._chat("включи")
+        self.assertEqual(captured["payload"]["keep_alive"], "30m")
+
+    def test_chat_omits_empty_keep_alive(self) -> None:
+        body = json.dumps(
+            {"choices": [{"message": {"content": '{"action": "play"}'}}]}
+        ).encode("utf-8")
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(body=body)
+
+        llm = make_llm()
+        llm.keep_alive = ""
+        with patch(
+            "app.local_llm.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            llm._chat("включи")
+        self.assertNotIn("keep_alive", captured["payload"])
+
     def test_http_error_is_reported(self) -> None:
         error = urllib.error.HTTPError(
             "http://127.0.0.1:11434/v1/chat/completions",

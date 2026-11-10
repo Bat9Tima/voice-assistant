@@ -104,11 +104,12 @@ DEFAULTS: dict[str, Any] = {
     "llm": {
         "enabled": False,
         "base_url": "http://127.0.0.1:11434/v1",
-        "model": "qwen2.5:7b-instruct",
+        "model": "qwen2.5:3b-instruct",
         "api_key": "",
-        "timeout_sec": 8,
+        "timeout_sec": 20,
         "temperature": 0.0,
         "max_tokens": 256,
+        "keep_alive": "30m",
     },
 }
 

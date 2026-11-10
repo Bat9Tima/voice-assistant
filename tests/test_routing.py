@@ -90,8 +90,9 @@ class ConfigTest(unittest.TestCase):
         self.assertIn(cfg["wake_word"], cfg["wake_aliases"])
         self.assertTrue(cfg["browser"]["profile_dir"])
         self.assertEqual(DEFAULTS["wake_word"], "хей луна")
-        self.assertFalse(cfg["llm"]["enabled"])
-        self.assertIn("11434", cfg["llm"]["base_url"])
+        self.assertFalse(DEFAULTS["llm"]["enabled"])
+        self.assertIn("11434", DEFAULTS["llm"]["base_url"])
+        self.assertEqual(DEFAULTS["llm"]["model"], "qwen2.5:3b-instruct")
 
 
 if __name__ == "__main__":

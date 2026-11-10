@@ -15,7 +15,7 @@ from .actions import SITE_URLS
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1"
-DEFAULT_MODEL = "qwen2.5:7b-instruct"
+DEFAULT_MODEL = "qwen2.5:3b-instruct"
 
 # Ключи сайтов, которые модели разрешено использовать в open_site.
 # Остальные значения отбрасываются ещё до вызова браузера.
@@ -131,9 +131,11 @@ class LocalLLM:
         self.base_url = str(section.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
         self.model = str(section.get("model") or "").strip()
         self.api_key = str(section.get("api_key") or "").strip()
-        self.timeout = float(section.get("timeout_sec") or 8)
+        self.timeout = float(section.get("timeout_sec") or 20)
         self.temperature = float(section.get("temperature") or 0.0)
         self.max_tokens = int(section.get("max_tokens") or 256)
+        keep_alive = section.get("keep_alive", "30m")
+        self.keep_alive = keep_alive.strip() if isinstance(keep_alive, str) else keep_alive
         self._up: bool | None = None
         self._checked_at = 0.0
         self._retry_at = 0.0
@@ -194,6 +196,8 @@ class LocalLLM:
             "max_tokens": self.max_tokens,
             "stream": False,
         }
+        if self.keep_alive not in (None, ""):
+            payload["keep_alive"] = self.keep_alive
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
