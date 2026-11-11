@@ -120,6 +120,11 @@ class QuestionDetectionTest(unittest.TestCase):
             "правда ли, что Земля круглая",
             "будет ли дождь",
             "сколько стоит билет",
+            "посоветуй фильм",
+            "порекомендуй книгу",
+            "можешь рассказать про космос",
+            "не подскажешь, сколько стоит билет",
+            "интересно, почему небо голубое",
         ):
             with self.subTest(text=text):
                 self.assertTrue(is_question(text))
@@ -130,6 +135,7 @@ class QuestionDetectionTest(unittest.TestCase):
             "включи музыку",
             "сделай что-нибудь странное",
             "есть хочу",
+            "можешь открыть ютуб",
         ):
             with self.subTest(text=text):
                 self.assertFalse(is_question(text))
@@ -145,10 +151,17 @@ class QuestionDetectionTest(unittest.TestCase):
 
     def test_search_markers(self) -> None:
         self.assertTrue(needs_search("какие новости"))
+        self.assertTrue(needs_search("новости"))
+        self.assertTrue(needs_search("курс доллара"))
+        self.assertTrue(needs_search("цены на бензин"))
         self.assertTrue(needs_search("сколько стоит билет"))
+        self.assertTrue(needs_search("сколько будет стоить билет"))
+        self.assertTrue(needs_search("что слышно"))
+        self.assertTrue(needs_search("есть ли что-нибудь новое"))
         self.assertTrue(needs_search("поищи рецепт борща"))
         self.assertFalse(needs_search("что такое фотосинтез"))
         self.assertFalse(needs_search("расскажи про Python"))
+        self.assertFalse(needs_search("посоветуй фильм"))
 
 
 class SearchQueryTest(unittest.TestCase):
@@ -214,7 +227,11 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa = make_service()
         self.assertTrue(qa.handles("какая погода"))
         self.assertTrue(qa.handles("что такое фотосинтез"))
+        self.assertTrue(qa.handles("новости"))
+        self.assertTrue(qa.handles("курс доллара"))
+        self.assertTrue(qa.handles("посоветуй фильм"))
         self.assertFalse(qa.handles("открой ютуб"))
+        self.assertFalse(qa.handles("можешь открыть ютуб"))
 
     def test_disabled_handles_nothing(self) -> None:
         qa = make_service(enabled=False)

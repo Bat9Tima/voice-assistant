@@ -34,13 +34,17 @@ QUESTION_STARTS = {
     "расскажи",
     "объясни",
     "подскажи",
+    "посоветуй",
+    "порекомендуй",
 }
 
 FRESH_MARKERS = (
     "новост",
     "нового",
+    "новое",
     "случилось",
     "происходит",
+    "слышно",
     "последн",
     "свеж",
     "недавн",
@@ -55,6 +59,7 @@ FRESH_MARKERS = (
     "цены",
     "стоимость",
     "сколько стоит",
+    "стоить",
     "пробк",
     "матч",
     "счет",
@@ -83,8 +88,10 @@ FRESH_MARKERS = (
 NEWS_MARKERS = (
     "новост",
     "нового",
+    "новое",
     "случилось",
     "происходит",
+    "слышно",
     "последн",
     "свеж",
     "недавн",
@@ -159,6 +166,12 @@ def is_question(text: str) -> bool:
         first = words[1]
     if first in {"правда", "верно", "есть", "будет", "можно"}:
         return len(words) > 1 and words[1] == "ли"
+    if first == "интересно" and len(words) > 1:
+        return words[1] in QUESTION_STARTS
+    if first == "не" and len(words) > 1:
+        return words[1] in {"подскажешь", "скажешь", "знаешь"}
+    if first in {"можешь", "можете"} and len(words) > 1:
+        return words[1] in {"рассказать", "объяснить", "подсказать", "ответить"}
     return first in QUESTION_STARTS
 
 
@@ -312,7 +325,11 @@ class QAService:
     def handles(self, text: str) -> bool:
         if not self.enabled:
             return False
-        return is_weather_question(text) or is_question(text)
+        return (
+            is_weather_question(text)
+            or is_question(text)
+            or needs_search(text)
+        )
 
     def answer(self, text: str) -> QAAnswer:
         text = (text or "").strip()
