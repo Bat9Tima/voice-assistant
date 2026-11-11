@@ -56,3 +56,61 @@ class SoundCloudLikesMatchTest(unittest.TestCase):
         queries = BrowserController._soundcloud_filter_queries("скучна")
         self.assertIn("скучна", queries)
         self.assertIn("скуч", queries)
+
+
+class FakePage:
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.scripts: list[str] = []
+
+    def evaluate(self, script: str, arg=None):
+        self.scripts.append(script)
+        return {"position": 42.0, "duration": 100.0}
+
+    def bring_to_front(self) -> None:
+        pass
+
+
+class MediaTargetTest(unittest.TestCase):
+    """Без site команда должна попадать в текущую вкладку."""
+
+    def setUp(self) -> None:
+        self.current = FakePage("https://www.youtube.com/watch?v=1")
+        self.playing = FakePage("https://soundcloud.com/track")
+        self.youtube = FakePage("https://www.youtube.com/watch?v=2")
+        self.soundcloud = FakePage("https://soundcloud.com/other")
+        self.media = FakePage("https://example.com/media")
+        self.controller = BrowserController.__new__(BrowserController)
+        self.controller._current_page = lambda: self.current
+        self.controller._page_has_media = lambda page: page is self.current
+        self.controller._playing_page = lambda: self.playing
+        self.controller._youtube_page = lambda: self.youtube
+        self.controller._soundcloud_page = lambda: self.soundcloud
+        self.controller._media_page = lambda: self.media
+
+    def test_current_tab_wins(self) -> None:
+        self.assertIs(self.controller._media_target(), self.current)
+
+    def test_falls_back_to_playing_tab(self) -> None:
+        self.controller._page_has_media = lambda page: False
+        self.assertIs(self.controller._media_target(), self.playing)
+
+    def test_explicit_site_wins_over_current(self) -> None:
+        self.assertIs(self.controller._media_target("youtube"), self.youtube)
+        self.assertIs(
+            self.controller._media_target("soundcloud"), self.soundcloud
+        )
+
+    def test_falls_back_to_soundcloud_then_media(self) -> None:
+        self.controller._page_has_media = lambda page: False
+        self.controller._playing_page = lambda: None
+        self.assertIs(self.controller._media_target(), self.soundcloud)
+        self.controller._soundcloud_page = lambda: None
+        self.assertIs(self.controller._media_target(), self.media)
+
+    def test_stop_keeps_position(self) -> None:
+        self.controller._media_target = lambda site=None: self.current
+        result = self.controller._act_stop()
+        self.assertEqual(result["state"], "stopped")
+        self.assertEqual(result["position"], 42.0)
+        self.assertNotIn("currentTime =", self.current.scripts[0])

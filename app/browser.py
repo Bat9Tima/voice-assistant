@@ -272,6 +272,45 @@ class BrowserController(threading.Thread):
                 continue
         return self._assistant_tab()
 
+    def _current_page(self) -> Any | None:
+        """Вкладка, которую пользователь видит прямо сейчас.
+
+        hasFocus срабатывает только у активного окна, поэтому запасной
+        вариант — visibilityState: активная вкладка остаётся visible,
+        даже если окно Chrome не в фокусе.
+        """
+        try:
+            pages = self._pages()
+        except Exception:
+            return None
+        for page in pages:
+            try:
+                if page.evaluate("() => document.hasFocus()"):
+                    return page
+            except Exception:
+                continue
+        for page in pages:
+            try:
+                if page.evaluate(
+                    "() => document.visibilityState === 'visible'"
+                ):
+                    return page
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _page_has_media(page: Any) -> bool:
+        try:
+            if "soundcloud.com" in page.url:
+                return page.locator(".playControls__play").count() > 0
+            return page.evaluate(
+                "() => [...document.querySelectorAll('video, audio')]"
+                ".some(m => m.readyState > 0)"
+            )
+        except Exception:
+            return False
+
     def _youtube_page(self) -> Any | None:
         try:
             pages = self._pages()
@@ -313,8 +352,10 @@ class BrowserController(threading.Thread):
     def _media_target(self, site: str | None = None) -> Any:
         """Выбирает вкладку для медиа-команды.
 
-        Явный site нужен для «продолжи на ютубе»: иначе SoundCloud,
-        открытый в фоне, перехватывал бы команду у YouTube.
+        Без site сначала берём текущую вкладку: «продолжи» на паузе YouTube
+        не должно возобновлять SoundCloud, играющий в фоне. Если в текущей
+        вкладке нет медиа — ищем играющую, затем SoundCloud, затем любую.
+        Явный site нужен для «продолжи на ютубе» и подобных команд.
         """
         site = (site or "").strip().lower()
         if site == "soundcloud":
@@ -329,6 +370,9 @@ class BrowserController(threading.Thread):
             if page is None:
                 raise BrowserError("YouTube не открыт. Скажите «открой ютуб».")
             return page
+        current = self._current_page()
+        if current is not None and self._page_has_media(current):
+            return current
         page = self._playing_page()
         if page is not None:
             return page
@@ -1238,7 +1282,7 @@ class BrowserController(threading.Thread):
         return {"state": result, "url": page.url}
 
     def _act_stop(self, site: str | None = None) -> dict[str, Any]:
-        """Пауза и возврат в начало — в отличие от обычной паузы."""
+        """Ставит воспроизведение на паузу, не меняя позицию."""
         page = self._media_target(site)
         if site:
             page.bring_to_front()
@@ -1249,8 +1293,7 @@ class BrowserController(threading.Thread):
                 if "pause" in title:
                     player.click(timeout=5000)
                     page.wait_for_timeout(300)
-            result = self._seek_soundcloud(page, -10**9)
-            return {"state": "stopped", "url": page.url, **result}
+            return {"state": "stopped", "url": page.url}
 
         script = """() => {
             const media = [...document.querySelectorAll('video, audio')]
@@ -1258,8 +1301,10 @@ class BrowserController(threading.Thread):
             if (!media.length) return null;
             const m = media[0];
             m.pause();
-            m.currentTime = 0;
-            return {position: 0, duration: Number.isFinite(m.duration) ? m.duration : 0};
+            return {
+                position: m.currentTime,
+                duration: Number.isFinite(m.duration) ? m.duration : 0
+            };
         }"""
         result = page.evaluate(script)
         if result is None:
