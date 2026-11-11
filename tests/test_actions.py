@@ -368,6 +368,52 @@ class SoundCloudTest(unittest.TestCase):
             self.assertEqual(args["query"], "", phrase)
             self.assertTrue(args["random"], phrase)
 
+    def test_likes_prepositional_variants(self) -> None:
+        # Реальные фразы из лога: «в лайкнутых треках» не совпадала с интентом
+        # и уходила в обычный поиск SoundCloud.
+        for phrase, query in (
+            ("включи в лайкнутых треках отпусти меня", "отпусти меня"),
+            ("включи лайкнутых треках отпусти меня", "отпусти меня"),
+            (
+                "включи лайкнутых треках на саундклауде и отпусти меня",
+                "отпусти меня",
+            ),
+            ("включи в лайках eva eva", "eva eva"),
+            ("включи из лайкнутых треков eva eva", "eva eva"),
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertTrue(args["play"], phrase)
+            self.assertFalse(args["random"], phrase)
+            self.assertEqual(args["query"], query, phrase)
+
+    def test_likes_prepositional_without_query_plays_random(self) -> None:
+        for phrase in (
+            "включи в лайкнутых треках",
+            "включи лайкнутых треках",
+            "включи в лайках",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertTrue(args["play"], phrase)
+            self.assertTrue(args["random"], phrase)
+            self.assertEqual(args["query"], "", phrase)
+
+    def test_likes_prepositional_open(self) -> None:
+        for phrase in ("открой в лайкнутых треках", "покажи в лайках"):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertFalse(args["play"], phrase)
+
     def test_soundcloud_filler_without_query_opens_site(self) -> None:
         for phrase in (
             "включи трек на саундклауде",
