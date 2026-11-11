@@ -18,6 +18,26 @@ def normalize(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip()
 
 
+_TRANSLIT_TABLE = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+        "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+        "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+        "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+        "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    }
+)
+
+
+def translit(text: str) -> str:
+    """Переводит кириллицу в латиницу для сравнения названий треков.
+
+    Названия на SoundCloud часто английские, а STT слышит их по-русски:
+    «ева ева» должно совпасть с «EVA EVA».
+    """
+    return (text or "").lower().replace("ё", "е").translate(_TRANSLIT_TABLE)
+
+
 def levenshtein(a: str, b: str) -> int:
     if a == b:
         return 0

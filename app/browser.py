@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from .config import STATE_DIR
-from .text import normalize
+from .text import levenshtein, normalize, translit
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +27,25 @@ SOUNDCLOUD_SLIDER_OFFSET = 0.04
 
 class BrowserError(RuntimeError):
     pass
+
+
+def _soundcloud_token_score(token: str, words: list[str]) -> int:
+    """Насколько слово запроса похоже на слово в названии трека.
+
+    3 — точное совпадение, 2 — общий префикс или одна опечатка,
+    1 — две опечатки в длинном слове, 0 — не похоже.
+    """
+    best = 0
+    for word in words:
+        if token == word:
+            return 3
+        if len(token) >= 4 and (word.startswith(token) or token.startswith(word)):
+            best = max(best, 2)
+        elif len(token) >= 4 and levenshtein(token, word) <= 1:
+            best = max(best, 2)
+        elif len(token) >= 6 and levenshtein(token, word) <= 2:
+            best = max(best, 1)
+    return best
 
 
 class BrowserController(threading.Thread):
@@ -688,13 +707,16 @@ class BrowserController(threading.Thread):
                 const play = li.querySelector(
                     '.playableTile__playButton a.sc-button-play, a.sc-button-play.playButton'
                 );
+                const playTitle = play
+                    ? (play.getAttribute('title') || '').toLowerCase()
+                    : '';
                 return {
                     index,
                     title: ((artwork && artwork.getAttribute('aria-label'))
                         || (link && link.innerText) || '').trim(),
                     href: (link && link.getAttribute('href')) || '',
-                    playable: !!play
-                        && (play.getAttribute('title') || '').toLowerCase() === 'play'
+                    playable: playTitle === 'play',
+                    playing: playTitle === 'pause'
                 };
             }).filter(item => item.title)"""
         )
@@ -726,16 +748,35 @@ class BrowserController(threading.Thread):
         needle = normalize(query)
         if not needle:
             return None
+        needle_latin = translit(needle)
         tokens = [token for token in needle.split() if len(token) > 1]
+        tokens_latin = [token for token in needle_latin.split() if len(token) > 1]
+        best_item: dict[str, Any] | None = None
+        best_total = 0
         for item in items:
             haystack = normalize(str(item.get("title", "")))
             if not haystack:
                 continue
             if needle == haystack or needle in haystack or haystack in needle:
                 return item
+            haystack_latin = translit(haystack)
+            if needle_latin and (
+                needle_latin == haystack_latin
+                or needle_latin in haystack_latin
+                or haystack_latin in needle_latin
+            ):
+                return item
             if tokens and all(token in haystack for token in tokens):
                 return item
-        return None
+            words = haystack_latin.split()
+            scores = [_soundcloud_token_score(token, words) for token in tokens_latin]
+            if not scores or not all(score > 0 for score in scores):
+                continue
+            total = sum(scores)
+            if total > best_total:
+                best_total = total
+                best_item = item
+        return best_item
 
     @staticmethod
     def _soundcloud_login_visible(page: Any) -> bool:
@@ -753,6 +794,108 @@ class BrowserController(threading.Thread):
                 f"SoundCloud просит войти, чтобы открыть {label}. "
                 "Войдите в Chrome ассистента и повторите."
             )
+
+    @staticmethod
+    def _soundcloud_filter_queries(query: str) -> list[str]:
+        """Варианты запроса для фильтра лайкнутых.
+
+        GigaAM путает окончания («скучна» вместо «скучно»), поэтому если
+        полный запрос ничего не дал, пробуем отдельные слова и их префиксы.
+        """
+        queries = [query]
+        words = [word for word in normalize(query).split() if len(word) > 2]
+        words.sort(key=len, reverse=True)
+        for word in words[:2]:
+            if word not in queries:
+                queries.append(word)
+        if words:
+            for size in (5, 4, 3):
+                prefix = words[0][:size]
+                if len(prefix) >= 3 and prefix not in queries:
+                    queries.append(prefix)
+        return queries
+
+    def _filter_soundcloud_like(
+        self, page: Any, filter_input: Any, query: str
+    ) -> dict[str, Any] | None:
+        for candidate in self._soundcloud_filter_queries(query):
+            filter_input.fill(candidate)
+            page.wait_for_timeout(900)
+            items = self._soundcloud_like_items(page)
+            usable = [
+                entry for entry in items
+                if entry.get("playable") or entry.get("playing")
+            ]
+            if not usable:
+                continue
+            item = self._find_soundcloud_like(usable, query)
+            if item is not None:
+                return item
+            # Фильтр SoundCloud уже отобрал релевантные треки: если точного
+            # совпадения по названию нет, берём первый результат.
+            return usable[0]
+        filter_input.fill("")
+        page.wait_for_timeout(500)
+        return None
+
+    def _play_soundcloud_row(self, page: Any, row: Any, index: int) -> None:
+        """Нажимает Play в строке лайкнутых и ждёт начала воспроизведения.
+
+        Клик может не сработать, пока плеер переключается с предыдущего
+        трека, поэтому пробуем дважды. Признак успеха — кнопка именно этой
+        строки стала «Pause».
+        """
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+        button = row.locator("a.sc-button-play").first
+        for attempt in range(2):
+            try:
+                row.evaluate(
+                    "el => el.scrollIntoView({block: 'center', inline: 'nearest'})"
+                )
+                page.wait_for_timeout(400)
+                row.hover(timeout=5000)
+                page.wait_for_timeout(300)
+                log.debug(
+                    "Лайкнутые: клик %d по строке %d, кнопка %r",
+                    attempt + 1,
+                    index,
+                    button.get_attribute("title"),
+                )
+                button.click(timeout=7000)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Лайкнутые: клик не удался: %s", exc)
+                self._close_soundcloud_auth(page)
+                try:
+                    button.evaluate("el => el.click()")
+                except Exception:
+                    pass
+            try:
+                page.wait_for_function(
+                    """(index) => {
+                        const row = document.querySelectorAll(
+                            'li.badgeList__item'
+                        )[index];
+                        const button = row
+                            && row.querySelector('a.sc-button-play');
+                        return !!button
+                            && /pause/i.test(button.getAttribute('title') || '');
+                    }""",
+                    arg=index,
+                    timeout=5000,
+                )
+                return
+            except PlaywrightTimeout as exc:
+                log.debug(
+                    "Лайкнутые: воспроизведение не началось, попытка %d",
+                    attempt + 1,
+                )
+                if attempt == 1:
+                    self._require_soundcloud_login(page, "воспроизведение")
+                    raise BrowserError(
+                        "SoundCloud не начал воспроизведение выбранного трека"
+                    ) from exc
+                page.wait_for_timeout(600)
 
     def _act_soundcloud_likes(self, args: dict[str, Any]) -> dict[str, Any]:
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
@@ -785,7 +928,13 @@ class BrowserController(threading.Thread):
             self._require_soundcloud_login(page, "лайкнутые треки")
             raise BrowserError("SoundCloud не показал лайкнутые треки") from exc
 
+        filter_input = page.locator("input[placeholder='Filter']").first
+        has_filter = filter_input.count() > 0
+
         if not play:
+            if has_filter:
+                filter_input.fill("")
+                page.wait_for_timeout(500)
             items = self._soundcloud_like_items(page)
             return {
                 "mode": "open",
@@ -794,62 +943,51 @@ class BrowserController(threading.Thread):
                 "count": len(items),
             }
 
+        if has_filter and (want_random or not query):
+            filter_input.fill("")
+            page.wait_for_timeout(600)
+
         minimum = 120 if query else 80
         rounds = 8 if query else 5
         items = self._soundcloud_like_items(page)
         item: dict[str, Any] | None = None
         if not want_random and query:
-            playable = [entry for entry in items if entry.get("playable")]
-            item = self._find_soundcloud_like(playable, query)
+            if has_filter:
+                item = self._filter_soundcloud_like(page, filter_input, query)
+            if item is None:
+                items = self._soundcloud_like_items(page)
+                usable = [
+                    entry for entry in items
+                    if entry.get("playable") or entry.get("playing")
+                ]
+                item = self._find_soundcloud_like(usable, query)
         if item is None:
             items = self._load_soundcloud_likes(page, minimum=minimum, rounds=rounds)
             playable = [entry for entry in items if entry.get("playable")]
-            if not playable:
+            usable = [
+                entry for entry in items
+                if entry.get("playable") or entry.get("playing")
+            ]
+            if not usable:
                 self._require_soundcloud_login(page, "лайкнутые треки")
                 raise BrowserError("В лайкнутых треках нет доступных для воспроизведения")
             if want_random:
-                item = random.choice(playable)
+                item = random.choice(playable or usable)
             else:
-                item = self._find_soundcloud_like(playable, query)
+                item = self._find_soundcloud_like(usable, query)
                 if item is None:
                     raise BrowserError(f"Не нашёл «{query}» среди лайкнутых треков")
 
-        row = page.locator("li.badgeList__item").nth(int(item["index"]))
-        button = row.locator("a.sc-button-play").first
-        try:
-            row.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
-            page.wait_for_timeout(400)
-            row.hover(timeout=5000)
-            page.wait_for_timeout(300)
-            button.click(timeout=7000)
-        except Exception:
-            self._close_soundcloud_auth(page)
-            try:
-                row.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
-                page.wait_for_timeout(400)
-                row.hover(timeout=5000)
-                page.wait_for_timeout(300)
-                button.click(timeout=7000)
-            except Exception:
-                button.evaluate("el => el.click()")
+        title = str(item.get("title") or self._safe_title(page))
+        if not item.get("playing"):
+            row = page.locator("li.badgeList__item").nth(int(item["index"]))
+            self._play_soundcloud_row(page, row, int(item["index"]))
+            page.wait_for_timeout(500)
 
-        try:
-            page.wait_for_function(
-                """() => {
-                    const button = document.querySelector('.playControls__play');
-                    return button && /pause/i.test(button.getAttribute('title') || '');
-                }""",
-                timeout=10000,
-            )
-        except PlaywrightTimeout as exc:
-            self._require_soundcloud_login(page, "воспроизведение")
-            raise BrowserError("SoundCloud не начал воспроизведение выбранного трека") from exc
-
-        page.wait_for_timeout(500)
         return {
             "mode": "random" if want_random else "track",
             "url": page.url,
-            "title": str(item.get("title") or self._safe_title(page)),
+            "title": title,
             "query": query,
             "count": len(items),
         }

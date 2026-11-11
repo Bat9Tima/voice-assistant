@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 
 from app.main import to_pynput
-from app.text import canonicalize, normalize, split_agent_trigger, strip_wake_word
+from app.text import (
+    canonicalize,
+    normalize,
+    split_agent_trigger,
+    strip_wake_word,
+    translit,
+)
 
 
 class TextTest(unittest.TestCase):
@@ -12,6 +18,12 @@ class TextTest(unittest.TestCase):
 
     def test_normalize_removes_edge_dots(self) -> None:
         self.assertEqual(normalize("...привет..."), "привет")
+
+    def test_translit_for_track_titles(self) -> None:
+        self.assertEqual(translit("Ева Ева"), "eva eva")
+        self.assertEqual(translit("ЗИМА ХОЛОДА"), "zima kholoda")
+        self.assertEqual(translit("щёлочь"), "shcheloch")
+        self.assertEqual(translit("EVA EVA"), "eva eva")
 
     def test_strip_exact_wake_word(self) -> None:
         self.assertEqual(
