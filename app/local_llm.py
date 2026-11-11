@@ -76,6 +76,11 @@ def build_system_prompt(registry: ToolRegistry) -> str:
 «сделай погромче» → {{"action": "volume_up"}}
 «поставь громкость 30» → {{"action": "volume", "level": 30}}
 «переключи на вторую вкладку» → {{"action": "tab", "index": 2}}
+«стоп» → {{"action": "stop"}}
+«останови на ютубе» → {{"action": "stop", "site": "youtube"}}
+«перемотай на 30 секунд» → {{"action": "seek", "seconds": 30}}
+«перемотай назад на 10 секунд» → {{"action": "seek", "seconds": 10, "direction": "backward"}}
+«продолжи в саундклауде» → {{"action": "play", "site": "soundcloud"}}
 «какая погода» → {{"action": "none"}}
 """
 

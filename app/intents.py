@@ -226,12 +226,43 @@ def _slot_definitions(
             return None
         return volume_parser(raw)
 
+    def parse_seconds(raw: str) -> int | None:
+        value = normalize(raw)
+        if not re.fullmatch(r"\d{1,4}", value):
+            return None
+        seconds = int(value)
+        return seconds if seconds > 0 else None
+
+    def parse_direction(raw: str) -> str | None:
+        value = normalize(raw)
+        if value in {"вперед", "вперёд"}:
+            return "forward"
+        if value == "назад":
+            return "backward"
+        return None
+
+    media_site_re = (
+        r"(?:youtube|you\s+tube|ютуб\w*|soundcloud|саунд\s+клауд|"
+        r"саундклауд\w*)"
+    )
+
+    def parse_media_site(raw: str) -> str | None:
+        # Полное совпадение, а не startswith: иначе при матчинге без учёта
+        # порядка слов «саундклауд назад» целиком уходило в слот сайта.
+        value = normalize(raw)
+        if not re.fullmatch(media_site_re, value):
+            return None
+        if value.startswith(("youtube", "you tube", "ютуб")):
+            return "youtube"
+        return "soundcloud"
+
     return {
         "query": SlotDefinition(_QUERY_RE, parse_query),
         # Ведущий шум перед командой: «элонорд громкость саундклауда десять».
         # Слот нужен только чтобы шаблон нашёл команду; значение не используется.
         "prefix": SlotDefinition(_QUERY_RE, parse_query),
         "site": SlotDefinition(f"(?:{site_re})", parse_site),
+        "media_site": SlotDefinition(media_site_re, parse_media_site),
         "tab": SlotDefinition(rf"(?:\d{{1,2}}|{tab_words})", parse_tab),
         "ordinal": SlotDefinition(
             rf"(?:\d{{1,2}}|{result_words})", parse_ordinal
@@ -240,6 +271,8 @@ def _slot_definitions(
             rf"(?:{result_words})", lambda raw: parse_ordinal(raw, words_only=True)
         ),
         "volume": SlotDefinition(_QUERY_RE, parse_volume),
+        "seconds": SlotDefinition(r"\d{1,4}", parse_seconds),
+        "direction": SlotDefinition(r"(?:вперед|назад)", parse_direction),
     }
 
 

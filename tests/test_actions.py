@@ -455,7 +455,109 @@ class SoundCloudTest(unittest.TestCase):
         result = self.router.handle("остановись")
         self.assertIsNotNone(result)
         action, _ = self.browser.calls[0]
+        self.assertEqual(action, "stop")
+
+
+class MediaControlTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.browser = FakeBrowser()
+        self.router = ActionRouter({}, self.browser)
+
+    def handle(self, phrase: str) -> tuple[str, dict]:
+        self.browser.calls.clear()
+        result = self.router.handle(phrase)
+        self.assertIsNotNone(result, phrase)
+        self.assertTrue(result.handled, phrase)
+        return self.browser.calls[0]
+
+    def test_stop_does_not_require_site(self) -> None:
+        for phrase in ("стоп", "стоп видео", "останови музыку"):
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "stop", phrase)
+            self.assertNotIn("site", args, phrase)
+
+    def test_stop_targets_site(self) -> None:
+        cases = {
+            "стоп на ютубе": "youtube",
+            "останови ютуб": "youtube",
+            "стоп видео в саундклауде": "soundcloud",
+            "останови трек на саундклауде": "soundcloud",
+        }
+        for phrase, site in cases.items():
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "stop", phrase)
+            self.assertEqual(args["site"], site, phrase)
+
+    def test_seek_forward_seconds(self) -> None:
+        for phrase, seconds in (
+            ("перемотай на 30 секунд", 30),
+            ("перемотай 30 секунд", 30),
+            ("перемотай вперед на 15 секунд", 15),
+            ("перемотай на 20 секунд вперед", 20),
+        ):
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "seek", phrase)
+            self.assertEqual(args["seconds"], seconds, phrase)
+
+    def test_seek_backward_seconds(self) -> None:
+        for phrase, seconds in (
+            ("перемотай назад на 20 секунд", -20),
+            ("перемотай на 10 секунд назад", -10),
+            ("отмотай на 5 секунд", -5),
+            ("отмотай назад на 5 секунд", -5),
+        ):
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "seek", phrase)
+            self.assertEqual(args["seconds"], seconds, phrase)
+
+    def test_seek_default_is_ten_seconds(self) -> None:
+        action, args = self.handle("перемотай")
+        self.assertEqual(action, "seek")
+        self.assertEqual(args["seconds"], 10)
+
+        action, args = self.handle("перемотай назад")
+        self.assertEqual(action, "seek")
+        self.assertEqual(args["seconds"], -10)
+
+    def test_seek_targets_site(self) -> None:
+        cases = {
+            "перемотай ютуб на 30 секунд": ("youtube", 30),
+            "перемотай на ютубе на 30 секунд": ("youtube", 30),
+            "перемотай видео на ютубе на 30 секунд": ("youtube", 30),
+            "перемотай саундклауд назад на 10 секунд": ("soundcloud", -10),
+            "перемотай назад на 10 секунд на саундклауде": ("soundcloud", -10),
+        }
+        for phrase, (site, seconds) in cases.items():
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "seek", phrase)
+            self.assertEqual(args["site"], site, phrase)
+            self.assertEqual(args["seconds"], seconds, phrase)
+
+    def test_seek_rejects_too_long(self) -> None:
+        result = self.router.handle("перемотай на 4000 секунд")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.handled)
+        self.assertFalse(result.ok)
+        self.assertEqual(self.browser.calls, [])
+
+    def test_play_targets_site(self) -> None:
+        cases = {
+            "продолжи": None,
+            "продолжи на ютубе": "youtube",
+            "продолжи видео на ютубе": "youtube",
+        }
+        for phrase, site in cases.items():
+            action, args = self.handle(phrase)
+            self.assertEqual(action, "play", phrase)
+            if site is None:
+                self.assertNotIn("site", args, phrase)
+            else:
+                self.assertEqual(args["site"], site, phrase)
+
+    def test_pause_targets_youtube(self) -> None:
+        action, args = self.handle("пауза на ютубе")
         self.assertEqual(action, "pause")
+        self.assertEqual(args["site"], "youtube")
 
 
 class SoundCloudNoiseFallbackTest(unittest.TestCase):

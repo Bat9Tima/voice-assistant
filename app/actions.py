@@ -58,6 +58,7 @@ SITE_URLS: dict[str, str] = {
 CANCEL_WORDS = {"отмена", "отмени", "ничего", "неважно", "не надо"}
 
 VOLUME_STEP = 0.10
+DEFAULT_SEEK_SEC = 10
 _SOUNDCLOUD_RE = re.compile(
     r"(?:сау(?:н[дт]?|[гк])?[ао]?|с[ао]ун[дт]?|с[ао]н[дт]?)\s*[кг]?\s*л[ао]у[дт]\w*"
     r"|sound\s*cloud",
@@ -364,8 +365,46 @@ class ActionRouter:
                 "next": "Следующее видео",
                 "prev": "Предыдущее видео",
             }
-            self._remember_media(action)
-            return self._simple(action, messages[action])
+            site = None
+            if action in {"play", "pause"}:
+                site = str(args.get("site") or "").strip().lower()
+                if site and site not in {"youtube", "soundcloud"}:
+                    return CommandResult(True, False, f"Неизвестный сайт: {site}")
+            self._remember_media(action, site=site)
+            kwargs = {"site": site} if site else {}
+            return self._simple(action, messages[action], **kwargs)
+
+        if action == "stop":
+            site = str(args.get("site") or "").strip().lower()
+            if site and site not in {"youtube", "soundcloud"}:
+                return CommandResult(True, False, f"Неизвестный сайт: {site}")
+            self._remember_media("stop", site=site)
+            kwargs = {"site": site} if site else {}
+            return self._simple("stop", "Останавливаю", **kwargs)
+
+        if action == "seek":
+            seconds = _as_int(args.get("seconds"), DEFAULT_SEEK_SEC)
+            if seconds <= 0 or seconds > 3600:
+                return CommandResult(True, False, "Неверное время перемотки")
+            direction = str(args.get("direction") or "forward").strip().lower()
+            if direction not in {"forward", "backward"}:
+                return CommandResult(
+                    True, False, "Неверное направление перемотки"
+                )
+            if direction == "backward":
+                seconds = -seconds
+            site = str(args.get("site") or "").strip().lower()
+            if site and site not in {"youtube", "soundcloud"}:
+                return CommandResult(True, False, f"Неизвестный сайт: {site}")
+            self._remember_media("seek", site=site)
+            word = "назад" if seconds < 0 else "вперед"
+            kwargs = {"site": site} if site else {}
+            return self._simple(
+                "seek",
+                f"Перематываю {word} на {abs(seconds)} с",
+                seconds=seconds,
+                **kwargs,
+            )
 
         if action == "newtab":
             return self._simple("newtab", "Открываю новую вкладку")
@@ -437,12 +476,45 @@ class ActionRouter:
         return self._list_tabs()
 
     def _intent_pause(self, match: IntentMatch) -> CommandResult:
-        self._remember_media("pause")
-        return self._simple("pause", "Пауза")
+        site = match.slots.get("site")
+        self._remember_media("pause", site=site)
+        kwargs = {"site": site} if site else {}
+        return self._simple("pause", "Пауза", **kwargs)
 
     def _intent_play(self, match: IntentMatch) -> CommandResult:
-        self._remember_media("play")
-        return self._simple("play", "Продолжаю")
+        site = match.slots.get("site")
+        self._remember_media("play", site=site)
+        kwargs = {"site": site} if site else {}
+        return self._simple("play", "Продолжаю", **kwargs)
+
+    def _intent_stop(self, match: IntentMatch) -> CommandResult:
+        site = match.slots.get("site")
+        self._remember_media("stop", site=site)
+        kwargs = {"site": site} if site else {}
+        return self._simple("stop", "Останавливаю", **kwargs)
+
+    def _intent_seek(self, match: IntentMatch) -> CommandResult:
+        return self._seek_media(match, backward=False)
+
+    def _intent_seek_back(self, match: IntentMatch) -> CommandResult:
+        return self._seek_media(match, backward=True)
+
+    def _seek_media(self, match: IntentMatch, backward: bool) -> CommandResult:
+        seconds = int(match.slots.get("seconds") or DEFAULT_SEEK_SEC)
+        if seconds > 3600:
+            return CommandResult(True, False, "Неверное время перемотки")
+        if backward:
+            seconds = -seconds
+        site = match.slots.get("site")
+        self._remember_media("seek", site=site)
+        direction = "назад" if seconds < 0 else "вперед"
+        kwargs = {"site": site} if site else {}
+        return self._simple(
+            "seek",
+            f"Перематываю {direction} на {abs(seconds)} с",
+            seconds=seconds,
+            **kwargs,
+        )
 
     def _intent_next(self, match: IntentMatch) -> CommandResult:
         self._remember_media("next")
@@ -807,11 +879,11 @@ class ActionRouter:
 
     def _intent_soundcloud_pause(self, match: IntentMatch) -> CommandResult:
         self._remember_media("pause", site="soundcloud")
-        return self._simple("pause", "Пауза")
+        return self._simple("pause", "Пауза", site="soundcloud")
 
     def _intent_soundcloud_resume(self, match: IntentMatch) -> CommandResult:
         self._remember_media("play", site="soundcloud")
-        return self._simple("play", "Продолжаю")
+        return self._simple("play", "Продолжаю", site="soundcloud")
 
     def _intent_soundcloud_next(self, match: IntentMatch) -> CommandResult:
         self._remember_media("next", site="soundcloud")

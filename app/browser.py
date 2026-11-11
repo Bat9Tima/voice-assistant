@@ -272,6 +272,71 @@ class BrowserController(threading.Thread):
                 continue
         return self._assistant_tab()
 
+    def _youtube_page(self) -> Any | None:
+        try:
+            pages = self._pages()
+        except Exception:
+            return None
+        for page in reversed(pages):
+            try:
+                if "youtube.com" in page.url:
+                    return page
+            except Exception:
+                continue
+        return None
+
+    def _playing_page(self) -> Any | None:
+        """Вкладка, где прямо сейчас идёт воспроизведение."""
+        try:
+            pages = self._pages()
+        except Exception:
+            return None
+        for page in reversed(pages):
+            try:
+                if "soundcloud.com" in page.url:
+                    player = page.locator(".playControls__play").first
+                    if player.count():
+                        title = (player.get_attribute("title") or "").lower()
+                        if "pause" in title:
+                            return page
+                    continue
+                playing = page.evaluate(
+                    "() => [...document.querySelectorAll('video, audio')]"
+                    ".some(m => !m.paused && m.readyState > 0)"
+                )
+                if playing:
+                    return page
+            except Exception:
+                continue
+        return None
+
+    def _media_target(self, site: str | None = None) -> Any:
+        """Выбирает вкладку для медиа-команды.
+
+        Явный site нужен для «продолжи на ютубе»: иначе SoundCloud,
+        открытый в фоне, перехватывал бы команду у YouTube.
+        """
+        site = (site or "").strip().lower()
+        if site == "soundcloud":
+            page = self._soundcloud_page()
+            if page is None:
+                raise BrowserError(
+                    "SoundCloud не открыт. Скажите «открой саундклауд»."
+                )
+            return page
+        if site == "youtube":
+            page = self._youtube_page()
+            if page is None:
+                raise BrowserError("YouTube не открыт. Скажите «открой ютуб».")
+            return page
+        page = self._playing_page()
+        if page is not None:
+            return page
+        page = self._soundcloud_page()
+        if page is not None:
+            return page
+        return self._media_page()
+
     # ---------------------------------------------------------------- helpers
     @staticmethod
     def _clean_url(url: str) -> str:
@@ -392,7 +457,11 @@ class BrowserController(threading.Thread):
         if action in {"back", "forward", "reload"}:
             return self._act_nav(action)
         if action in {"play", "pause", "toggle", "play_pause"}:
-            return self._act_play(action)
+            return self._act_play(action, args.get("site"))
+        if action == "stop":
+            return self._act_stop(args.get("site"))
+        if action == "seek":
+            return self._act_seek(args.get("seconds"), args.get("site"))
         if action in {"next", "prev"}:
             return self._act_media_skip(action)
         if action == "press":
@@ -1121,10 +1190,10 @@ class BrowserController(threading.Thread):
             page.reload(wait_until="domcontentloaded", timeout=30000)
         return {"url": page.url, "title": self._safe_title(page)}
 
-    def _act_play(self, action: str) -> dict[str, Any]:
-        page = self._soundcloud_page()
-        if page is None:
-            page = self._media_page()
+    def _act_play(self, action: str, site: str | None = None) -> dict[str, Any]:
+        page = self._media_target(site)
+        if site:
+            page.bring_to_front()
         if "soundcloud.com" in page.url:
             player = page.locator(".playControls__play").first
             try:
@@ -1167,6 +1236,103 @@ class BrowserController(threading.Thread):
         if result is None:
             raise BrowserError("На странице нет видео или аудио")
         return {"state": result, "url": page.url}
+
+    def _act_stop(self, site: str | None = None) -> dict[str, Any]:
+        """Пауза и возврат в начало — в отличие от обычной паузы."""
+        page = self._media_target(site)
+        if site:
+            page.bring_to_front()
+        if "soundcloud.com" in page.url:
+            player = page.locator(".playControls__play").first
+            if player.count():
+                title = (player.get_attribute("title") or "").lower()
+                if "pause" in title:
+                    player.click(timeout=5000)
+                    page.wait_for_timeout(300)
+            result = self._seek_soundcloud(page, -10**9)
+            return {"state": "stopped", "url": page.url, **result}
+
+        script = """() => {
+            const media = [...document.querySelectorAll('video, audio')]
+                .filter(m => m.readyState > 0);
+            if (!media.length) return null;
+            const m = media[0];
+            m.pause();
+            m.currentTime = 0;
+            return {position: 0, duration: Number.isFinite(m.duration) ? m.duration : 0};
+        }"""
+        result = page.evaluate(script)
+        if result is None:
+            raise BrowserError("На странице нет видео или аудио")
+        return {"state": "stopped", "url": page.url, **result}
+
+    def _act_seek(
+        self, seconds: int | float | str, site: str | None = None
+    ) -> dict[str, Any]:
+        try:
+            delta = int(seconds)
+        except (TypeError, ValueError) as exc:
+            raise BrowserError("Неверное время перемотки") from exc
+        if delta == 0:
+            raise BrowserError("Неверное время перемотки")
+        page = self._media_target(site)
+        if site:
+            page.bring_to_front()
+        if "soundcloud.com" in page.url:
+            result = self._seek_soundcloud(page, delta)
+            return {"url": page.url, **result}
+
+        script = """(delta) => {
+            const media = [...document.querySelectorAll('video, audio')]
+                .filter(m => m.readyState > 0);
+            if (!media.length) return null;
+            const m = media[0];
+            const limit = Number.isFinite(m.duration) && m.duration > 0
+                ? m.duration
+                : Infinity;
+            const target = Math.max(0, Math.min(limit, m.currentTime + delta));
+            m.currentTime = target;
+            return {
+                position: target,
+                duration: Number.isFinite(m.duration) ? m.duration : 0
+            };
+        }"""
+        result = page.evaluate(script, delta)
+        if result is None:
+            raise BrowserError("На странице нет видео или аудио")
+        return {"url": page.url, **result}
+
+    def _seek_soundcloud(self, page: Any, seconds: int) -> dict[str, Any]:
+        """Перемотка SoundCloud кликом по шкале прогресса.
+
+        У плеера нет тега audio, зато есть role=progressbar с текущей
+        позицией и длительностью в секундах.
+        """
+        wrapper = page.locator(".playbackTimeline__progressWrapper").first
+        if not wrapper.count():
+            raise BrowserError("На странице SoundCloud не найден таймлайн")
+        try:
+            current = float(wrapper.get_attribute("aria-valuenow") or 0)
+            duration = float(wrapper.get_attribute("aria-valuemax") or 0)
+        except (TypeError, ValueError) as exc:
+            raise BrowserError("Не удалось прочитать позицию SoundCloud") from exc
+        if duration <= 0:
+            raise BrowserError("Не удалось определить длительность трека")
+        target = max(0.0, min(duration, current + seconds))
+        box = wrapper.bounding_box()
+        if not box or box["width"] <= 0:
+            raise BrowserError("Не удалось найти шкалу SoundCloud")
+        ratio = max(0.001, min(0.999, target / duration))
+        page.mouse.click(
+            box["x"] + ratio * box["width"],
+            box["y"] + box["height"] / 2,
+        )
+        page.wait_for_timeout(400)
+        try:
+            actual = float(wrapper.get_attribute("aria-valuenow") or target)
+        except (TypeError, ValueError):
+            actual = target
+        return {"position": round(actual, 1), "duration": round(duration, 1)}
 
     def _act_media_skip(self, action: str) -> dict[str, Any]:
         page = self._soundcloud_page()

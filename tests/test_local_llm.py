@@ -182,6 +182,47 @@ class PlanValidationTest(unittest.TestCase):
             _build_plan({"action": "soundcloud_likes", "query": "x" * 201})
         )
 
+    def test_stop(self) -> None:
+        self.assertEqual(_build_plan({"action": "stop"}), LocalPlan("stop", {}))
+        self.assertEqual(
+            _build_plan({"action": "stop", "site": "YouTube"}),
+            LocalPlan("stop", {"site": "youtube"}),
+        )
+        self.assertIsNone(_build_plan({"action": "stop", "site": "vk"}))
+
+    def test_seek(self) -> None:
+        self.assertEqual(
+            _build_plan({"action": "seek", "seconds": 30}),
+            LocalPlan("seek", {"seconds": 30, "direction": "forward"}),
+        )
+        self.assertEqual(
+            _build_plan(
+                {"action": "seek", "seconds": "10", "direction": "backward"}
+            ),
+            LocalPlan("seek", {"seconds": 10, "direction": "backward"}),
+        )
+        self.assertEqual(
+            _build_plan({"action": "seek", "seconds": 5, "site": "SoundCloud"}),
+            LocalPlan(
+                "seek",
+                {"seconds": 5, "direction": "forward", "site": "soundcloud"},
+            ),
+        )
+
+    def test_seek_rejects_bad_values(self) -> None:
+        self.assertIsNone(_build_plan({"action": "seek", "seconds": 0}))
+        self.assertIsNone(_build_plan({"action": "seek", "seconds": 3601}))
+        self.assertIsNone(
+            _build_plan({"action": "seek", "direction": "sideways"})
+        )
+
+    def test_play_with_site(self) -> None:
+        self.assertEqual(
+            _build_plan({"action": "play", "site": "youtube"}),
+            LocalPlan("play", {"site": "youtube"}),
+        )
+        self.assertIsNone(_build_plan({"action": "play", "site": "vk"}))
+
 
 class LocalLLMPlanTest(unittest.TestCase):
     def test_disabled_returns_none(self) -> None:
@@ -373,6 +414,62 @@ class ExecutePlanTest(unittest.TestCase):
         action, args = self.browser.calls[-1]
         self.assertEqual(action, "soundcloud_likes")
         self.assertFalse(args["play"])
+
+    def test_stop(self) -> None:
+        result = self.router.execute_plan("stop", {})
+        self.assertTrue(result.ok)
+        self.assertEqual(self.browser.calls[-1], ("stop", {}))
+
+    def test_stop_with_site(self) -> None:
+        result = self.router.execute_plan("stop", {"site": "youtube"})
+        self.assertTrue(result.ok)
+        self.assertEqual(self.browser.calls[-1], ("stop", {"site": "youtube"}))
+        self.assertFalse(
+            self.router.execute_plan("stop", {"site": "vk"}).ok
+        )
+
+    def test_seek_forward(self) -> None:
+        result = self.router.execute_plan(
+            "seek", {"seconds": 30, "direction": "forward"}
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(self.browser.calls[-1], ("seek", {"seconds": 30}))
+        self.assertEqual(result.message, "Перематываю вперед на 30 с")
+
+    def test_seek_backward(self) -> None:
+        result = self.router.execute_plan(
+            "seek", {"seconds": 10, "direction": "backward"}
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(self.browser.calls[-1], ("seek", {"seconds": -10}))
+        self.assertEqual(result.message, "Перематываю назад на 10 с")
+
+    def test_seek_with_site(self) -> None:
+        result = self.router.execute_plan(
+            "seek", {"seconds": 15, "site": "soundcloud"}
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            self.browser.calls[-1],
+            ("seek", {"seconds": 15, "site": "soundcloud"}),
+        )
+
+    def test_seek_rejects_bad_values(self) -> None:
+        for args in (
+            {"seconds": 0},
+            {"seconds": 3601},
+            {"seconds": 10, "direction": "sideways"},
+            {"seconds": 10, "site": "vk"},
+        ):
+            with self.subTest(args=args):
+                result = self.router.execute_plan("seek", args)
+                self.assertFalse(result.ok)
+        self.assertEqual(self.browser.calls, [])
+
+    def test_play_with_site(self) -> None:
+        result = self.router.execute_plan("play", {"site": "youtube"})
+        self.assertTrue(result.ok)
+        self.assertEqual(self.browser.calls[-1], ("play", {"site": "youtube"}))
 
 
 if __name__ == "__main__":

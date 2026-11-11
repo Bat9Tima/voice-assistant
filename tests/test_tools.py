@@ -256,6 +256,8 @@ class DefaultRegistryTest(unittest.TestCase):
             "google",
             "play",
             "pause",
+            "stop",
+            "seek",
             "next",
             "prev",
             "newtab",
@@ -305,6 +307,49 @@ class DefaultRegistryTest(unittest.TestCase):
                 "soundcloud_likes", {"query": " отпусти меня ", "play": "false"}
             ),
             {"query": "отпусти меня", "play": False},
+        )
+
+    def test_media_site_optional(self) -> None:
+        for name in ("play", "pause", "stop"):
+            self.assertEqual(self.registry.validate(name, {}), {}, name)
+            self.assertEqual(
+                self.registry.validate(name, {"site": "YouTube"}),
+                {"site": "youtube"},
+                name,
+            )
+            self.assertEqual(
+                self.registry.validate(name, {"site": " soundcloud "}),
+                {"site": "soundcloud"},
+                name,
+            )
+            self.assertIsNone(
+                self.registry.validate(name, {"site": "vk"}), name
+            )
+
+    def test_seek_defaults(self) -> None:
+        self.assertEqual(
+            self.registry.validate("seek", {}),
+            {"seconds": 10, "direction": "forward"},
+        )
+        self.assertEqual(
+            self.registry.validate(
+                "seek", {"seconds": 30, "direction": "backward"}
+            ),
+            {"seconds": 30, "direction": "backward"},
+        )
+        self.assertEqual(
+            self.registry.validate(
+                "seek", {"seconds": "7", "site": "YouTube"}
+            ),
+            {"seconds": 7, "direction": "forward", "site": "youtube"},
+        )
+
+    def test_seek_rejects_bad_values(self) -> None:
+        self.assertIsNone(self.registry.validate("seek", {"seconds": 0}))
+        self.assertIsNone(self.registry.validate("seek", {"seconds": 3601}))
+        self.assertIsNone(self.registry.validate("seek", {"seconds": "много"}))
+        self.assertIsNone(
+            self.registry.validate("seek", {"direction": "sideways"})
         )
 
     def test_volume_range(self) -> None:

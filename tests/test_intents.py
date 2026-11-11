@@ -257,6 +257,9 @@ class ShippedIntentsTest(unittest.TestCase):
             "переключись на вкладку два": "switch_tab",
             "открой вторую ссылку": "open_result",
             "поставь на паузу": "pause",
+            "стоп": "stop",
+            "перемотай на 30 секунд": "seek",
+            "перемотай назад на 10 секунд": "seek_back",
             "прокрути вниз": "scroll_down",
             "что играет": "status",
         }
@@ -401,6 +404,54 @@ class WordOrderTest(unittest.TestCase):
             "switch_tab",
             tab=2,
         )
+
+    def test_stop_with_site_in_any_order(self) -> None:
+        self.assert_match("стоп на ютубе", "stop", site="youtube")
+        self.assert_match("на ютубе стоп", "stop", site="youtube")
+        self.assert_match(
+            "останови трек на саундклауде", "stop", site="soundcloud"
+        )
+        self.assert_match("стоп видео", "stop")
+
+    def test_seek_seconds_and_direction(self) -> None:
+        self.assert_match("перемотай на 30 секунд", "seek", seconds=30)
+        self.assert_match("перемотай 30 секунд", "seek", seconds=30)
+        self.assert_match("перемотай", "seek")
+        self.assert_match("перемотай назад", "seek_back")
+        self.assert_match("перемотай назад на 20 секунд", "seek_back", seconds=20)
+        self.assert_match("перемотай на 20 секунд назад", "seek_back", seconds=20)
+        self.assert_match("отмотай на 5 секунд", "seek_back", seconds=5)
+
+    def test_seek_with_site_in_any_order(self) -> None:
+        self.assert_match(
+            "перемотай ютуб на 30 секунд",
+            "seek",
+            site="youtube",
+            seconds=30,
+        )
+        self.assert_match(
+            "перемотай на 30 секунд на ютубе",
+            "seek",
+            site="youtube",
+            seconds=30,
+        )
+        self.assert_match(
+            "перемотай видео на ютубе на 30 секунд",
+            "seek",
+            site="youtube",
+            seconds=30,
+        )
+        self.assert_match(
+            "перемотай назад на 10 секунд на саундклауде",
+            "seek_back",
+            site="soundcloud",
+            seconds=10,
+        )
+
+    def test_play_with_site_in_any_order(self) -> None:
+        self.assert_match("продолжи на ютубе", "play", site="youtube")
+        self.assert_match("на ютубе продолжи", "play", site="youtube")
+        self.assert_match("продолжи видео на ютубе", "play", site="youtube")
 
     def test_generic_search_does_not_steal_likes(self) -> None:
         self.assert_match(

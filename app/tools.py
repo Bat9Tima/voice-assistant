@@ -291,8 +291,74 @@ def build_default_registry(
                     ),
                 ),
             ),
-            Tool("play", "продолжить воспроизведение."),
-            Tool("pause", "пауза."),
+            Tool(
+                "play",
+                "продолжить воспроизведение.",
+                (
+                    ToolParam(
+                        "site",
+                        "string",
+                        "youtube или soundcloud; без site — активное медиа",
+                        enum=frozenset({"youtube", "soundcloud"}),
+                        lower=True,
+                    ),
+                ),
+            ),
+            Tool(
+                "pause",
+                "пауза.",
+                (
+                    ToolParam(
+                        "site",
+                        "string",
+                        "youtube или soundcloud; без site — активное медиа",
+                        enum=frozenset({"youtube", "soundcloud"}),
+                        lower=True,
+                    ),
+                ),
+            ),
+            Tool(
+                "stop",
+                "остановить воспроизведение и вернуть в начало.",
+                (
+                    ToolParam(
+                        "site",
+                        "string",
+                        "youtube или soundcloud; без site — активное медиа",
+                        enum=frozenset({"youtube", "soundcloud"}),
+                        lower=True,
+                    ),
+                ),
+            ),
+            Tool(
+                "seek",
+                "перемотать видео или трек на N секунд.",
+                (
+                    ToolParam(
+                        "seconds",
+                        "integer",
+                        "на сколько секунд",
+                        default=10,
+                        minimum=1,
+                        maximum=3600,
+                    ),
+                    ToolParam(
+                        "direction",
+                        "string",
+                        "forward или backward",
+                        default="forward",
+                        enum=frozenset({"forward", "backward"}),
+                        lower=True,
+                    ),
+                    ToolParam(
+                        "site",
+                        "string",
+                        "youtube или soundcloud; без site — активное медиа",
+                        enum=frozenset({"youtube", "soundcloud"}),
+                        lower=True,
+                    ),
+                ),
+            ),
             Tool("next", "следующий трек или видео."),
             Tool("prev", "предыдущий трек или видео."),
             Tool("newtab", "открыть новую вкладку."),

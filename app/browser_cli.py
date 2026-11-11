@@ -150,6 +150,18 @@ def main(argv: list[str] | None = None) -> int:
         payload["text"] = " ".join(rest[1:])
     elif action == "press":
         payload["key"] = rest[0] if rest else ""
+    elif action in {"play", "pause", "stop"}:
+        payload["site"] = rest[0].lower() if rest else ""
+    elif action == "seek":
+        try:
+            payload["seconds"] = int(rest[0])
+        except (IndexError, ValueError):
+            print(
+                "Использование: seek <секунды> [youtube|soundcloud]",
+                file=sys.stderr,
+            )
+            return 2
+        payload["site"] = rest[1].lower() if len(rest) > 1 else ""
     elif action == "tab":
         try:
             payload["index"] = int(rest[0])
