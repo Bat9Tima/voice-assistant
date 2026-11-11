@@ -151,6 +151,37 @@ class PlanValidationTest(unittest.TestCase):
             _build_plan({"action": "scroll", "direction": "sideways"})
         )
 
+    def test_soundcloud_likes(self) -> None:
+        plan = _build_plan(
+            {"action": "soundcloud_likes", "query": "  отпусти меня  "}
+        )
+        self.assertEqual(
+            plan,
+            LocalPlan(
+                "soundcloud_likes",
+                {"query": "отпусти меня", "play": True},
+            ),
+        )
+
+    def test_soundcloud_likes_defaults(self) -> None:
+        self.assertEqual(
+            _build_plan({"action": "soundcloud_likes"}),
+            LocalPlan("soundcloud_likes", {"query": "", "play": True}),
+        )
+        self.assertEqual(
+            _build_plan({"action": "soundcloud_likes", "play": False}),
+            LocalPlan("soundcloud_likes", {"query": "", "play": False}),
+        )
+        self.assertEqual(
+            _build_plan({"action": "soundcloud_likes", "play": "false"}),
+            LocalPlan("soundcloud_likes", {"query": "", "play": False}),
+        )
+
+    def test_soundcloud_likes_rejects_long_query(self) -> None:
+        self.assertIsNone(
+            _build_plan({"action": "soundcloud_likes", "query": "x" * 201})
+        )
+
 
 class LocalLLMPlanTest(unittest.TestCase):
     def test_disabled_returns_none(self) -> None:
@@ -305,6 +336,43 @@ class ExecutePlanTest(unittest.TestCase):
         result = self.router.execute_plan("explode", {})
         self.assertFalse(result.ok)
         self.assertEqual(self.browser.calls, [])
+
+    def test_soundcloud_likes(self) -> None:
+        result = self.router.execute_plan(
+            "soundcloud_likes", {"query": "отпусти меня", "play": True}
+        )
+        self.assertTrue(result.ok)
+        action, args = self.browser.calls[-1]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertEqual(args["query"], "отпусти меня")
+        self.assertFalse(args["random"])
+        self.assertTrue(args["play"])
+
+    def test_soundcloud_likes_cleans_query(self) -> None:
+        self.router.execute_plan(
+            "soundcloud_likes",
+            {"query": "в лайкнутых треках отпусти меня", "play": True},
+        )
+        action, args = self.browser.calls[-1]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertEqual(args["query"], "отпусти меня")
+        self.assertFalse(args["random"])
+
+    def test_soundcloud_likes_random_without_query(self) -> None:
+        result = self.router.execute_plan("soundcloud_likes", {"play": True})
+        self.assertTrue(result.ok)
+        action, args = self.browser.calls[-1]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertEqual(args["query"], "")
+        self.assertTrue(args["random"])
+        self.assertTrue(args["play"])
+
+    def test_soundcloud_likes_open_only(self) -> None:
+        result = self.router.execute_plan("soundcloud_likes", {"play": False})
+        self.assertTrue(result.ok)
+        action, args = self.browser.calls[-1]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertFalse(args["play"])
 
 
 if __name__ == "__main__":

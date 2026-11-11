@@ -51,6 +51,7 @@ SYSTEM_PROMPT = f"""Ты — планировщик голосовых кома�
 - goto: {{"url": "https://..."}} — открыть точный http(s)-адрес.
 - youtube: {{"query": "...", "index": 1}} — найти и включить видео.
 - soundcloud: {{"query": "...", "index": 1}} — найти и включить трек.
+- soundcloud_likes: {{"query": "...", "play": true}} — включить трек из лайкнутых SoundCloud. Без query — случайный лайкнутый; play=false — просто открыть лайкнутые.
 - google: {{"query": "..."}} — поиск в Google.
 - play, pause, next, prev — управление медиа.
 - newtab, closetab — вкладки.
@@ -65,13 +66,17 @@ SYSTEM_PROMPT = f"""Ты — планировщик голосовых кома�
 Правила:
 1. Не придумывай сайты и URL. Для open_site используй только ключи из списка.
 2. Если фраза — вопрос, просьба совета или болтовня, верни {{"action": "none"}}.
-3. Если не уверен в действии, верни {{"action": "none"}}.
-4. Никакого текста, markdown и пояснений вокруг JSON.
+3. Если фраза про лайки, избранное или любимые треки SoundCloud — используй soundcloud_likes, а не soundcloud.
+4. Если не уверен в действии, верни {{"action": "none"}}.
+5. Никакого текста, markdown и пояснений вокруг JSON.
 
 Примеры:
 «вруби на ютубе lo-fi» → {{"action": "youtube", "query": "lo-fi"}}
 «зайди на гитхаб» → {{"action": "open_site", "site": "гитхаб"}}
 «найди в гугле рецепт борща» → {{"action": "google", "query": "рецепт борща"}}
+«включи в лайкнутых треках отпусти меня» → {{"action": "soundcloud_likes", "query": "отпусти меня"}}
+«вруби что-нибудь из лайкнутых» → {{"action": "soundcloud_likes"}}
+«открой мои лайки на саундклауде» → {{"action": "soundcloud_likes", "play": false}}
 «сделай погромче» → {{"action": "volume_up"}}
 «поставь громкость 30» → {{"action": "volume", "level": 30}}
 «переключи на вторую вкладку» → {{"action": "tab", "index": 2}}
@@ -84,6 +89,7 @@ ACTIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "goto": (frozenset({"url"}), frozenset({"url"})),
     "youtube": (frozenset({"query", "index"}), frozenset({"query"})),
     "soundcloud": (frozenset({"query", "index"}), frozenset({"query"})),
+    "soundcloud_likes": (frozenset({"query", "play"}), frozenset()),
     "google": (frozenset({"query"}), frozenset({"query"})),
     "play": (frozenset(), frozenset()),
     "pause": (frozenset(), frozenset()),
@@ -294,6 +300,14 @@ def _build_plan(data: dict[str, Any]) -> LocalPlan | None:
             args["index"] = max(1, min(20, index))
         return LocalPlan(action, args)
 
+    if action == "soundcloud_likes":
+        query = _clean_text(args.get("query"))
+        if len(query) > _QUERY_MAX:
+            return None
+        args["query"] = query
+        args["play"] = _as_bool(args.get("play"), True)
+        return LocalPlan(action, args)
+
     if action == "tab":
         index = _as_int(args.get("index"), 0)
         if index < 1 or index > 99:
@@ -331,6 +345,21 @@ def _clean_url(value: Any) -> str | None:
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
     return url
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "да"}:
+            return True
+        if text in {"false", "0", "no", "нет"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _as_int(value: Any, default: int) -> int:

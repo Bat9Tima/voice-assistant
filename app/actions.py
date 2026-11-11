@@ -322,6 +322,34 @@ class ActionRouter:
                 index=index,
             )
 
+        if action == "soundcloud_likes":
+            query = self._likes_query(str(args.get("query") or ""))
+            play = bool(args.get("play", True))
+            random_choice = not query
+            if play:
+                message = (
+                    "Включаю случайный лайкнутый трек"
+                    if random_choice
+                    else f"Ищу среди лайкнутых: {query}"
+                )
+            else:
+                message = "Открываю лайкнутые треки SoundCloud"
+            self.context.remember(
+                "search",
+                "soundcloud_likes",
+                site="soundcloud",
+                query=query,
+                random=random_choice,
+            )
+            self._remember_media("soundcloud_likes", site="soundcloud")
+            return self._simple(
+                "soundcloud_likes",
+                message,
+                query=query,
+                random=random_choice,
+                play=play,
+            )
+
         if action == "google":
             query = str(args.get("query") or "").strip()
             if not query:
