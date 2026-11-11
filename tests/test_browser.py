@@ -70,6 +70,74 @@ class FakePage:
     def bring_to_front(self) -> None:
         pass
 
+    def is_closed(self) -> bool:
+        return False
+
+
+class FakeCdp:
+    def __init__(self) -> None:
+        self.enabled: list[bool] = []
+        self.detached = False
+
+    def send(self, method: str, params: dict) -> None:
+        if method == "Emulation.setFocusEmulationEnabled":
+            self.enabled.append(bool(params["enabled"]))
+
+    def detach(self) -> None:
+        self.detached = True
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.sessions: list[FakeCdp] = []
+
+    def new_cdp_session(self, page) -> FakeCdp:
+        session = FakeCdp()
+        self.sessions.append(session)
+        return session
+
+
+class FocusPage(FakePage):
+    def __init__(self, url: str, focused: bool) -> None:
+        super().__init__(url)
+        self.focused = focused
+
+    def evaluate(self, script: str, arg=None):
+        if "hasFocus" in script:
+            return self.focused
+        return super().evaluate(script, arg)
+
+
+class CurrentPageTest(unittest.TestCase):
+    def make_controller(self, pages: list[FakePage]) -> BrowserController:
+        controller = BrowserController.__new__(BrowserController)
+        controller._pages = lambda: pages
+        controller._context = FakeContext()
+        controller._assistant_page = None
+        return controller
+
+    def test_returns_focused_tab_and_restores_emulation(self) -> None:
+        soundcloud = FocusPage("https://soundcloud.com/x", False)
+        youtube = FocusPage("https://www.youtube.com/watch?v=1", True)
+        controller = self.make_controller([soundcloud, youtube])
+        self.assertIs(controller._current_page(), youtube)
+        self.assertIs(controller._assistant_page, youtube)
+        for session in controller._context.sessions:
+            self.assertEqual(session.enabled, [False, True])
+            self.assertTrue(session.detached)
+
+    def test_falls_back_to_assistant_tab(self) -> None:
+        soundcloud = FocusPage("https://soundcloud.com/x", False)
+        youtube = FocusPage("https://www.youtube.com/watch?v=1", False)
+        controller = self.make_controller([soundcloud, youtube])
+        controller._assistant_page = soundcloud
+        self.assertIs(controller._current_page(), soundcloud)
+
+    def test_returns_none_without_focus_or_assistant_tab(self) -> None:
+        page = FocusPage("https://example.com", False)
+        controller = self.make_controller([page])
+        self.assertIsNone(controller._current_page())
+
 
 class MediaTargetTest(unittest.TestCase):
     """Без site команда должна попадать в текущую вкладку."""

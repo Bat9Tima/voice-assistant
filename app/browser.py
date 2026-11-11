@@ -275,28 +275,57 @@ class BrowserController(threading.Thread):
     def _current_page(self) -> Any | None:
         """Вкладка, которую пользователь видит прямо сейчас.
 
-        hasFocus срабатывает только у активного окна, поэтому запасной
-        вариант — visibilityState: активная вкладка остаётся visible,
-        даже если окно Chrome не в фокусе.
+        Playwright включает focus emulation, поэтому document.hasFocus()
+        истинен у всех вкладок. Временно отключаем её на время проверки,
+        затем возвращаем как было.
         """
         try:
             pages = self._pages()
         except Exception:
             return None
+        sessions: list[tuple[Any, Any]] = []
         for page in pages:
             try:
-                if page.evaluate("() => document.hasFocus()"):
-                    return page
+                cdp = self._context.new_cdp_session(page)
             except Exception:
                 continue
-        for page in pages:
             try:
-                if page.evaluate(
-                    "() => document.visibilityState === 'visible'"
-                ):
-                    return page
+                cdp.send(
+                    "Emulation.setFocusEmulationEnabled", {"enabled": False}
+                )
             except Exception:
+                try:
+                    cdp.detach()
+                except Exception:
+                    pass
                 continue
+            sessions.append((page, cdp))
+        focused = None
+        try:
+            for page, _ in sessions:
+                try:
+                    if page.evaluate("() => document.hasFocus()"):
+                        focused = page
+                        break
+                except Exception:
+                    continue
+        finally:
+            for _, cdp in sessions:
+                try:
+                    cdp.send(
+                        "Emulation.setFocusEmulationEnabled", {"enabled": True}
+                    )
+                except Exception:
+                    pass
+                try:
+                    cdp.detach()
+                except Exception:
+                    pass
+        if focused is not None:
+            self._assistant_page = focused
+            return focused
+        if self._assistant_page is not None and not self._assistant_page.is_closed():
+            return self._assistant_page
         return None
 
     @staticmethod
