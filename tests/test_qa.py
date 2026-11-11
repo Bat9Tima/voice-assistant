@@ -325,6 +325,13 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.answer("расскажи про фотосинтез")
         self.assertEqual(llm.kwargs[0]["timeout"], 42)
 
+    def test_local_answer_removes_cjk(self) -> None:
+        qa = make_service(llm=FakeLLM("Вода и二氧化碳."))
+        qa.search = FakeSearch(available=False)
+        answer = qa.answer("расскажи про воду")
+        self.assertNotIn("二氧化碳", answer.full)
+        self.assertIn("Вода и", answer.full)
+
     def test_local_llm_error(self) -> None:
         qa = make_service(llm=FakeLLM(error=LocalLLMError("down")))
         qa.search = FakeSearch(available=False)

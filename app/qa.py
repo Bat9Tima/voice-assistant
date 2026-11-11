@@ -221,10 +221,15 @@ def first_sentence(text: str, limit: int = 250) -> str:
     return sentence
 
 
+CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+
+
 def _clean_answer(text: str) -> str:
     text = (text or "").strip()
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
+    text = CJK_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
 
