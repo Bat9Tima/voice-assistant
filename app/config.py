@@ -111,6 +111,38 @@ DEFAULTS: dict[str, Any] = {
         "max_tokens": 256,
         "keep_alive": "30m",
     },
+    # Вопросы: погода через Open-Meteo (без ключа), свежие данные через
+    # Tavily (нужен ключ), остальное — локальная LLM.
+    "qa": {
+        "enabled": True,
+        "weather": {
+            "city": "Новосибирск",
+            "forecast_days": 3,
+            "timeout_sec": 10,
+        },
+        "search": {
+            "enabled": True,
+            "api_key": "",
+            "max_results": 5,
+            "search_depth": "basic",
+            "topic": "general",
+            "news_days": 7,
+            "news_domains": [
+                "rbc.ru",
+                "lenta.ru",
+                "interfax.ru",
+                "ria.ru",
+                "tass.ru",
+                "kommersant.ru",
+                "vedomosti.ru",
+            ],
+            "timeout_sec": 15,
+        },
+        "answer": {
+            "max_tokens": 400,
+            "temperature": 0.2,
+        },
+    },
 }
 
 

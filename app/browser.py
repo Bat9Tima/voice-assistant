@@ -521,6 +521,8 @@ class BrowserController(threading.Thread):
             return self._act_search_result(args)
         if action == "newtab":
             return self._act_new_tab(args)
+        if action == "render":
+            return self._act_render(args)
         if action == "closetab":
             return self._act_close_tab()
         if action == "tabs":
@@ -1227,6 +1229,17 @@ class BrowserController(threading.Thread):
         url = args.get("url")
         if url:
             page.goto(self._clean_url(str(url)), wait_until="domcontentloaded", timeout=45000)
+        self._assistant_page = page
+        return {"url": page.url, "title": self._safe_title(page)}
+
+    def _act_render(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Открывает новую вкладку с готовым HTML (ответ Q&A)."""
+        self._ensure_connection()
+        html = str(args.get("html") or "")
+        if not html.strip():
+            raise BrowserError("Пустой HTML")
+        page = self._context.new_page()
+        page.set_content(html, wait_until="domcontentloaded")
         self._assistant_page = page
         return {"url": page.url, "title": self._safe_title(page)}
 

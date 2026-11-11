@@ -19,6 +19,7 @@ from .browser import BrowserController
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .duck import AppVolumeDucker
 from .local_llm import LocalLLM, LocalLLMError
+from .qa import QAService
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -108,6 +109,7 @@ class Assistant:
         self.router = ActionRouter(cfg, self.browser)
         self.brain = OpenCodeBrain(cfg)
         self.local_llm = LocalLLM(cfg)
+        self.qa = QAService(cfg, self.local_llm, self.browser)
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -600,6 +602,17 @@ class Assistant:
                 if message:
                     self.notify(message)
                 if not result.ok:
+                    beep(320, 120)
+                return message
+
+            qa = getattr(self, "qa", None)
+            if qa is not None and qa.handles(text):
+                answer = qa.answer(text)
+                message = answer.short or answer.error or "Не смог ответить"
+                self.notify(message[:250])
+                if answer.ok:
+                    qa.show(answer)
+                else:
                     beep(320, 120)
                 return message
 

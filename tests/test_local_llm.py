@@ -331,6 +331,53 @@ class LocalLLMHttpTest(unittest.TestCase):
         self.assertIn("model is not loaded", str(ctx.exception))
 
 
+class LocalLLMAnswerTest(unittest.TestCase):
+    def test_answer_without_context_uses_answer_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ"
+        ) as complete:
+            self.assertEqual(llm.answer("что такое фотосинтез"), "Ответ")
+        system, user = complete.call_args.args
+        self.assertIn("голосовой ассистент", system)
+        self.assertNotIn("источников", system)
+        self.assertEqual(user, "что такое фотосинтез")
+
+    def test_answer_with_context_uses_rag_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник\nтекст")
+        system, user = complete.call_args.args
+        self.assertIn("ТОЛЬКО факты", system)
+        self.assertIn("Источники:", user)
+        self.assertIn("[1] Источник", user)
+
+    def test_answer_passes_limits(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ"
+        ) as complete:
+            llm.answer("вопрос", max_tokens=123, temperature=0.5)
+        self.assertEqual(complete.call_args.kwargs["max_tokens"], 123)
+        self.assertEqual(complete.call_args.kwargs["temperature"], 0.5)
+
+    def test_answer_disabled(self) -> None:
+        with self.assertRaises(LocalLLMError):
+            make_llm(enabled=False).answer("вопрос")
+
+    def test_answer_unavailable(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=False):
+            with self.assertRaises(LocalLLMError):
+                llm.answer("вопрос")
+
+    def test_answer_empty_question(self) -> None:
+        with self.assertRaises(LocalLLMError):
+            make_llm().answer("  ")
+
+
 class ExecutePlanTest(unittest.TestCase):
     def setUp(self) -> None:
         self.browser = FakeBrowser()

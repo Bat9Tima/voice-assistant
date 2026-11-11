@@ -87,6 +87,24 @@ def build_system_prompt(registry: ToolRegistry) -> str:
 
 SYSTEM_PROMPT = build_system_prompt(REGISTRY)
 
+ANSWER_SYSTEM = """Ты — голосовой ассистент. Ответь на вопрос кратко: 2–4 предложения, простым русским языком.
+Правила:
+1. Если не знаешь ответа или вопрос требует свежих данных (новости, курс, цены, погода), скажи: «Не знаю, стоит поискать в интернете».
+2. Не выдумывай числа, даты, имена и события.
+3. Пиши только по-русски. Не используй иероглифы и другие алфавиты, кроме имён и названий.
+4. Без markdown, списков и пояснений вокруг ответа.
+"""
+
+RAG_SYSTEM = """Ты — голосовой ассистент. Ответь на вопрос, используя ТОЛЬКО факты из источников ниже.
+Правила:
+1. 3–5 предложений, простым русским языком.
+2. После каждого факта ставь номер источника в квадратных скобках: [1], [2].
+3. Если в источниках нет ответа, скажи: «В найденных источниках нет ответа».
+4. Не выдумывай числа, даты и имена. Не используй знания вне источников.
+5. Пиши только по-русски. Не используй иероглифы и другие алфавиты, кроме имён и названий.
+6. Без markdown, списков и пояснений вокруг ответа.
+"""
+
 
 class LocalLLMError(RuntimeError):
     pass
@@ -168,16 +186,61 @@ class LocalLLM:
             log.info("Локальная LLM: %s %s", plan.action, plan.args)
         return plan
 
+    def answer(
+        self,
+        question: str,
+        context: str = "",
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        """Отвечает на вопрос: по источникам (RAG) или из своих знаний."""
+        question = (question or "").strip()
+        if not question:
+            raise LocalLLMError("пустой вопрос")
+        if not self.enabled:
+            raise LocalLLMError("локальная LLM выключена")
+        if not self.model:
+            raise LocalLLMError("не задана модель llm.model")
+        if not self.available():
+            raise LocalLLMError("локальная LLM недоступна")
+
+        context = (context or "").strip()
+        if context:
+            system = RAG_SYSTEM
+            user = f"Вопрос: {question}\n\nИсточники:\n{context}"
+        else:
+            system = ANSWER_SYSTEM
+            user = question
+        return self._complete(
+            system,
+            user,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
     # ------------------------------------------------------------------- HTTP
     def _chat(self, text: str) -> str:
+        return self._complete(self.system_prompt, text)
+
+    def _complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": text},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "temperature": (
+                self.temperature if temperature is None else float(temperature)
+            ),
+            "max_tokens": self.max_tokens if max_tokens is None else int(max_tokens),
             "stream": False,
         }
         if self.keep_alive not in (None, ""):

@@ -9,6 +9,7 @@ from unittest.mock import patch
 from app.actions import CommandResult
 from app.local_llm import LocalLLMError, LocalPlan
 from app.main import Assistant
+from app.qa import QAAnswer
 
 
 class FakeRouter:
@@ -60,6 +61,26 @@ class FakeTray:
         return self._status
 
 
+class FakeQA:
+    def __init__(self, answer: QAAnswer | None = None) -> None:
+        self.result = answer or QAAnswer(
+            True, "вопрос", "Короткий ответ", "Полный ответ", "local"
+        )
+        self.handled: list[str] = []
+        self.shown: list[QAAnswer] = []
+
+    def handles(self, text: str) -> bool:
+        self.handled.append(text)
+        return True
+
+    def answer(self, text: str) -> QAAnswer:
+        return self.result
+
+    def show(self, answer: QAAnswer) -> bool:
+        self.shown.append(answer)
+        return True
+
+
 class TrayStatusTest(unittest.TestCase):
     @staticmethod
     def make(tray: Any) -> Assistant:
@@ -95,6 +116,7 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant.router = FakeRouter(result)
         assistant.brain = FakeBrain()
         assistant.local_llm = FakeLocalLLM()
+        assistant.qa = None
         assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
@@ -184,6 +206,33 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant = self.make()
         assistant.run_text("спроси агента, какая погода")
         self.assertEqual(assistant.local_llm.seen, [])
+
+    def test_question_uses_qa_before_local_llm(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA()
+        message = assistant.run_text("что такое фотосинтез")
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.local_llm.seen, [])
+        self.assertEqual(assistant.qa.handled, ["что такое фотосинтез"])
+        self.assertEqual(len(assistant.qa.shown), 1)
+
+    def test_qa_error_beeps_without_tab(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(
+            QAAnswer(False, "вопрос", "Нужен ключ", "Нужен ключ", "error")
+        )
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("какие новости")
+        self.assertEqual(message, "Нужен ключ")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.qa.shown, [])
+
+    def test_router_command_does_not_use_qa(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.qa = FakeQA()
+        message = assistant.run_text("открой ютуб")
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.qa.handled, [])
 
 
 if __name__ == "__main__":
