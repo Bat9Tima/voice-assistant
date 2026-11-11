@@ -39,6 +39,12 @@ RESULT_WORDS: dict[str, int] = {
     "десятую": 10, "десятый": 10, "десятая": 10, "десятое": 10,
 }
 
+# «Вторая вкладка» — то же, что «вкладка два». Порядковые формы уже
+# есть в RESULT_WORDS, поэтому не дублируем их вручную.
+TAB_WORDS.update(
+    {word: number for word, number in RESULT_WORDS.items() if number <= 10}
+)
+
 
 def parse_tab(raw: str) -> int | None:
     """Номер вкладки: «2», «два», «десять». Допустимый диапазон 1–10."""

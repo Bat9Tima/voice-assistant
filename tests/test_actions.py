@@ -390,6 +390,23 @@ class SoundCloudTest(unittest.TestCase):
             self.assertFalse(args["random"], phrase)
             self.assertEqual(args["query"], query, phrase)
 
+    def test_likes_word_order_variants(self) -> None:
+        # Перестановка слов не должна отправлять команду в общий поиск.
+        for phrase in (
+            "включи скучно в лайкнутых на саундклауде",
+            "включи в лайкнутых на саундклауде скучно",
+            "включи скучно в лайкнутых",
+            "включи в лайкнутых скучно",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertTrue(args["play"], phrase)
+            self.assertFalse(args["random"], phrase)
+            self.assertEqual(args["query"], "скучно", phrase)
+
     def test_likes_prepositional_without_query_plays_random(self) -> None:
         for phrase in (
             "включи в лайкнутых треках",

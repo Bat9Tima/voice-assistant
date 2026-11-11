@@ -291,5 +291,129 @@ class ShippedIntentsTest(unittest.TestCase):
         )
 
 
+class WordOrderTest(unittest.TestCase):
+    """Перестановка слов не должна менять интент."""
+
+    def setUp(self) -> None:
+        self.intents = IntentSet.load(
+            site_names=["ютуб", "гугл", "саундклауд"],
+            volume_parser=volume_percent,
+        )
+
+    def assert_match(self, phrase: str, intent_id: str, **slots) -> None:
+        match = self.intents.match(phrase)
+        self.assertIsNotNone(match, phrase)
+        assert match is not None
+        self.assertEqual(match.intent.id, intent_id)
+        for name, value in slots.items():
+            self.assertEqual(match.slots[name], value)
+
+    def test_likes_keep_priority_over_generic_search(self) -> None:
+        self.assert_match(
+            "включи скучно в лайкнутых",
+            "soundcloud_likes_play",
+            query="скучно",
+        )
+        self.assert_match(
+            "включи в лайкнутых скучно",
+            "soundcloud_likes_play",
+            query="скучно",
+        )
+        self.assert_match(
+            "включи скучно в лайкнутых на саундклауде",
+            "soundcloud_likes_play",
+        )
+        self.assert_match(
+            "включи в лайкнутых на саундклауде скучно",
+            "soundcloud_likes_play",
+        )
+
+    def test_likes_query_keeps_repeated_preposition(self) -> None:
+        self.assert_match(
+            "включи песню в лесу в лайкнутых",
+            "soundcloud_likes_play",
+            query="песню в лесу",
+        )
+        self.assert_match(
+            "включи в лайкнутых песню в лесу",
+            "soundcloud_likes_play",
+            query="песню в лесу",
+        )
+
+    def test_youtube_search_in_any_order(self) -> None:
+        self.assert_match(
+            "на ютубе найди котиков",
+            "youtube_search",
+            query="котиков",
+        )
+        self.assert_match(
+            "котиков найди на ютубе",
+            "youtube_search",
+            query="котиков",
+        )
+        self.assert_match(
+            "найди на ютубе котиков",
+            "youtube_search",
+            query="котиков",
+        )
+
+    def test_soundcloud_search_in_any_order(self) -> None:
+        self.assert_match(
+            "на саундклауде включи скучно",
+            "soundcloud_search",
+            query="скучно",
+        )
+        self.assert_match(
+            "включи скучно на саундклауде",
+            "soundcloud_search",
+            query="скучно",
+        )
+
+    def test_site_in_any_order(self) -> None:
+        self.assert_match("ютуб открой", "open_site", site="ютуб")
+        self.assert_match("открой ютуб", "open_site", site="ютуб")
+
+    def test_volume_in_any_order(self) -> None:
+        self.assert_match(
+            "десять громкость саундклауда",
+            "soundcloud_volume_set",
+            level=10,
+        )
+        self.assert_match(
+            "громкость саундклауда десять",
+            "soundcloud_volume_set",
+            level=10,
+        )
+
+    def test_result_and_tab_in_any_order(self) -> None:
+        self.assert_match(
+            "вторую открой ссылку",
+            "open_result",
+            index=2,
+        )
+        self.assert_match(
+            "на вторую вкладку переключись",
+            "switch_tab",
+            tab=2,
+        )
+        self.assert_match(
+            "на вторую переключись вкладку",
+            "switch_tab",
+            tab=2,
+        )
+
+    def test_generic_search_does_not_steal_likes(self) -> None:
+        self.assert_match(
+            "включи на саундклауде скучно",
+            "soundcloud_search",
+            query="скучно",
+        )
+
+    def test_unrelated_phrases_still_do_not_match(self) -> None:
+        self.assertIsNone(self.intents.match("включи музыку"))
+        self.assertIsNone(self.intents.match("открой вкладку"))
+        self.assertIsNone(self.intents.match("найди"))
+
+
 if __name__ == "__main__":
     unittest.main()
