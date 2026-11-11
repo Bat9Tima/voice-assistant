@@ -321,6 +321,19 @@ class QAServiceRoutingTest(unittest.TestCase):
         answer = qa.answer("какой курс доллара")
         self.assertEqual(answer.full, "[1] Курс вырос [1].")
 
+    def test_search_answer_removes_meta_with_site_name(self) -> None:
+        qa = make_service(
+            llm=FakeLLM(
+                "[1] В новости о пресс-секретаре Белого дома, Lenta.ru "
+                "сообщает, что она показала фигуру [1]."
+            )
+        )
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст новости")]
+        )
+        answer = qa.answer("какие новости")
+        self.assertEqual(answer.full, "[1] Она показала фигуру [1].")
+
     def test_search_answer_removes_trailing_dont_know(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос [1]. Не знаю."))
         qa.search = FakeSearch(
