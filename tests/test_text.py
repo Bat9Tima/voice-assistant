@@ -51,6 +51,26 @@ class TextTest(unittest.TestCase):
             "открой ютуб",
         )
 
+    def test_strips_wake_word_variants_from_logs(self) -> None:
+        # Реальные варианты из logs/assistant.log: GigaAM слышит wake-фразу
+        # как «хэллона», «хаймена», «хэллоуин», а pre-roll добавляет «пять».
+        aliases = ["хей луна", "эй луна"]
+        self.assertEqual(strip_wake_word("хэллона стоп", aliases), "стоп")
+        self.assertEqual(strip_wake_word("хеллуна стоп", aliases), "стоп")
+        self.assertEqual(strip_wake_word("хаймена продолжи", aliases), "продолжи")
+        self.assertEqual(
+            strip_wake_word("хэллоуин продолжи почему ты че ты предала", aliases),
+            "продолжи почему ты че ты предала",
+        )
+        self.assertEqual(strip_wake_word("пять хэллоуина стоп", aliases), "стоп")
+
+    def test_keeps_command_with_wake_like_word(self) -> None:
+        aliases = ["хей луна", "эй луна"]
+        self.assertEqual(
+            strip_wake_word("включи хэллоуин", aliases),
+            "включи хэллоуин",
+        )
+
     def test_split_agent_trigger_at_start(self) -> None:
         triggers = ["спроси агента", "передай агенту", "агент"]
         self.assertEqual(
@@ -97,6 +117,25 @@ class TextTest(unittest.TestCase):
                 canonicalize(f"громкость {variant} десять"),
                 "громкость саундклауда десять",
             )
+        # Реальное искажение из logs/assistant.log: «саункраунде».
+        self.assertEqual(
+            canonicalize("включи на саункраунде скучно"),
+            "включи на саундклауде скучно",
+        )
+        self.assertEqual(
+            canonicalize("громкость саункраунда десять"),
+            "громкость саундклауда десять",
+        )
+
+    def test_canonicalizes_random_likes(self) -> None:
+        self.assertEqual(
+            canonicalize("включи случайно лайкнутый трек санклауд"),
+            "включи случайный лайкнутый трек саундклауд",
+        )
+        self.assertEqual(
+            canonicalize("включи случайную лайкнутую песню на саундклауде"),
+            "включи случайный лайкнутый трек на саундклауде",
+        )
 
     def test_canonicalizes_lofi(self) -> None:
         self.assertEqual(canonicalize("найди на ютубе луфай"), "найди на ютубе лоуфай")

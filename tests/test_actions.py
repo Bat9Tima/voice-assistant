@@ -289,6 +289,111 @@ class SoundCloudTest(unittest.TestCase):
         self.assertTrue(args["random"])
         self.assertEqual(args["query"], "")
 
+    def test_likes_random_track_stt_variant(self) -> None:
+        # Реальная фраза из лога: «случайно» вместо «случайный» и без «на».
+        result = self.router.handle("включи случайно лайкнутый трек санклауд")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertTrue(args["play"])
+        self.assertTrue(args["random"])
+        self.assertEqual(args["query"], "")
+
+    def test_likes_random_track_open_variant(self) -> None:
+        result = self.router.handle("открой случайный лайкнутый трек на саундклауде")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertTrue(args["play"])
+        self.assertTrue(args["random"])
+
+    def test_likes_open_without_site(self) -> None:
+        for phrase in (
+            "открой лайкнутые треки",
+            "покажи лайкнутые треки",
+            "открой избранное",
+            "открой любимые треки",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertFalse(args["play"], phrase)
+
+    def test_likes_play_without_site(self) -> None:
+        for phrase in (
+            "включи лайкнутые треки",
+            "включи избранное",
+            "включи любимые треки",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertTrue(args["play"], phrase)
+            self.assertTrue(args["random"], phrase)
+
+    def test_likes_play_named_track_without_site(self) -> None:
+        result = self.router.handle("включи лайкнутый трек eva eva")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertEqual(args["query"], "eva eva")
+        self.assertFalse(args["random"])
+
+        self.browser.calls.clear()
+        result = self.router.handle("поставь лайкнутую песню eva eva")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "soundcloud_likes")
+        self.assertEqual(args["query"], "eva eva")
+        self.assertFalse(args["random"])
+
+    def test_likes_site_variants_do_not_leak_prepositions(self) -> None:
+        for phrase in (
+            "включи лайкнутую песню на саундклауде",
+            "включи любимый трек на саундклауде",
+            "включи любимые треки в саундклауде",
+            "поставь любимые треки на саундклауде",
+            "включи избранное в саундклауде",
+            "включи лайки на саундклауде",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "soundcloud_likes", phrase)
+            self.assertEqual(args["query"], "", phrase)
+            self.assertTrue(args["random"], phrase)
+
+    def test_soundcloud_filler_without_query_opens_site(self) -> None:
+        for phrase in (
+            "включи трек на саундклауде",
+            "поставь трек в саундклауде",
+            "включи музыку саундклауд",
+        ):
+            self.browser.calls.clear()
+            result = self.router.handle(phrase)
+            self.assertIsNotNone(result, phrase)
+            action, args = self.browser.calls[0]
+            self.assertEqual(action, "goto", phrase)
+            self.assertEqual(args["url"], "https://soundcloud.com", phrase)
+
+    def test_open_soundcloud_and_play(self) -> None:
+        result = self.router.handle("открой саундклауд и включи скучно")
+        self.assertIsNotNone(result)
+        action, args = self.browser.calls[0]
+        self.assertEqual(action, "soundcloud")
+        self.assertEqual(args["query"], "скучно")
+
+    def test_pause_imperative(self) -> None:
+        result = self.router.handle("остановись")
+        self.assertIsNotNone(result)
+        action, _ = self.browser.calls[0]
+        self.assertEqual(action, "pause")
+
 
 class SoundCloudNoiseFallbackTest(unittest.TestCase):
     """GigaAM на фоне музыки теряет «саундклауда» — спасает контекст вкладки."""

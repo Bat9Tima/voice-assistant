@@ -57,7 +57,7 @@ def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
 
 _SOUNDCLOUD_ANY_RE = re.compile(
     r"(?:сау[нтдк]?[ао]?|с[ао]ун[дт]?|с[ао]н[дт]?[ао]?)"
-    r"\s*[кг]?\s*л[ао]у?[дт]\w*"
+    r"\s*[кг]?\s*[лр][ао]у?н?[дт]\w*"
     r"|sound\s*cloud",
     re.UNICODE,
 )
@@ -68,6 +68,14 @@ _YOUTUBE_SHORT_RE = re.compile(
 _SOUNDCLOUD_ENDINGS = "ауе"
 _QUIET_NUMBER_RE = re.compile(
     r"^тишина\s+(?=\d|ноль|один|два|три|четыре|пять|шесть|семь|восемь|девять|десять)",
+    re.UNICODE,
+)
+# «случайно лайкнутый», «рандомную лайкнутую песню» — GigaAM часто путает
+# прилагательное с наречием. Приводим к одной форме, которую ждут интенты.
+_LIKES_RANDOM_RE = re.compile(
+    r"\b(?:случайн\w*|рандомн\w*)\s+"
+    r"(?:лайкнут\w*|любим\w*|избранн\w*)"
+    r"(?:\s+(?:трек|песн\w*|музык\w*))?",
     re.UNICODE,
 )
 
@@ -87,6 +95,7 @@ def canonicalize(text: str) -> str:
     if not text:
         return text
     result = _SOUNDCLOUD_ANY_RE.sub(_canonical_soundcloud, text)
+    result = _LIKES_RANDOM_RE.sub("случайный лайкнутый трек", result)
     result = _LOFI_ANY_RE.sub("лоуфай", result)
     if result.startswith("тишина "):
         # GigaAM слышит «тише» как «тишина»: «тишина два» → «тише на два».
@@ -108,32 +117,79 @@ _WAKE_FILLERS = {
     "хей", "хэй", "хай",
 }
 
+# Слова, которые STT иногда слышит перед ключевой фразой: pre-roll
+# захватывает хвост музыки или вдох. «пять хэллоуина стоп» → «стоп».
+_WAKE_NOISE_WORDS = {
+    "а", "и", "ну", "вот", "ох", "ай",
+    "ноль", "один", "два", "три", "четыре", "пять", "шесть", "семь",
+    "восемь", "девять", "десять",
+}
+
+# Начала, по которым STT узнаёт «хей луна» / «эй луна». Нужны только для
+# широкого допуска в начале фразы: обычные команды («включи», «открой»)
+# под него не попадают.
+_WAKE_ONSETS = ("хей", "хэй", "хай", "хэ", "хе", "ха", "эй", "ей")
+
+
+def _wake_distance_limit(window: str, target: str, base: int) -> int:
+    """Насколько сильно услышанное может отличаться от алиаса.
+
+    GigaAM слышит «хей луна» как «хэллоуин», «хэллона» или «хаймена».
+    Для похожего начала допускаем больше ошибок, но ограничиваем длину,
+    чтобы не принять за wake-фразу обычную команду.
+    """
+    if not window.startswith(_WAKE_ONSETS):
+        return base
+    if not 5 <= len(window) <= len(target) + 2:
+        return base
+    return max(base, 5)
+
 
 def _wake_prefix_size(text: str, aliases: list[str], max_distance: int = 2) -> int:
     """Сколько первых слов занимает ключевая фраза.
 
     STT часто сливает «хей луна» в «хейлуна», «эйлона» или даже «эйна»,
     поэтому сравниваем первые 1–3 слова без пробелов с тем же вариантом
-    алиаса. Допуск маленький: «хэй люда» (расстояние 3) остаётся командой.
+    алиаса. Для похожего начала («хэллоуин», «хаймена») допуск шире:
+    иначе искажённая wake-фраза остаётся в тексте команды.
     """
     words = text.split()
     targets = [normalize(alias).replace(" ", "") for alias in aliases]
     targets = [target for target in targets if target]
     if not targets:
         return 0
+    best_size = 0
+    best_distance: int | None = None
     for size in (1, 2, 3):
         if len(words) < size:
             continue
         window = "".join(words[:size])
         for target in targets:
-            if window == target:
-                return size
-            if (
-                abs(len(window) - len(target)) <= max_distance
-                and levenshtein(window, target) <= max_distance
-            ):
-                return size
-    return 0
+            limit = _wake_distance_limit(window, target, max_distance)
+            distance = levenshtein(window, target)
+            if abs(len(window) - len(target)) > limit or distance > limit:
+                continue
+            # «хайлу на …»: слово по отдельности похоже на алиас, но вместе
+            # со следующим словом совпадает гораздо точнее. Берём вариант
+            # с наименьшим расстоянием, а не первый подходящий.
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_size = size
+    return best_size
+
+
+def _wake_noise_prefix_size(text: str, aliases: list[str]) -> int:
+    """Ищет wake-фразу после слова-шума в начале.
+
+    Pre-roll иногда захватывает «пять» из музыки: «пять хэллоуина стоп».
+    Тогда команда начинается не с wake-фразы, и обычный префиксный разбор
+    её не видит.
+    """
+    words = text.split()
+    if len(words) < 2 or words[0] not in _WAKE_NOISE_WORDS:
+        return 0
+    size = _wake_prefix_size(" ".join(words[1:]), aliases)
+    return 1 + size if size else 0
 
 
 def strip_wake_word(text: str, aliases: list[str]) -> str:
@@ -141,7 +197,7 @@ def strip_wake_word(text: str, aliases: list[str]) -> str:
 
     STT иногда теряет часть фразы («окей открой ютуб») или сливает её в одно
     слово («хейлуна открой ютуб»), поэтому после точного совпадения
-    проверяются слитные варианты, а затем отдельные слова-wake.
+    проверяются слитные варианты, шум перед фразой и отдельные слова-wake.
     """
     normalized = normalize(text)
     prepared = sorted(
@@ -158,9 +214,20 @@ def strip_wake_word(text: str, aliases: list[str]) -> str:
     if size:
         return " ".join(words[size:]).strip()
 
+    size = _wake_noise_prefix_size(normalized, prepared)
+    if size:
+        return " ".join(words[size:]).strip()
+
     while words and words[0] in _WAKE_FILLERS:
         words.pop(0)
-    return " ".join(words)
+    remainder = " ".join(words)
+    size = _wake_prefix_size(remainder, prepared)
+    if size:
+        return " ".join(words[size:]).strip()
+    size = _wake_noise_prefix_size(remainder, prepared)
+    if size:
+        return " ".join(words[size:]).strip()
+    return remainder
 
 
 def split_agent_trigger(text: str, triggers: list[str]) -> tuple[bool, str]:

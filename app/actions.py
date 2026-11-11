@@ -185,6 +185,33 @@ class ActionRouter:
         if media:
             return media
 
+        # Если в команде есть «саундклауд», но шаблон не совпал (STT добавил
+        # лишнее слово), не отправляем её в YouTube/Google: открываем
+        # SoundCloud или ищем на нём.
+        if _SOUNDCLOUD_RE.search(t) and re.match(
+            r"^(?:включи|поставь|запусти|найди|покажи|послушай|играй)\b", t
+        ):
+            query = self._soundcloud_query(t)
+            if query:
+                self.context.remember(
+                    "search",
+                    "soundcloud_search",
+                    site="soundcloud",
+                    query=query,
+                    index=1,
+                )
+                self._remember_media("soundcloud_search", site="soundcloud")
+                return self._simple(
+                    "soundcloud",
+                    f"Включаю на SoundCloud: {query}",
+                    query=query,
+                    index=1,
+                )
+            self._remember_media("open_site", site="soundcloud")
+            return self._simple(
+                "goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"]
+            )
+
         short_youtube = bool(_YOUTUBE_SHORT_RE.fullmatch(t))
         if "ютуб" in t or "youtube" in t or "you tube" in t or short_youtube:
             if short_youtube:
@@ -951,8 +978,8 @@ class ActionRouter:
     def _likes_query(t: str) -> str:
         query = _SOUNDCLOUD_RE.sub(" ", t)
         query = re.sub(r"\s+", " ", query).strip(" ,.-")
-        query = re.sub(r"^(?:на|в|у|для)\s+", "", query)
-        query = re.sub(r"\s+(?:на|в|у|для)$", "", query)
+        query = re.sub(r"^(?:на|в|у|для)(?:\s+|$)", "", query)
+        query = re.sub(r"(?:^|\s+)(?:на|в|у|для)$", "", query)
         for word in (
             "включи", "поставь", "запусти", "играй", "слушай",
             "открой", "покажи", "зайди", "перейди",
