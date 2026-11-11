@@ -127,6 +127,8 @@ WEATHER_TIME = ("будет", "сегодня", "завтра", "сейчас", 
 CITY_PATTERNS = (
     re.compile(r"(?:погода|погоду|прогноз)\s+(?:в|во|на)\s+(.+)$"),
     re.compile(r"(?:в|во)\s+(.+?)\s+(?:погода|погоду|прогноз)$"),
+    re.compile(r"(?:погода|погоду|прогноз)\s+(.+)$"),
+    re.compile(r"(.+?)\s+(?:погода|погоду|прогноз)$"),
 )
 
 TIME_WORDS = {
@@ -136,6 +138,49 @@ TIME_WORDS = {
     "сейчас",
     "неделю",
     "выходные",
+}
+
+# Слова, которые не могут быть городом: «погода будет», «какая погода».
+CITY_STOP_WORDS = TIME_WORDS | {
+    "погода",
+    "погоду",
+    "погоды",
+    "прогноз",
+    "будет",
+    "будут",
+    "ли",
+    "какая",
+    "какой",
+    "какое",
+    "какие",
+    "что",
+    "где",
+    "когда",
+    "сколько",
+    "там",
+    "мне",
+    "меня",
+    "нас",
+    "интересно",
+    "подскажи",
+    "скажи",
+    "расскажи",
+    "можно",
+    "узнать",
+    "хочу",
+    "хотелось",
+    "бы",
+    "не",
+    "а",
+    "и",
+    "но",
+    "на",
+    "за",
+    "по",
+    "у",
+    "в",
+    "во",
+    "ожидается",
 }
 
 TRAILING_TIME = re.compile(
@@ -212,6 +257,12 @@ def search_query(text: str, *, news: bool) -> str:
     return text
 
 
+def _looks_like_city(city: str) -> bool:
+    words = [_word(part) for part in _normalized(city).split()]
+    words = [word for word in words if word]
+    return bool(words) and not any(word in CITY_STOP_WORDS for word in words)
+
+
 def extract_city(text: str) -> str | None:
     text = (text or "").strip()
     for pattern in CITY_PATTERNS:
@@ -220,11 +271,16 @@ def extract_city(text: str) -> str | None:
             continue
         city = match.group(1).strip(" .,!?:;")
         city = TRAILING_TIME.sub("", city)
-        if " в " in city.lower():
+        city = re.sub(r"^(?:г\.|город|городе)\s+", "", city, flags=re.IGNORECASE)
+        lowered = city.lower()
+        if lowered.startswith(("в ", "во ")):
+            city = city.split(" ", 1)[1].strip()
+            lowered = city.lower()
+        if " в " in lowered:
             city = city.rsplit(" в ", 1)[1].strip()
         if city.lower() in TIME_WORDS:
             return None
-        if city:
+        if city and _looks_like_city(city):
             return city
     return None
 

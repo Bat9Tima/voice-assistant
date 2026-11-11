@@ -207,6 +207,16 @@ class CityExtractionTest(unittest.TestCase):
     def test_city_before_weather(self) -> None:
         self.assertEqual(extract_city("в Москве погода"), "Москве")
 
+    def test_city_without_preposition(self) -> None:
+        self.assertEqual(extract_city("погода Бийск"), "Бийск")
+        self.assertEqual(extract_city("погода Бийск завтра"), "Бийск")
+        self.assertEqual(extract_city("Бийск погода"), "Бийск")
+
+    def test_question_words_are_not_city(self) -> None:
+        self.assertIsNone(extract_city("мне интересно какая погода"))
+        self.assertIsNone(extract_city("погода будет"))
+        self.assertIsNone(extract_city("прогноз погоды"))
+
     def test_time_is_not_city(self) -> None:
         self.assertIsNone(extract_city("погода на завтра"))
         self.assertIsNone(extract_city("какая погода"))
@@ -257,6 +267,13 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.weather = weather
         qa.answer("погода в Москве")
         self.assertEqual(weather.cities, ["Москве"])
+
+    def test_weather_uses_city_without_preposition(self) -> None:
+        weather = FakeWeather(make_report())
+        qa = make_service()
+        qa.weather = weather
+        qa.answer("погода Бийск")
+        self.assertEqual(weather.cities, ["Бийск"])
 
     def test_weather_error(self) -> None:
         qa = make_service()
