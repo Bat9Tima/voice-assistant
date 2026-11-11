@@ -304,7 +304,34 @@ def _clean_answer(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = CJK_RE.sub("", text)
+    text = re.sub(
+        r"(?i)(?:^|(?<=[.!?]\s)|(?<=\]\s))"
+        r"(?:в|на) (?:источнике|новости|статье|материале|обзоре)\b"
+        r"[^.!?]{0,160}?"
+        r"(?:сообщается|говорится|упоминается|отмечается|пишется|"
+        r"было сообщение|есть информация)(?:\s+о том)?,?\s+что\s+",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(\[\d+\]\s+)([а-яё])",
+        lambda match: match.group(1) + match.group(2).upper(),
+        text,
+    )
+    text = re.sub(
+        r"(?i)(?:^|(?<=[.!?]\s)|(?<=\]\s))не знаю[.!?]?\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\s*в (?:представленных |найденных )?источниках "
+        r"(?:нет|отсутствует)[^.!?]*[.!?]?",
+        "",
+        text,
+    )
+    text = re.sub(r"(?m)^\s*\[\d+\]\s*$", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -329,18 +356,151 @@ def _clip(text: str, limit: int = 900) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-def _clean_snippet(text: str) -> str:
-    text = re.sub(r"#+\s*", "", text or "")
+JUNK_LINES = {
+    "видео",
+    "фото",
+    "назад",
+    "дальше",
+    "загрузка",
+    "все новости",
+    "rbc.group",
+    "лента",
+    "редакция",
+    "реклама",
+    "контакты",
+    "пресс-релизы",
+    "техподдержка",
+    "спецпроекты",
+    "вакансии",
+    "rss",
+    "правовая информация",
+}
+
+JUNK_PREFIXES = (
+    "часть первая",
+    "часть вторая",
+    "часть третья",
+    "часть четвертая",
+    "часть четвёртая",
+    "купить подписку",
+    "получать оперативные новости",
+    "читайте также",
+    "подписывайтесь",
+)
+
+RUBRIC_WORDS = (
+    "Интернет и СМИ",
+    "Бывший СССР",
+    "Наука и техника",
+    "В мире",
+    "Происшествия",
+    "Технологии",
+    "Политика",
+    "Общество",
+    "Экономика",
+    "Культура",
+    "Финансы",
+    "Бизнес",
+    "Спорт",
+    "Россия",
+    "Мир",
+)
+
+RUBRIC_SPLIT = re.compile(
+    r"(?<![.:!?])\s+(?:"
+    + "|".join(re.escape(word) for word in RUBRIC_WORDS)
+    + r")\s+"
+)
+
+RUBRIC_TIME = re.compile(
+    r"\s+[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}$"
+)
+INLINE_RUBRIC_TIME = re.compile(
+    r"\s+[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}\s+"
+)
+INLINE_DATE_TIME = re.compile(r"\s+\d{1,2}\s+[а-яё]{3,8},\s*\d{1,2}:\d{2}\s+")
+LEADING_RUBRIC_TIME = re.compile(
+    r"^[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}\s+"
+)
+GLUED_CAPS = re.compile(r"\b([А-ЯЁ]{8,}(?:\s+[А-ЯЁ]{2,})*)\s+(?=[А-ЯЁ][а-яё])")
+PHOTO_CREDIT = re.compile(r"\s+Фото:\s*.*?(?=\s+[А-ЯЁ][а-яё]+\s+[а-яё]+)")
+
+
+def _split_glued(text: str) -> str:
+    """Разделяет склеенные заголовки и теги: «ПутинДмитрий» → «Путин. Дмитрий»."""
+    text = GLUED_CAPS.sub(r"\1. ", text)
+    text = re.sub(r"(?<=[а-яё])«", ". «", text)
+    text = re.sub(r"»(?=[А-ЯЁа-яёA-Za-z])", "». ", text)
+    text = re.sub(r"(?<=[а-яё])(?=[А-ЯЁ])", ". ", text)
+    text = re.sub(r"(?<=[А-ЯЁ])(?=[А-ЯЁ][а-яё])", ". ", text)
+    text = PHOTO_CREDIT.sub(". ", text)
+    text = INLINE_RUBRIC_TIME.sub(". ", text)
+    text = INLINE_DATE_TIME.sub(". ", text)
+    return RUBRIC_SPLIT.sub(". ", text)
+
+
+def _clean_sentence(value: str) -> str:
+    value = value.strip(" \t-–—•·|")
+    value = LEADING_RUBRIC_TIME.sub("", value)
+    value = RUBRIC_TIME.sub("", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    if len(value) < 20:
+        return ""
+    lowered = value.lower()
+    if lowered in JUNK_LINES or lowered.startswith(JUNK_PREFIXES):
+        return ""
+    words = re.findall(r"[А-Яа-яЁёA-Za-z]+", value)
+    if len(words) < 3:
+        return ""
+    lower_words = sum(1 for word in words if word[0].islower())
+    if lower_words < 2:
+        return ""
+    capitals = sum(1 for word in words if word[0].isupper())
+    if len(words) >= 6 and capitals / len(words) > 0.55:
+        return ""
+    if value.count("|") >= 2:
+        return ""
+    return value
+
+
+def _snippet_parts(text: str, limit: int = 3) -> list[str]:
+    text = (text or "").replace("\r", "\n")
+    text = re.sub(r"#+\s*", "", text)
     text = text.replace("[...]", " ")
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[*_`>]+", " ", text)
+    parts: list[str] = []
+    for raw_line in text.split("\n"):
+        line = " ".join(raw_line.split())
+        if not line:
+            continue
+        line = _split_glued(line)
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            sentence = _clean_sentence(sentence)
+            if not sentence:
+                continue
+            parts.append(sentence.rstrip(".!?"))
+            if len(parts) >= limit:
+                return parts
+    return parts
+
+
+def _clean_snippet(text: str, limit: int = 400, title: str = "") -> str:
+    if title:
+        text = re.sub(re.escape(title), " ", text or "", flags=re.IGNORECASE)
+    parts = _snippet_parts(text)
+    if not parts:
+        return ""
+    return _clip(". ".join(parts), limit)
 
 
 def _snippets_text(results: list[SearchResult], limit: int = 3) -> str:
     parts = []
     for index, result in enumerate(results[:limit], 1):
-        parts.append(
-            f"[{index}] {result.title}\n{_clip(_clean_snippet(result.content))}"
-        )
+        snippet = _clean_snippet(result.content, title=result.title)
+        block = f"[{index}] {result.title}"
+        if snippet:
+            block += f"\n{snippet}"
+        parts.append(block)
     return "\n\n".join(parts)
 
 
@@ -599,10 +759,15 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         ]
         answer = ""
         if self._llm_available() and self.llm is not None:
-            context = "\n\n".join(
-                f"[{index}] {result.title}\n{result.url}\n{_clip(result.content)}"
-                for index, result in enumerate(results[:4], 1)
-            )
+            blocks = []
+            for index, result in enumerate(results[:4], 1):
+                snippet = _clean_snippet(
+                    result.content, limit=500, title=result.title
+                )
+                if not snippet:
+                    continue
+                blocks.append(f"[{index}] {result.title}\n{result.url}\n{snippet}")
+            context = "\n\n".join(blocks)
             try:
                 answer = self.llm.answer(
                     text,
@@ -627,12 +792,20 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 
         note = ""
         if answer:
-            note = "Модель не дала ответа по источникам, показываю выдержки.\n\n"
+            note = "Модель не смогла пересказать источники. Вот главное из найденного:\n\n"
+        else:
+            note = "Вот главное из найденного:\n\n"
         full = note + _snippets_text(results)
+        short = (
+            first_sentence(
+                _clean_snippet(results[0].content, title=results[0].title)
+            )
+            or results[0].title
+        )
         return QAAnswer(
             True,
             text,
-            first_sentence(_clean_snippet(results[0].content)),
+            short,
             full,
             "search",
             sources,

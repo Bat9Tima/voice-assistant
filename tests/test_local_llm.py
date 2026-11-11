@@ -368,7 +368,8 @@ class LocalLLMAnswerTest(unittest.TestCase):
         ) as complete:
             llm.answer("вопрос", "[1] Источник\nтекст")
         system, user = complete.call_args.args
-        self.assertIn("ТОЛЬКО факты", system)
+        self.assertIn("по источникам", system)
+        self.assertIn("ссылку", system)
         self.assertIn("Источники:", user)
         self.assertIn("[1] Источник", user)
 

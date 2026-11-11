@@ -301,6 +301,47 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(len(answer.sources), 1)
         self.assertEqual(qa.search.calls, [("какой курс доллара", False)])
 
+    def test_search_answer_removes_meta_phrases(self) -> None:
+        qa = make_service(
+            llm=FakeLLM("В источнике [1] сообщается о том, что курс вырос [1].")
+        )
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Курс вырос")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertEqual(answer.full, "курс вырос [1].")
+
+    def test_search_answer_removes_news_meta_phrases(self) -> None:
+        qa = make_service(
+            llm=FakeLLM("[1] В новости о курсе говорится, что курс вырос [1].")
+        )
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Курс вырос")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertEqual(answer.full, "[1] Курс вырос [1].")
+
+    def test_search_answer_removes_trailing_dont_know(self) -> None:
+        qa = make_service(llm=FakeLLM("Курс вырос [1]. Не знаю."))
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Курс вырос")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertEqual(answer.full, "Курс вырос [1].")
+
+    def test_search_answer_removes_refusal_sentences(self) -> None:
+        qa = make_service(
+            llm=FakeLLM(
+                "[1] Курс вырос [1]. Не знаю. "
+                "В представленных источниках нет информации."
+            )
+        )
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Курс вырос")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertEqual(answer.full, "[1] Курс вырос [1].")
+
     def test_news_query_uses_news_mode(self) -> None:
         qa = make_service(llm=FakeLLM("Новость [1]."))
         qa.search = FakeSearch(
@@ -327,7 +368,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
-        self.assertIn("Модель не дала ответа", answer.full)
+        self.assertIn("Модель не смогла пересказать источники", answer.full)
         self.assertIn("[1] Новость", answer.full)
 
     def test_search_fallback_for_citation_only_answer(self) -> None:
@@ -337,19 +378,45 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
-        self.assertIn("Модель не дала ответа", answer.full)
+        self.assertIn("Модель не смогла пересказать источники", answer.full)
         self.assertIn("[1] Новость", answer.full)
 
     def test_search_fallback_cleans_markdown(self) -> None:
         qa = make_service(llm=FakeLLM(available=False))
         qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "## Лента ### Заголовок")]
+            [
+                SearchResult(
+                    "Новость",
+                    "https://example.com",
+                    "## Лента\n\n### За ночь над Россией сбили 155 беспилотников",
+                )
+            ]
         )
         answer = qa.answer("какие новости")
         self.assertTrue(answer.ok)
-        self.assertNotIn("##", answer.short)
+        self.assertNotIn("##", answer.full)
         self.assertNotIn("###", answer.full)
-        self.assertIn("Лента Заголовок", answer.short)
+        self.assertIn("За ночь над Россией", answer.short)
+        self.assertIn("Вот главное из найденного", answer.full)
+
+    def test_search_fallback_drops_tag_soup(self) -> None:
+        qa = make_service(llm=FakeLLM(available=False))
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Администрация США",
+                    "https://example.com",
+                    "Владимир ПутинДмитрий ПесковАдминистрация "
+                    "СШАВАШИНГТОНКИТАЙ Глава Пентагона жестко ответил "
+                    "на планы Конгресса по его импичменту",
+                )
+            ]
+        )
+        answer = qa.answer("какие новости")
+        self.assertTrue(answer.ok)
+        self.assertIn("Глава Пентагона", answer.short)
+        self.assertNotIn("ПутинДмитрий", answer.full)
+        self.assertNotIn("ВАШИНГТОНКИТАЙ", answer.full)
 
     def test_search_error(self) -> None:
         qa = make_service(llm=FakeLLM())
