@@ -164,7 +164,13 @@ def is_question(text: str) -> bool:
     first = words[0]
     if first in {"а", "и", "но"} and len(words) > 1:
         first = words[1]
-    if first in {"правда", "верно", "есть", "будет", "можно"}:
+    if first == "мне" and len(words) > 1:
+        return words[1] == "интересно"
+    if first == "хотелось" and len(words) > 2:
+        return words[1] == "бы" and words[2] in {"узнать", "спросить", "уточнить"}
+    if first == "можно" and len(words) > 1:
+        return words[1] == "ли" or words[1] in {"узнать", "спросить", "уточнить"}
+    if first in {"правда", "верно", "есть", "будет"}:
         return len(words) > 1 and words[1] == "ли"
     if first == "интересно" and len(words) > 1:
         return words[1] in QUESTION_STARTS

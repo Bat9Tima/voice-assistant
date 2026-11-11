@@ -125,6 +125,9 @@ class QuestionDetectionTest(unittest.TestCase):
             "можешь рассказать про космос",
             "не подскажешь, сколько стоит билет",
             "интересно, почему небо голубое",
+            "мне интересно, почему небо голубое",
+            "можно узнать, сколько стоит билет",
+            "хотелось бы узнать про Python",
         ):
             with self.subTest(text=text):
                 self.assertTrue(is_question(text))
@@ -136,6 +139,7 @@ class QuestionDetectionTest(unittest.TestCase):
             "сделай что-нибудь странное",
             "есть хочу",
             "можешь открыть ютуб",
+            "можно открыть ютуб",
         ):
             with self.subTest(text=text):
                 self.assertFalse(is_question(text))
