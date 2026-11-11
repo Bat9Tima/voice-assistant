@@ -302,6 +302,17 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertIn("Модель не дала ответа", answer.full)
         self.assertIn("[1] Новость", answer.full)
 
+    def test_search_fallback_cleans_markdown(self) -> None:
+        qa = make_service(llm=FakeLLM(available=False))
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "## Лента ### Заголовок")]
+        )
+        answer = qa.answer("какие новости")
+        self.assertTrue(answer.ok)
+        self.assertNotIn("##", answer.short)
+        self.assertNotIn("###", answer.full)
+        self.assertIn("Лента Заголовок", answer.short)
+
     def test_search_error(self) -> None:
         qa = make_service(llm=FakeLLM())
         qa.search = FakeSearch(error=SearchError("boom"))

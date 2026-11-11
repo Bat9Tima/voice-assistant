@@ -254,10 +254,18 @@ def _clip(text: str, limit: int = 900) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _clean_snippet(text: str) -> str:
+    text = re.sub(r"#+\s*", "", text or "")
+    text = text.replace("[...]", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _snippets_text(results: list[SearchResult], limit: int = 3) -> str:
     parts = []
     for index, result in enumerate(results[:limit], 1):
-        parts.append(f"[{index}] {result.title}\n{_clip(result.content)}")
+        parts.append(
+            f"[{index}] {result.title}\n{_clip(_clean_snippet(result.content))}"
+        )
     return "\n\n".join(parts)
 
 
@@ -545,7 +553,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         return QAAnswer(
             True,
             text,
-            first_sentence(results[0].content),
+            first_sentence(_clean_snippet(results[0].content)),
             full,
             "search",
             sources,
