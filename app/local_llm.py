@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
 from .actions import SITE_URLS
+from .tools import ToolRegistry, build_default_registry
 
 log = logging.getLogger(__name__)
 
@@ -42,25 +41,22 @@ SITE_KEYS = [
     "саундклауд",
 ]
 
-SYSTEM_PROMPT = f"""Ты — планировщик голосовых команд для браузера.
+REGISTRY = build_default_registry(SITE_URLS, SITE_KEYS)
+
+
+def build_system_prompt(registry: ToolRegistry) -> str:
+    """Собирает промпт планировщика из описаний реестра инструментов.
+
+    Новый инструмент достаточно добавить в реестр — промпт обновится сам,
+    и модель не сможет выбрать действие, которого нет в реестре.
+    """
+    tools = "\n".join(registry.prompt_lines())
+    return f"""Ты — планировщик голосовых команд для браузера.
 По русской фразе верни ровно один JSON-объект и ничего больше.
 Схема: {{"action": "<действие>", ...аргументы}}.
 
 Действия:
-- open_site: {{"site": "<ключ>"}} — открыть сайт. Ключи: {", ".join(SITE_KEYS)}.
-- goto: {{"url": "https://..."}} — открыть точный http(s)-адрес.
-- youtube: {{"query": "...", "index": 1}} — найти и включить видео.
-- soundcloud: {{"query": "...", "index": 1}} — найти и включить трек.
-- soundcloud_likes: {{"query": "...", "play": true}} — включить трек из лайкнутых SoundCloud. Без query — случайный лайкнутый; play=false — просто открыть лайкнутые.
-- google: {{"query": "..."}} — поиск в Google.
-- play, pause, next, prev — управление медиа.
-- newtab, closetab — вкладки.
-- tab: {{"index": 2}} — переключить вкладку.
-- back, forward, reload — навигация.
-- scroll: {{"direction": "up"|"down"}} — прокрутка.
-- volume: {{"level": 0..100}} — системная громкость.
-- volume_up, volume_down, mute, unmute — громкость.
-- status — что открыто в браузере.
+{tools}
 - none — это не команда или непонятно.
 
 Правила:
@@ -83,35 +79,8 @@ SYSTEM_PROMPT = f"""Ты — планировщик голосовых кома�
 «какая погода» → {{"action": "none"}}
 """
 
-# action -> (разрешённые аргументы, обязательные аргументы)
-ACTIONS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "open_site": (frozenset({"site"}), frozenset({"site"})),
-    "goto": (frozenset({"url"}), frozenset({"url"})),
-    "youtube": (frozenset({"query", "index"}), frozenset({"query"})),
-    "soundcloud": (frozenset({"query", "index"}), frozenset({"query"})),
-    "soundcloud_likes": (frozenset({"query", "play"}), frozenset()),
-    "google": (frozenset({"query"}), frozenset({"query"})),
-    "play": (frozenset(), frozenset()),
-    "pause": (frozenset(), frozenset()),
-    "next": (frozenset(), frozenset()),
-    "prev": (frozenset(), frozenset()),
-    "newtab": (frozenset(), frozenset()),
-    "closetab": (frozenset(), frozenset()),
-    "tab": (frozenset({"index"}), frozenset({"index"})),
-    "back": (frozenset(), frozenset()),
-    "forward": (frozenset(), frozenset()),
-    "reload": (frozenset(), frozenset()),
-    "scroll": (frozenset({"direction"}), frozenset({"direction"})),
-    "volume": (frozenset({"level"}), frozenset({"level"})),
-    "volume_up": (frozenset(), frozenset()),
-    "volume_down": (frozenset(), frozenset()),
-    "mute": (frozenset(), frozenset()),
-    "unmute": (frozenset(), frozenset()),
-    "status": (frozenset(), frozenset()),
-}
 
-_QUERY_MAX = 200
-_URL_MAX = 2048
+SYSTEM_PROMPT = build_system_prompt(REGISTRY)
 
 
 class LocalLLMError(RuntimeError):
@@ -131,8 +100,12 @@ class LocalLLM:
     и исполнение остаются на стороне ActionRouter.
     """
 
-    def __init__(self, cfg: dict[str, Any]) -> None:
+    def __init__(
+        self, cfg: dict[str, Any], registry: ToolRegistry | None = None
+    ) -> None:
         section = (cfg or {}).get("llm") or {}
+        self.registry = registry or REGISTRY
+        self.system_prompt = build_system_prompt(self.registry)
         self.enabled = bool(section.get("enabled", False))
         self.base_url = str(section.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
         self.model = str(section.get("model") or "").strip()
@@ -183,7 +156,7 @@ class LocalLLM:
         if data is None:
             log.warning("Локальная LLM вернула не JSON: %s", content[:300])
             return None
-        plan = _build_plan(data)
+        plan = _build_plan(data, self.registry)
         if plan is None:
             log.info("Локальная LLM: действие отклонено: %s", data)
         else:
@@ -195,7 +168,7 @@ class LocalLLM:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": text},
             ],
             "temperature": self.temperature,
@@ -267,105 +240,18 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _build_plan(data: dict[str, Any]) -> LocalPlan | None:
+def _build_plan(
+    data: dict[str, Any], registry: ToolRegistry = REGISTRY
+) -> LocalPlan | None:
+    """Превращает ответ модели в план, проверяя его по реестру.
+
+    Реестр сам отбрасывает неизвестные действия, лишние аргументы,
+    неверные типы и значения вне диапазона.
+    """
     action = str(data.get("action") or "").strip().lower()
-    if action == "none" or action not in ACTIONS:
+    if action == "none":
         return None
-    allowed, required = ACTIONS[action]
-    if not required <= set(data):
+    args = registry.validate(action, data)
+    if args is None:
         return None
-    args: dict[str, Any] = {key: data[key] for key in allowed if key in data}
-
-    if action == "open_site":
-        site = _clean_text(args.get("site"), lower=True)
-        if site not in SITE_URLS:
-            return None
-        args["site"] = site
-        return LocalPlan(action, args)
-
-    if action == "goto":
-        url = _clean_url(args.get("url"))
-        if url is None:
-            return None
-        args["url"] = url
-        return LocalPlan(action, args)
-
-    if action in {"youtube", "soundcloud", "google"}:
-        query = _clean_text(args.get("query"))
-        if not query or len(query) > _QUERY_MAX:
-            return None
-        args["query"] = query
-        if action in {"youtube", "soundcloud"}:
-            index = _as_int(args.get("index"), 1)
-            args["index"] = max(1, min(20, index))
-        return LocalPlan(action, args)
-
-    if action == "soundcloud_likes":
-        query = _clean_text(args.get("query"))
-        if len(query) > _QUERY_MAX:
-            return None
-        args["query"] = query
-        args["play"] = _as_bool(args.get("play"), True)
-        return LocalPlan(action, args)
-
-    if action == "tab":
-        index = _as_int(args.get("index"), 0)
-        if index < 1 or index > 99:
-            return None
-        args["index"] = index
-        return LocalPlan(action, args)
-
-    if action == "scroll":
-        direction = _clean_text(args.get("direction"), lower=True)
-        if direction not in {"up", "down"}:
-            return None
-        args["direction"] = direction
-        return LocalPlan(action, args)
-
-    if action == "volume":
-        level = _as_int(args.get("level"), -1)
-        if level < 0 or level > 100:
-            return None
-        args["level"] = level
-        return LocalPlan(action, args)
-
-    return LocalPlan(action, {})
-
-
-def _clean_text(value: Any, lower: bool = False) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    return text.lower() if lower else text
-
-
-def _clean_url(value: Any) -> str | None:
-    url = str(value or "").strip()
-    if not url or len(url) > _URL_MAX or re.search(r"\s", url):
-        return None
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return None
-    return url
-
-
-def _as_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"true", "1", "yes", "да"}:
-            return True
-        if text in {"false", "0", "no", "нет"}:
-            return False
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
-
-
-def _as_int(value: Any, default: int) -> int:
-    if isinstance(value, bool):
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    return LocalPlan(action, args)
