@@ -90,6 +90,12 @@ NEWS_MARKERS = (
     "недавн",
 )
 
+NEWS_ONLY = re.compile(
+    r"^(?:(?:какие|что|последние|свежие|недавние|новые)\s+)?"
+    r"(?:новости|нового|новое|случилось|происходит)"
+    r"(?:\s+(?:(?:в|по|о)\s+)?(?:россии|мире|стране))?$"
+)
+
 EXPLICIT_SEARCH = (
     "поищи",
     "погугли",
@@ -177,6 +183,16 @@ def needs_search(text: str) -> bool:
     return any(marker in lowered for marker in FRESH_MARKERS)
 
 
+def search_query(text: str, *, news: bool) -> str:
+    """Уточняет слишком общий новостной запрос вроде «какие новости»."""
+    if not news:
+        return text
+    lowered = " ".join(_normalized(text).split())
+    if NEWS_ONLY.match(lowered):
+        return "главные новости России сегодня"
+    return text
+
+
 def extract_city(text: str) -> str | None:
     text = (text or "").strip()
     for pattern in CITY_PATTERNS:
@@ -216,10 +232,27 @@ def _has_citation(text: str) -> bool:
     return bool(re.search(r"\[\d+\]", text or ""))
 
 
+def _usable_answer(text: str) -> bool:
+    """Отсекает ответы без ссылок и ответы из одних ссылок вроде «[1] [2]»."""
+    if not _has_citation(text):
+        return False
+    stripped = re.sub(r"\[\d+\]", " ", text)
+    stripped = re.sub(r"[^\w]+", " ", stripped, flags=re.UNICODE)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    return len(stripped) >= 5
+
+
+def _clip(text: str, limit: int = 900) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 def _snippets_text(results: list[SearchResult], limit: int = 3) -> str:
     parts = []
     for index, result in enumerate(results[:limit], 1):
-        parts.append(f"[{index}] {result.title}\n{result.content}")
+        parts.append(f"[{index}] {result.title}\n{_clip(result.content)}")
     return "\n\n".join(parts)
 
 
@@ -260,6 +293,7 @@ class QAService:
         answer_cfg = section.get("answer") or {}
         self.max_tokens = int(answer_cfg.get("max_tokens") or 400)
         self.temperature = float(answer_cfg.get("temperature") or 0.2)
+        self.timeout = float(answer_cfg.get("timeout_sec") or 45)
 
     # ------------------------------------------------------------------ public
     def handles(self, text: str) -> bool:
@@ -433,6 +467,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 text,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
+                timeout=self.timeout,
             )
         except LocalLLMError as exc:
             return self._error(
@@ -447,8 +482,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         return QAAnswer(True, text, first_sentence(answer), answer, "local")
 
     def _answer_search(self, text: str, *, news: bool) -> QAAnswer:
+        query = search_query(text, news=news)
         try:
-            results = self.search.search(text, news=news)
+            results = self.search.search(query, news=news)
         except SearchError as exc:
             return self._error(
                 text,
@@ -472,8 +508,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         answer = ""
         if self._llm_available() and self.llm is not None:
             context = "\n\n".join(
-                f"[{index}] {result.title}\n{result.url}\n{result.content}"
-                for index, result in enumerate(results, 1)
+                f"[{index}] {result.title}\n{result.url}\n{_clip(result.content)}"
+                for index, result in enumerate(results[:4], 1)
             )
             try:
                 answer = self.llm.answer(
@@ -481,12 +517,13 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     context,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
+                    timeout=self.timeout,
                 )
             except LocalLLMError as exc:
                 log.warning("Q&A: локальная LLM не ответила: %s", exc)
         answer = _clean_answer(answer)
 
-        if answer and _has_citation(answer):
+        if answer and _usable_answer(answer):
             return QAAnswer(
                 True,
                 text,
@@ -498,7 +535,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 
         note = ""
         if answer:
-            note = "Модель не сослалась на источники, показываю выдержки.\n\n"
+            note = "Модель не дала ответа по источникам, показываю выдержки.\n\n"
         full = note + _snippets_text(results)
         return QAAnswer(
             True,

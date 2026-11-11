@@ -313,6 +313,24 @@ class LocalLLMHttpTest(unittest.TestCase):
             llm._chat("включи")
         self.assertNotIn("keep_alive", captured["payload"])
 
+    def test_complete_uses_custom_timeout(self) -> None:
+        body = json.dumps(
+            {"choices": [{"message": {"content": "Ответ"}}]}
+        ).encode("utf-8")
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["timeout"] = timeout
+            return FakeResponse(body=body)
+
+        llm = make_llm()
+        with patch(
+            "app.local_llm.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            llm._complete("system", "user", timeout=42)
+        self.assertEqual(captured["timeout"], 42)
+
     def test_http_error_is_reported(self) -> None:
         error = urllib.error.HTTPError(
             "http://127.0.0.1:11434/v1/chat/completions",
@@ -362,6 +380,14 @@ class LocalLLMAnswerTest(unittest.TestCase):
             llm.answer("вопрос", max_tokens=123, temperature=0.5)
         self.assertEqual(complete.call_args.kwargs["max_tokens"], 123)
         self.assertEqual(complete.call_args.kwargs["temperature"], 0.5)
+
+    def test_answer_passes_timeout(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ"
+        ) as complete:
+            llm.answer("вопрос", timeout=42)
+        self.assertEqual(complete.call_args.kwargs["timeout"], 42)
 
     def test_answer_disabled(self) -> None:
         with self.assertRaises(LocalLLMError):

@@ -103,6 +103,7 @@ RAG_SYSTEM = """Ты — голосовой ассистент. Ответь н�
 4. Не выдумывай числа, даты и имена. Не используй знания вне источников.
 5. Пиши только по-русски. Не используй иероглифы и другие алфавиты, кроме имён и названий.
 6. Без markdown, списков и пояснений вокруг ответа.
+7. Не отвечай одними номерами источников — нужен связный текст.
 """
 
 
@@ -193,6 +194,7 @@ class LocalLLM:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> str:
         """Отвечает на вопрос: по источникам (RAG) или из своих знаний."""
         question = (question or "").strip()
@@ -217,6 +219,7 @@ class LocalLLM:
             user,
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=timeout,
         )
 
     # ------------------------------------------------------------------- HTTP
@@ -230,6 +233,7 @@ class LocalLLM:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        timeout: float | None = None,
     ) -> str:
         payload = {
             "model": self.model,
@@ -258,7 +262,8 @@ class LocalLLM:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            request_timeout = self.timeout if timeout is None else float(timeout)
+            with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:300]

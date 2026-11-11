@@ -141,6 +141,7 @@ DEFAULTS: dict[str, Any] = {
         "answer": {
             "max_tokens": 400,
             "temperature": 0.2,
+            "timeout_sec": 45,
         },
     },
 }

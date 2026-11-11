@@ -13,6 +13,7 @@ from app.qa import (
     is_question,
     is_weather_question,
     needs_search,
+    search_query,
 )
 from app.search import SearchError, SearchResult
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -65,12 +66,14 @@ class FakeLLM:
         self.is_available = available
         self.error = error
         self.calls: list[tuple[str, str]] = []
+        self.kwargs: list[dict] = []
 
     def available(self) -> bool:
         return self.is_available
 
     def answer(self, question: str, context: str = "", **kwargs) -> str:
         self.calls.append((question, context))
+        self.kwargs.append(dict(kwargs))
         if self.error is not None:
             raise self.error
         return self.text
@@ -146,6 +149,34 @@ class QuestionDetectionTest(unittest.TestCase):
         self.assertTrue(needs_search("поищи рецепт борща"))
         self.assertFalse(needs_search("что такое фотосинтез"))
         self.assertFalse(needs_search("расскажи про Python"))
+
+
+class SearchQueryTest(unittest.TestCase):
+    def test_generic_news_request_becomes_concrete(self) -> None:
+        for text in (
+            "какие новости",
+            "что нового",
+            "что нового в России",
+            "последние новости",
+            "новости России",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    search_query(text, news=True),
+                    "главные новости России сегодня",
+                )
+
+    def test_topical_news_request_is_kept(self) -> None:
+        self.assertEqual(
+            search_query("новости про выборы", news=True),
+            "новости про выборы",
+        )
+
+    def test_general_search_is_kept(self) -> None:
+        self.assertEqual(
+            search_query("какие новости", news=False),
+            "какие новости",
+        )
 
 
 class CityExtractionTest(unittest.TestCase):
@@ -238,7 +269,18 @@ class QAServiceRoutingTest(unittest.TestCase):
             [SearchResult("Новость", "https://example.com", "Текст")]
         )
         qa.answer("какие новости")
-        self.assertEqual(qa.search.calls, [("какие новости", True)])
+        self.assertEqual(
+            qa.search.calls,
+            [("главные новости России сегодня", True)],
+        )
+
+    def test_topical_news_query_is_kept(self) -> None:
+        qa = make_service(llm=FakeLLM("Новость [1]."))
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст")]
+        )
+        qa.answer("новости про выборы")
+        self.assertEqual(qa.search.calls, [("новости про выборы", True)])
 
     def test_search_fallback_without_citations(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос."))
@@ -247,7 +289,17 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
-        self.assertIn("Модель не сослалась", answer.full)
+        self.assertIn("Модель не дала ответа", answer.full)
+        self.assertIn("[1] Новость", answer.full)
+
+    def test_search_fallback_for_citation_only_answer(self) -> None:
+        qa = make_service(llm=FakeLLM("[1] [2]"))
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст новости")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertTrue(answer.ok)
+        self.assertIn("Модель не дала ответа", answer.full)
         self.assertIn("[1] Новость", answer.full)
 
     def test_search_error(self) -> None:
@@ -264,6 +316,14 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertTrue(answer.ok)
         self.assertEqual(answer.kind, "local")
         self.assertEqual(qa.search.calls, [])
+
+    def test_local_answer_passes_qa_timeout(self) -> None:
+        llm = FakeLLM("Фотосинтез — это процесс.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(available=False)
+        qa.timeout = 42
+        qa.answer("расскажи про фотосинтез")
+        self.assertEqual(llm.kwargs[0]["timeout"], 42)
 
     def test_local_llm_error(self) -> None:
         qa = make_service(llm=FakeLLM(error=LocalLLMError("down")))
