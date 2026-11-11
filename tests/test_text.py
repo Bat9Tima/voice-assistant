@@ -25,6 +25,32 @@ class TextTest(unittest.TestCase):
         self.assertEqual(translit("щёлочь"), "shcheloch")
         self.assertEqual(translit("EVA EVA"), "eva eva")
 
+    def test_numbers_to_digits(self) -> None:
+        cases = {
+            "восемьсот двенадцать": "812",
+            "двадцать один": "21",
+            "сто двадцать три": "123",
+            "тысяча": "1000",
+            "две тысячи двадцать": "2020",
+            "тысяча девятьсот восемьдесят четыре": "1984",
+            "два миллиона триста тысяч": "2300000",
+            "ноль": "0",
+            "сто пять": "105",
+        }
+        for source, expected in cases.items():
+            self.assertEqual(normalize(source), expected, source)
+
+    def test_numbers_inside_commands(self) -> None:
+        self.assertEqual(
+            normalize("включи громкость на восемьдесят"),
+            "включи громкость на 80",
+        )
+        self.assertEqual(normalize("еще один"), "еще 1")
+
+    def test_ordinals_and_wrong_order_are_kept(self) -> None:
+        self.assertEqual(normalize("двадцать первый"), "двадцать первый")
+        self.assertEqual(normalize("один два"), "один два")
+
     def test_strip_exact_wake_word(self) -> None:
         self.assertEqual(
             strip_wake_word("Окей ассистент, открой ютуб!", ["окей ассистент"]),
@@ -53,9 +79,9 @@ class TextTest(unittest.TestCase):
     def test_strips_merged_wake_phrase(self) -> None:
         aliases = ["хей луна", "эй луна"]
         self.assertEqual(strip_wake_word("хейлуна открой ютуб", aliases), "открой ютуб")
-        self.assertEqual(strip_wake_word("эйлона громкость пять", aliases), "громкость пять")
+        self.assertEqual(strip_wake_word("эйлона громкость пять", aliases), "громкость 5")
         self.assertEqual(strip_wake_word("хайлу на следующий трек", aliases), "следующий трек")
-        self.assertEqual(strip_wake_word("эйна громкость пять", aliases), "громкость пять")
+        self.assertEqual(strip_wake_word("эйна громкость пять", aliases), "громкость 5")
 
     def test_strips_standalone_wake_filler(self) -> None:
         self.assertEqual(
