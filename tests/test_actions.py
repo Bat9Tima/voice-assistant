@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.actions import VOLUME_STEP, ActionRouter, parse_volume_percent
+from app.intents import IntentSet
 
 
 class FakeBrowser:
@@ -558,6 +559,26 @@ class MediaControlTest(unittest.TestCase):
         action, args = self.handle("пауза на ютубе")
         self.assertEqual(action, "pause")
         self.assertEqual(args["site"], "youtube")
+
+
+class MediaFallbackTest(unittest.TestCase):
+    """Резервный путь, если intents.json не загрузился."""
+
+    def setUp(self) -> None:
+        self.browser = FakeBrowser()
+        self.router = ActionRouter({}, self.browser, intents=IntentSet())
+
+    def test_stop(self) -> None:
+        result = self.router.handle("стоп видео")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.handled)
+        self.assertEqual(self.browser.calls[0][0], "stop")
+
+    def test_pause(self) -> None:
+        result = self.router.handle("поставь на паузу")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.handled)
+        self.assertEqual(self.browser.calls[0][0], "pause")
 
 
 class SoundCloudNoiseFallbackTest(unittest.TestCase):

@@ -1006,10 +1006,13 @@ class ActionRouter:
 
     # ------------------------------------------------------------------- media
     def _media_command(self, t: str) -> CommandResult | None:
-        if re.fullmatch(
-            r"(пауза|поставь на паузу|останови видео|стоп видео|приостанови|стоп)", t
-        ):
+        if re.fullmatch(r"(пауза|поставь на паузу|приостанови)", t):
             return self._simple("pause", "Пауза")
+        if re.fullmatch(
+            r"(стоп|стоп видео|останови|останови видео|останови музыку|остановись)",
+            t,
+        ):
+            return self._simple("stop", "Останавливаю")
         if re.fullmatch(r"(продолжи|продолжим|продолжай|играй|плей|возобнови|включи видео)", t):
             return self._simple("play", "Продолжаю")
         if re.fullmatch(
