@@ -733,6 +733,13 @@ def _looks_stale(text: str) -> bool:
     return max(years) < datetime.now().year - 1
 
 
+def _title_only(fact: str, title: str) -> bool:
+    """Пункт сводки — только заголовок источника, без самого факта."""
+    fact_key = re.sub(r"[^\w]+", " ", (fact or "").lower()).strip()
+    title_key = re.sub(r"[^\w]+", " ", (title or "").lower()).strip()
+    return bool(fact_key) and fact_key == title_key
+
+
 def _context_title(result: SearchResult) -> str:
     """Для служебных заголовков лент берёт первый факт из сниппета."""
     if not GENERIC_NEWS_TITLE_RE.search(result.title):
@@ -864,6 +871,8 @@ def _prepare_news_digest(
         result = results[source_index - 1]
         fact = match.group(2).strip()
         if _looks_stale(fact):
+            continue
+        if _title_only(fact, result.title):
             continue
         display_index = len(items) + 1
         title = result.title

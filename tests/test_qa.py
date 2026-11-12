@@ -564,6 +564,29 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertNotIn("2020", answer.full)
         self.assertIn("[1] За ночь", answer.full)
 
+    def test_news_digest_skips_title_only_items(self) -> None:
+        llm = FakeLLM(
+            "[1] РИА Новости - события в Москве, России и мире сегодня.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "РИА Новости - события в Москве, России и мире сегодня",
+                    "https://ria.ru",
+                    "Текст",
+                ),
+                SearchResult("Дроны", "https://example.com/drones", "Текст"),
+            ]
+        )
+        answer = qa.answer("новости кратко")
+        self.assertEqual(
+            [item.fact for item in qa.last_news],
+            ["За ночь над Россией сбили 71 беспилотник."],
+        )
+        self.assertNotIn("РИА Новости", answer.full)
+
     def test_news_context_replaces_generic_title(self) -> None:
         llm = FakeLLM("[1] Экспорт вырос на 62%. Подробности поставок.")
         qa = make_service(llm=llm)
