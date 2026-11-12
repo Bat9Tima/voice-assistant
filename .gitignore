@@ -12,3 +12,6 @@ tools/*_results.json
 # Тяжёлые локальные данные: не коммитим
 VoiceAssistantTools/
 VoiceDataset_backups/
+
+# Записи фраз генерируются tools/generate_phrases.py (~34 МБ)
+assets/phrases/*.wav

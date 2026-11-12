@@ -357,6 +357,13 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa = make_service(enabled=False)
         self.assertFalse(qa.handles("какая погода"))
 
+    def test_kind_of_for_phrase_choice(self) -> None:
+        qa = make_service()
+        self.assertEqual(qa.kind_of("какая погода завтра"), "weather")
+        self.assertEqual(qa.kind_of("новости"), "news")
+        self.assertEqual(qa.kind_of("расскажи про 1 новость подробнее"), "news")
+        self.assertEqual(qa.kind_of("что такое фотосинтез"), "wait")
+
     def test_weather_uses_default_city(self) -> None:
         weather = FakeWeather(make_report())
         qa = make_service()

@@ -1,0 +1,2265 @@
+{
+  "version": 1,
+  "model": "fish-audio/drama-3",
+  "voice": "09f3f59b50254dc29f419fde998fd474",
+  "sample_rate": 44100,
+  "generated": "2026-11-13T01:14:05",
+  "durations": {
+    "done_1_01.wav": 0.628,
+    "done_1_04.wav": 0.679,
+    "done_1_05.wav": 0.694,
+    "done_1_03.wav": 0.745,
+    "done_1_02.wav": 0.716,
+    "done_1_06.wav": 0.676,
+    "done_2_01.wav": 0.72,
+    "done_2_02.wav": 0.734,
+    "done_2_04.wav": 0.681,
+    "done_2_05.wav": 0.762,
+    "done_2_06.wav": 0.708,
+    "done_2_03.wav": 0.734,
+    "done_3_01.wav": 0.985,
+    "done_3_03.wav": 0.803,
+    "done_3_02.wav": 0.975,
+    "done_4_01.wav": 0.565,
+    "done_3_05.wav": 1.035,
+    "done_3_04.wav": 1.015,
+    "done_3_06.wav": 0.875,
+    "done_4_03.wav": 0.581,
+    "done_4_04.wav": 0.548,
+    "done_4_02.wav": 0.592,
+    "done_4_05.wav": 0.569,
+    "done_4_06.wav": 0.523,
+    "done_5_02.wav": 1.423,
+    "done_5_01.wav": 1.35,
+    "done_5_03.wav": 1.487,
+    "done_5_04.wav": 1.492,
+    "done_5_05.wav": 1.364,
+    "done_5_06.wav": 1.452,
+    "wake_1_04.wav": 0.738,
+    "wake_1_03.wav": 0.755,
+    "wake_1_01.wav": 0.811,
+    "wake_1_02.wav": 0.686,
+    "wake_2_01.wav": 0.337,
+    "wake_1_05.wav": 0.678,
+    "wake_2_04.wav": 0.334,
+    "wake_2_03.wav": 0.397,
+    "wake_2_02.wav": 0.37,
+    "wake_1_06.wav": 0.691,
+    "wake_2_05.wav": 0.344,
+    "wake_2_06.wav": 0.364,
+    "wake_3_01.wav": 0.929,
+    "wake_3_02.wav": 0.99,
+    "wake_3_04.wav": 0.949,
+    "wake_3_03.wav": 0.974,
+    "wake_3_05.wav": 0.979,
+    "wake_3_06.wav": 1.001,
+    "wake_4_01.wav": 0.956,
+    "wake_4_02.wav": 0.85,
+    "wake_4_04.wav": 0.758,
+    "wake_4_03.wav": 0.795,
+    "wake_4_06.wav": 0.887,
+    "wake_4_05.wav": 0.794,
+    "ack_1_02.wav": 0.884,
+    "ack_1_01.wav": 0.871,
+    "ack_1_03.wav": 0.987,
+    "ack_1_04.wav": 0.95,
+    "ack_1_05.wav": 0.894,
+    "ack_1_06.wav": 0.961,
+    "ack_2_01.wav": 0.72,
+    "ack_2_02.wav": 0.711,
+    "ack_2_03.wav": 0.693,
+    "ack_2_04.wav": 0.662,
+    "ack_2_05.wav": 0.772,
+    "ack_2_06.wav": 0.763,
+    "ack_3_01.wav": 1.087,
+    "ack_3_02.wav": 1.092,
+    "ack_3_03.wav": 1.021,
+    "ack_3_05.wav": 1.096,
+    "ack_3_04.wav": 1.035,
+    "ack_3_06.wav": 1.12,
+    "ack_4_01.wav": 1.255,
+    "ack_4_02.wav": 1.36,
+    "ack_4_03.wav": 1.307,
+    "ack_4_04.wav": 1.358,
+    "ack_4_05.wav": 1.193,
+    "wait_1_01.wav": 0.753,
+    "wait_1_02.wav": 0.779,
+    "wait_1_03.wav": 1.154,
+    "wait_1_04.wav": 0.708,
+    "wait_1_06.wav": 0.703,
+    "ack_4_06.wav": 1.195,
+    "wait_2_01.wav": 0.825,
+    "wait_1_05.wav": 0.775,
+    "wait_2_02.wav": 0.928,
+    "wait_2_03.wav": 0.937,
+    "wait_2_04.wav": 1.048,
+    "wait_3_01.wav": 0.754,
+    "wait_2_06.wav": 0.872,
+    "wait_3_02.wav": 0.708,
+    "wait_3_04.wav": 0.762,
+    "wait_3_03.wav": 0.733,
+    "wait_3_05.wav": 0.774,
+    "wait_2_05.wav": 0.974,
+    "wait_4_01.wav": 0.636,
+    "wait_4_02.wav": 0.646,
+    "wait_4_03.wav": 0.678,
+    "wait_4_04.wav": 0.681,
+    "wait_4_05.wav": 0.64,
+    "wait_4_06.wav": 0.542,
+    "wait_3_06.wav": 0.769,
+    "repeat_1_02.wav": 0.927,
+    "repeat_1_03.wav": 0.901,
+    "repeat_1_04.wav": 1.018,
+    "repeat_1_01.wav": 0.939,
+    "repeat_1_05.wav": 0.899,
+    "repeat_1_06.wav": 0.991,
+    "repeat_2_01.wav": 1.351,
+    "repeat_2_02.wav": 1.36,
+    "repeat_2_03.wav": 1.406,
+    "repeat_2_04.wav": 1.501,
+    "repeat_2_05.wav": 1.494,
+    "repeat_2_06.wav": 1.417,
+    "repeat_3_01.wav": 1.859,
+    "repeat_3_03.wav": 1.49,
+    "repeat_3_02.wav": 1.713,
+    "repeat_3_04.wav": 1.423,
+    "repeat_3_05.wav": 1.517,
+    "repeat_3_06.wav": 1.389,
+    "repeat_4_01.wav": 1.886,
+    "repeat_4_02.wav": 1.781,
+    "repeat_4_03.wav": 1.799,
+    "repeat_4_04.wav": 1.883,
+    "repeat_4_06.wav": 1.819,
+    "unknown_1_01.wav": 1.476,
+    "repeat_4_05.wav": 1.775,
+    "unknown_1_02.wav": 1.722,
+    "unknown_1_03.wav": 1.541,
+    "unknown_1_04.wav": 1.677,
+    "unknown_1_05.wav": 1.519,
+    "unknown_2_01.wav": 1.493,
+    "unknown_2_03.wav": 1.332,
+    "unknown_2_04.wav": 1.43,
+    "unknown_2_02.wav": 1.652,
+    "unknown_2_05.wav": 1.412,
+    "unknown_3_02.wav": 1.501,
+    "unknown_3_01.wav": 1.366,
+    "unknown_3_03.wav": 1.475,
+    "unknown_3_04.wav": 1.534,
+    "unknown_3_05.wav": 1.51,
+    "empty_1_01.wav": 1.399,
+    "empty_1_02.wav": 1.576,
+    "empty_1_03.wav": 1.57,
+    "empty_1_05.wav": 1.269,
+    "empty_1_04.wav": 1.493,
+    "empty_2_01.wav": 0.989,
+    "empty_2_02.wav": 0.996,
+    "empty_2_04.wav": 0.98,
+    "empty_2_03.wav": 0.892,
+    "empty_2_05.wav": 0.913,
+    "empty_3_01.wav": 1.786,
+    "empty_3_03.wav": 1.735,
+    "empty_3_02.wav": 1.745,
+    "empty_3_04.wav": 1.895,
+    "empty_3_05.wav": 1.826,
+    "error_1_02.wav": 1.395,
+    "error_1_01.wav": 1.53,
+    "error_1_03.wav": 1.71,
+    "error_1_04.wav": 1.358,
+    "error_1_05.wav": 1.494,
+    "error_2_01.wav": 1.501,
+    "error_2_02.wav": 1.56,
+    "error_2_03.wav": 1.267,
+    "error_2_04.wav": 1.52,
+    "error_2_05.wav": 1.556,
+    "error_3_01.wav": 1.143,
+    "error_3_02.wav": 1.379,
+    "error_3_04.wav": 1.247,
+    "error_3_03.wav": 1.155,
+    "error_4_01.wav": 1.251,
+    "error_3_05.wav": 1.177,
+    "error_4_02.wav": 1.269,
+    "error_4_03.wav": 1.348,
+    "error_4_04.wav": 1.316,
+    "error_4_05.wav": 1.224,
+    "news_1_02.wav": 1.568,
+    "news_1_01.wav": 1.347,
+    "news_1_03.wav": 1.358,
+    "news_1_04.wav": 1.233,
+    "news_1_05.wav": 1.382,
+    "news_2_02.wav": 1.27,
+    "news_2_01.wav": 1.292,
+    "news_2_03.wav": 1.19,
+    "news_2_04.wav": 1.351,
+    "news_2_05.wav": 1.401,
+    "news_3_01.wav": 1.782,
+    "news_3_02.wav": 1.973,
+    "news_3_03.wav": 1.82,
+    "news_3_05.wav": 1.941,
+    "news_3_04.wav": 1.823,
+    "weather_1_01.wav": 1.254,
+    "weather_1_02.wav": 1.016,
+    "weather_1_03.wav": 1.237,
+    "weather_1_04.wav": 1.414,
+    "weather_1_05.wav": 1.144,
+    "weather_2_01.wav": 2.277,
+    "weather_2_02.wav": 1.954,
+    "weather_2_04.wav": 1.952,
+    "weather_2_03.wav": 2.063,
+    "weather_2_05.wav": 1.966,
+    "agent_1_01.wav": 1.107,
+    "agent_1_02.wav": 1.301,
+    "agent_1_04.wav": 1.15,
+    "agent_1_03.wav": 1.133,
+    "agent_1_05.wav": 1.266,
+    "agent_2_01.wav": 1.629,
+    "agent_2_02.wav": 1.338,
+    "agent_2_03.wav": 1.357,
+    "agent_2_04.wav": 1.414,
+    "agent_3_01.wav": 0.739,
+    "agent_2_05.wav": 1.485,
+    "agent_3_02.wav": 0.71,
+    "agent_3_03.wav": 0.821,
+    "agent_3_05.wav": 0.735,
+    "agent_3_04.wav": 0.808,
+    "clarify_1_02.wav": 1.139,
+    "clarify_1_03.wav": 1.255,
+    "clarify_1_01.wav": 1.166,
+    "clarify_1_04.wav": 1.134,
+    "clarify_1_05.wav": 1.111,
+    "clarify_2_01.wav": 1.085,
+    "clarify_2_02.wav": 0.94,
+    "clarify_2_03.wav": 1.112,
+    "clarify_2_04.wav": 0.975,
+    "clarify_2_05.wav": 1.036,
+    "clarify_3_01.wav": 2.175,
+    "clarify_3_03.wav": 2.024,
+    "clarify_3_02.wav": 2.096,
+    "media_1_01.wav": 0.806,
+    "clarify_3_05.wav": 2.085,
+    "media_1_02.wav": 0.955,
+    "clarify_3_04.wav": 2.116,
+    "media_1_04.wav": 0.946,
+    "media_1_03.wav": 0.861,
+    "media_1_05.wav": 0.856,
+    "media_2_02.wav": 0.778,
+    "media_2_03.wav": 0.961,
+    "media_2_01.wav": 0.878,
+    "media_2_04.wav": 0.824,
+    "media_2_05.wav": 0.763,
+    "media_3_02.wav": 1.236,
+    "media_3_03.wav": 1.196,
+    "media_3_01.wav": 1.334,
+    "media_3_04.wav": 1.082,
+    "media_4_01.wav": 0.739,
+    "media_3_05.wav": 1.186,
+    "media_4_03.wav": 0.863,
+    "media_4_02.wav": 0.894,
+    "media_4_04.wav": 0.878,
+    "media_4_05.wav": 0.966,
+    "media_5_01.wav": 0.73,
+    "media_5_03.wav": 0.833,
+    "media_5_02.wav": 0.862,
+    "media_5_04.wav": 0.932,
+    "media_5_05.wav": 0.747,
+    "sound_1_02.wav": 1.202,
+    "sound_1_01.wav": 1.363,
+    "sound_1_03.wav": 1.481,
+    "sound_1_04.wav": 1.248,
+    "sound_1_05.wav": 1.442,
+    "sound_2_01.wav": 1.276,
+    "sound_2_02.wav": 1.521,
+    "sound_2_04.wav": 1.226,
+    "sound_2_03.wav": 1.544,
+    "sound_3_02.wav": 1.439,
+    "sound_2_05.wav": 1.207,
+    "sound_3_01.wav": 1.297,
+    "sound_4_01.wav": 1.264,
+    "sound_3_03.wav": 1.269,
+    "sound_3_05.wav": 1.206,
+    "sound_3_04.wav": 1.314,
+    "sound_4_02.wav": 1.299,
+    "sound_4_05.wav": 1.188,
+    "sound_4_04.wav": 1.149,
+    "sound_4_03.wav": 1.184,
+    "timer_1_01.wav": 1.202,
+    "timer_1_02.wav": 1.218,
+    "timer_1_03.wav": 1.275,
+    "timer_1_04.wav": 1.333,
+    "timer_1_05.wav": 1.365,
+    "timer_2_02.wav": 1.034,
+    "timer_2_01.wav": 1.175,
+    "timer_2_03.wav": 1.192,
+    "timer_2_04.wav": 1.208,
+    "timer_2_05.wav": 1.043,
+    "timer_3_01.wav": 1.213,
+    "timer_3_02.wav": 1.141,
+    "timer_3_03.wav": 1.097,
+    "timer_3_04.wav": 1.168,
+    "timer_3_05.wav": 1.085,
+    "mic_1_01.wav": 2.075,
+    "mic_1_02.wav": 1.714,
+    "mic_1_04.wav": 1.448,
+    "mic_1_03.wav": 1.641,
+    "mic_1_05.wav": 1.71,
+    "mic_2_01.wav": 1.332,
+    "mic_2_02.wav": 1.119,
+    "mic_2_03.wav": 1.163,
+    "mic_2_04.wav": 1.214,
+    "mic_2_05.wav": 1.059,
+    "mic_3_01.wav": 0.607,
+    "mic_3_03.wav": 0.525,
+    "mic_3_02.wav": 0.544,
+    "mic_3_04.wav": 0.549,
+    "mic_3_05.wav": 0.562,
+    "cancel_1_01.wav": 0.755,
+    "cancel_1_02.wav": 0.766,
+    "cancel_1_04.wav": 0.808,
+    "cancel_1_03.wav": 0.794,
+    "cancel_1_05.wav": 0.789,
+    "cancel_2_01.wav": 0.998,
+    "cancel_2_03.wav": 0.995,
+    "cancel_2_02.wav": 0.933,
+    "cancel_2_04.wav": 0.958,
+    "cancel_2_05.wav": 0.905,
+    "cancel_3_01.wav": 1.394,
+    "cancel_3_02.wav": 0.74,
+    "cancel_3_03.wav": 0.75,
+    "cancel_3_04.wav": 0.675,
+    "cancel_3_05.wav": 0.661,
+    "bye_1_02.wav": 0.929,
+    "bye_1_01.wav": 1.054,
+    "bye_1_03.wav": 1.016,
+    "bye_1_04.wav": 1.099,
+    "bye_1_05.wav": 1.084,
+    "bye_2_02.wav": 1.214,
+    "bye_2_01.wav": 1.351,
+    "bye_2_03.wav": 1.419,
+    "bye_2_04.wav": 1.259,
+    "bye_3_01.wav": 0.872,
+    "bye_2_05.wav": 1.518,
+    "bye_3_03.wav": 0.836,
+    "bye_3_02.wav": 0.815,
+    "bye_3_04.wav": 0.7,
+    "bye_3_05.wav": 0.759,
+    "hello_1_01.wav": 0.995,
+    "hello_1_02.wav": 0.996,
+    "hello_1_03.wav": 0.908,
+    "hello_1_04.wav": 1.01,
+    "hello_1_05.wav": 0.813,
+    "hello_2_01.wav": 1.569,
+    "hello_2_02.wav": 1.784,
+    "hello_2_03.wav": 1.54,
+    "hello_2_04.wav": 1.422,
+    "ok_1_01.wav": 0.616,
+    "ok_1_02.wav": 0.679,
+    "hello_2_05.wav": 1.689,
+    "ok_1_03.wav": 0.744,
+    "ok_2_01.wav": 0.692,
+    "ok_1_04.wav": 0.614,
+    "ok_1_05.wav": 0.526,
+    "ok_2_02.wav": 0.839,
+    "ok_2_05.wav": 0.763,
+    "ok_2_03.wav": 0.779,
+    "ok_2_04.wav": 0.874,
+    "ok_3_01.wav": 0.652,
+    "ok_3_02.wav": 0.672,
+    "ok_3_03.wav": 0.574,
+    "ok_3_04.wav": 0.503,
+    "ok_3_05.wav": 0.593
+  },
+  "phrases": [
+    {
+      "id": "wake_1",
+      "category": "wake",
+      "text": "Слушаю.",
+      "takes": [
+        {
+          "file": "wake_1_01.wav",
+          "duration": 0.811
+        },
+        {
+          "file": "wake_1_02.wav",
+          "duration": 0.686
+        },
+        {
+          "file": "wake_1_03.wav",
+          "duration": 0.755
+        },
+        {
+          "file": "wake_1_04.wav",
+          "duration": 0.738
+        },
+        {
+          "file": "wake_1_05.wav",
+          "duration": 0.678
+        },
+        {
+          "file": "wake_1_06.wav",
+          "duration": 0.691
+        }
+      ]
+    },
+    {
+      "id": "wake_2",
+      "category": "wake",
+      "text": "Да?",
+      "takes": [
+        {
+          "file": "wake_2_01.wav",
+          "duration": 0.337
+        },
+        {
+          "file": "wake_2_02.wav",
+          "duration": 0.37
+        },
+        {
+          "file": "wake_2_03.wav",
+          "duration": 0.397
+        },
+        {
+          "file": "wake_2_04.wav",
+          "duration": 0.334
+        },
+        {
+          "file": "wake_2_05.wav",
+          "duration": 0.344
+        },
+        {
+          "file": "wake_2_06.wav",
+          "duration": 0.364
+        }
+      ]
+    },
+    {
+      "id": "wake_3",
+      "category": "wake",
+      "text": "Слушаю вас.",
+      "takes": [
+        {
+          "file": "wake_3_01.wav",
+          "duration": 0.929
+        },
+        {
+          "file": "wake_3_02.wav",
+          "duration": 0.99
+        },
+        {
+          "file": "wake_3_03.wav",
+          "duration": 0.974
+        },
+        {
+          "file": "wake_3_04.wav",
+          "duration": 0.949
+        },
+        {
+          "file": "wake_3_05.wav",
+          "duration": 0.979
+        },
+        {
+          "file": "wake_3_06.wav",
+          "duration": 1.001
+        }
+      ]
+    },
+    {
+      "id": "wake_4",
+      "category": "wake",
+      "text": "На связи.",
+      "takes": [
+        {
+          "file": "wake_4_01.wav",
+          "duration": 0.956
+        },
+        {
+          "file": "wake_4_02.wav",
+          "duration": 0.85
+        },
+        {
+          "file": "wake_4_03.wav",
+          "duration": 0.795
+        },
+        {
+          "file": "wake_4_04.wav",
+          "duration": 0.758
+        },
+        {
+          "file": "wake_4_05.wav",
+          "duration": 0.794
+        },
+        {
+          "file": "wake_4_06.wav",
+          "duration": 0.887
+        }
+      ]
+    },
+    {
+      "id": "ack_1",
+      "category": "ack",
+      "text": "Выполняю.",
+      "takes": [
+        {
+          "file": "ack_1_01.wav",
+          "duration": 0.871
+        },
+        {
+          "file": "ack_1_02.wav",
+          "duration": 0.884
+        },
+        {
+          "file": "ack_1_03.wav",
+          "duration": 0.987
+        },
+        {
+          "file": "ack_1_04.wav",
+          "duration": 0.95
+        },
+        {
+          "file": "ack_1_05.wav",
+          "duration": 0.894
+        },
+        {
+          "file": "ack_1_06.wav",
+          "duration": 0.961
+        }
+      ]
+    },
+    {
+      "id": "ack_2",
+      "category": "ack",
+      "text": "Делаю.",
+      "takes": [
+        {
+          "file": "ack_2_01.wav",
+          "duration": 0.72
+        },
+        {
+          "file": "ack_2_02.wav",
+          "duration": 0.711
+        },
+        {
+          "file": "ack_2_03.wav",
+          "duration": 0.693
+        },
+        {
+          "file": "ack_2_04.wav",
+          "duration": 0.662
+        },
+        {
+          "file": "ack_2_05.wav",
+          "duration": 0.772
+        },
+        {
+          "file": "ack_2_06.wav",
+          "duration": 0.763
+        }
+      ]
+    },
+    {
+      "id": "ack_3",
+      "category": "ack",
+      "text": "Сейчас сделаю.",
+      "takes": [
+        {
+          "file": "ack_3_01.wav",
+          "duration": 1.087
+        },
+        {
+          "file": "ack_3_02.wav",
+          "duration": 1.092
+        },
+        {
+          "file": "ack_3_03.wav",
+          "duration": 1.021
+        },
+        {
+          "file": "ack_3_04.wav",
+          "duration": 1.035
+        },
+        {
+          "file": "ack_3_05.wav",
+          "duration": 1.096
+        },
+        {
+          "file": "ack_3_06.wav",
+          "duration": 1.12
+        }
+      ]
+    },
+    {
+      "id": "ack_4",
+      "category": "ack",
+      "text": "Уже выполняю.",
+      "takes": [
+        {
+          "file": "ack_4_01.wav",
+          "duration": 1.255
+        },
+        {
+          "file": "ack_4_02.wav",
+          "duration": 1.36
+        },
+        {
+          "file": "ack_4_03.wav",
+          "duration": 1.307
+        },
+        {
+          "file": "ack_4_04.wav",
+          "duration": 1.358
+        },
+        {
+          "file": "ack_4_05.wav",
+          "duration": 1.193
+        },
+        {
+          "file": "ack_4_06.wav",
+          "duration": 1.195
+        }
+      ]
+    },
+    {
+      "id": "wait_1",
+      "category": "wait",
+      "text": "Секунду.",
+      "takes": [
+        {
+          "file": "wait_1_01.wav",
+          "duration": 0.753
+        },
+        {
+          "file": "wait_1_02.wav",
+          "duration": 0.779
+        },
+        {
+          "file": "wait_1_03.wav",
+          "duration": 1.154
+        },
+        {
+          "file": "wait_1_04.wav",
+          "duration": 0.708
+        },
+        {
+          "file": "wait_1_05.wav",
+          "duration": 0.775
+        },
+        {
+          "file": "wait_1_06.wav",
+          "duration": 0.703
+        }
+      ]
+    },
+    {
+      "id": "wait_2",
+      "category": "wait",
+      "text": "Одну секунду.",
+      "takes": [
+        {
+          "file": "wait_2_01.wav",
+          "duration": 0.825
+        },
+        {
+          "file": "wait_2_02.wav",
+          "duration": 0.928
+        },
+        {
+          "file": "wait_2_03.wav",
+          "duration": 0.937
+        },
+        {
+          "file": "wait_2_04.wav",
+          "duration": 1.048
+        },
+        {
+          "file": "wait_2_05.wav",
+          "duration": 0.974
+        },
+        {
+          "file": "wait_2_06.wav",
+          "duration": 0.872
+        }
+      ]
+    },
+    {
+      "id": "wait_3",
+      "category": "wait",
+      "text": "Проверяю.",
+      "takes": [
+        {
+          "file": "wait_3_01.wav",
+          "duration": 0.754
+        },
+        {
+          "file": "wait_3_02.wav",
+          "duration": 0.708
+        },
+        {
+          "file": "wait_3_03.wav",
+          "duration": 0.733
+        },
+        {
+          "file": "wait_3_04.wav",
+          "duration": 0.762
+        },
+        {
+          "file": "wait_3_05.wav",
+          "duration": 0.774
+        },
+        {
+          "file": "wait_3_06.wav",
+          "duration": 0.769
+        }
+      ]
+    },
+    {
+      "id": "wait_4",
+      "category": "wait",
+      "text": "Сейчас.",
+      "takes": [
+        {
+          "file": "wait_4_01.wav",
+          "duration": 0.636
+        },
+        {
+          "file": "wait_4_02.wav",
+          "duration": 0.646
+        },
+        {
+          "file": "wait_4_03.wav",
+          "duration": 0.678
+        },
+        {
+          "file": "wait_4_04.wav",
+          "duration": 0.681
+        },
+        {
+          "file": "wait_4_05.wav",
+          "duration": 0.64
+        },
+        {
+          "file": "wait_4_06.wav",
+          "duration": 0.542
+        }
+      ]
+    },
+    {
+      "id": "done_1",
+      "category": "done",
+      "text": "Готово.",
+      "takes": [
+        {
+          "file": "done_1_01.wav",
+          "duration": 0.628
+        },
+        {
+          "file": "done_1_02.wav",
+          "duration": 0.716
+        },
+        {
+          "file": "done_1_03.wav",
+          "duration": 0.745
+        },
+        {
+          "file": "done_1_04.wav",
+          "duration": 0.679
+        },
+        {
+          "file": "done_1_05.wav",
+          "duration": 0.694
+        },
+        {
+          "file": "done_1_06.wav",
+          "duration": 0.676
+        }
+      ]
+    },
+    {
+      "id": "done_2",
+      "category": "done",
+      "text": "Сделано.",
+      "takes": [
+        {
+          "file": "done_2_01.wav",
+          "duration": 0.72
+        },
+        {
+          "file": "done_2_02.wav",
+          "duration": 0.734
+        },
+        {
+          "file": "done_2_03.wav",
+          "duration": 0.734
+        },
+        {
+          "file": "done_2_04.wav",
+          "duration": 0.681
+        },
+        {
+          "file": "done_2_05.wav",
+          "duration": 0.762
+        },
+        {
+          "file": "done_2_06.wav",
+          "duration": 0.708
+        }
+      ]
+    },
+    {
+      "id": "done_3",
+      "category": "done",
+      "text": "Всё готово.",
+      "takes": [
+        {
+          "file": "done_3_01.wav",
+          "duration": 0.985
+        },
+        {
+          "file": "done_3_02.wav",
+          "duration": 0.975
+        },
+        {
+          "file": "done_3_03.wav",
+          "duration": 0.803
+        },
+        {
+          "file": "done_3_04.wav",
+          "duration": 1.015
+        },
+        {
+          "file": "done_3_05.wav",
+          "duration": 1.035
+        },
+        {
+          "file": "done_3_06.wav",
+          "duration": 0.875
+        }
+      ]
+    },
+    {
+      "id": "done_4",
+      "category": "done",
+      "text": "Есть.",
+      "takes": [
+        {
+          "file": "done_4_01.wav",
+          "duration": 0.565
+        },
+        {
+          "file": "done_4_02.wav",
+          "duration": 0.592
+        },
+        {
+          "file": "done_4_03.wav",
+          "duration": 0.581
+        },
+        {
+          "file": "done_4_04.wav",
+          "duration": 0.548
+        },
+        {
+          "file": "done_4_05.wav",
+          "duration": 0.569
+        },
+        {
+          "file": "done_4_06.wav",
+          "duration": 0.523
+        }
+      ]
+    },
+    {
+      "id": "done_5",
+      "category": "done",
+      "text": "Готово, проверьте.",
+      "takes": [
+        {
+          "file": "done_5_01.wav",
+          "duration": 1.35
+        },
+        {
+          "file": "done_5_02.wav",
+          "duration": 1.423
+        },
+        {
+          "file": "done_5_03.wav",
+          "duration": 1.487
+        },
+        {
+          "file": "done_5_04.wav",
+          "duration": 1.492
+        },
+        {
+          "file": "done_5_05.wav",
+          "duration": 1.364
+        },
+        {
+          "file": "done_5_06.wav",
+          "duration": 1.452
+        }
+      ]
+    },
+    {
+      "id": "repeat_1",
+      "category": "repeat",
+      "text": "Не слышу.",
+      "takes": [
+        {
+          "file": "repeat_1_01.wav",
+          "duration": 0.939
+        },
+        {
+          "file": "repeat_1_02.wav",
+          "duration": 0.927
+        },
+        {
+          "file": "repeat_1_03.wav",
+          "duration": 0.901
+        },
+        {
+          "file": "repeat_1_04.wav",
+          "duration": 1.018
+        },
+        {
+          "file": "repeat_1_05.wav",
+          "duration": 0.899
+        },
+        {
+          "file": "repeat_1_06.wav",
+          "duration": 0.991
+        }
+      ]
+    },
+    {
+      "id": "repeat_2",
+      "category": "repeat",
+      "text": "Повторите, пожалуйста.",
+      "takes": [
+        {
+          "file": "repeat_2_01.wav",
+          "duration": 1.351
+        },
+        {
+          "file": "repeat_2_02.wav",
+          "duration": 1.36
+        },
+        {
+          "file": "repeat_2_03.wav",
+          "duration": 1.406
+        },
+        {
+          "file": "repeat_2_04.wav",
+          "duration": 1.501
+        },
+        {
+          "file": "repeat_2_05.wav",
+          "duration": 1.494
+        },
+        {
+          "file": "repeat_2_06.wav",
+          "duration": 1.417
+        }
+      ]
+    },
+    {
+      "id": "repeat_3",
+      "category": "repeat",
+      "text": "Ещё раз, пожалуйста.",
+      "takes": [
+        {
+          "file": "repeat_3_01.wav",
+          "duration": 1.859
+        },
+        {
+          "file": "repeat_3_02.wav",
+          "duration": 1.713
+        },
+        {
+          "file": "repeat_3_03.wav",
+          "duration": 1.49
+        },
+        {
+          "file": "repeat_3_04.wav",
+          "duration": 1.423
+        },
+        {
+          "file": "repeat_3_05.wav",
+          "duration": 1.517
+        },
+        {
+          "file": "repeat_3_06.wav",
+          "duration": 1.389
+        }
+      ]
+    },
+    {
+      "id": "repeat_4",
+      "category": "repeat",
+      "text": "Не разобрать. Повторите.",
+      "takes": [
+        {
+          "file": "repeat_4_01.wav",
+          "duration": 1.886
+        },
+        {
+          "file": "repeat_4_02.wav",
+          "duration": 1.781
+        },
+        {
+          "file": "repeat_4_03.wav",
+          "duration": 1.799
+        },
+        {
+          "file": "repeat_4_04.wav",
+          "duration": 1.883
+        },
+        {
+          "file": "repeat_4_05.wav",
+          "duration": 1.775
+        },
+        {
+          "file": "repeat_4_06.wav",
+          "duration": 1.819
+        }
+      ]
+    },
+    {
+      "id": "unknown_1",
+      "category": "unknown",
+      "text": "Не знаю такой команды.",
+      "takes": [
+        {
+          "file": "unknown_1_01.wav",
+          "duration": 1.476
+        },
+        {
+          "file": "unknown_1_02.wav",
+          "duration": 1.722
+        },
+        {
+          "file": "unknown_1_03.wav",
+          "duration": 1.541
+        },
+        {
+          "file": "unknown_1_04.wav",
+          "duration": 1.677
+        },
+        {
+          "file": "unknown_1_05.wav",
+          "duration": 1.519
+        }
+      ]
+    },
+    {
+      "id": "unknown_2",
+      "category": "unknown",
+      "text": "Такой команды нет.",
+      "takes": [
+        {
+          "file": "unknown_2_01.wav",
+          "duration": 1.493
+        },
+        {
+          "file": "unknown_2_02.wav",
+          "duration": 1.652
+        },
+        {
+          "file": "unknown_2_03.wav",
+          "duration": 1.332
+        },
+        {
+          "file": "unknown_2_04.wav",
+          "duration": 1.43
+        },
+        {
+          "file": "unknown_2_05.wav",
+          "duration": 1.412
+        }
+      ]
+    },
+    {
+      "id": "unknown_3",
+      "category": "unknown",
+      "text": "Повторите иначе.",
+      "takes": [
+        {
+          "file": "unknown_3_01.wav",
+          "duration": 1.366
+        },
+        {
+          "file": "unknown_3_02.wav",
+          "duration": 1.501
+        },
+        {
+          "file": "unknown_3_03.wav",
+          "duration": 1.475
+        },
+        {
+          "file": "unknown_3_04.wav",
+          "duration": 1.534
+        },
+        {
+          "file": "unknown_3_05.wav",
+          "duration": 1.51
+        }
+      ]
+    },
+    {
+      "id": "empty_1",
+      "category": "empty",
+      "text": "Ничего не нашлось.",
+      "takes": [
+        {
+          "file": "empty_1_01.wav",
+          "duration": 1.399
+        },
+        {
+          "file": "empty_1_02.wav",
+          "duration": 1.576
+        },
+        {
+          "file": "empty_1_03.wav",
+          "duration": 1.57
+        },
+        {
+          "file": "empty_1_04.wav",
+          "duration": 1.493
+        },
+        {
+          "file": "empty_1_05.wav",
+          "duration": 1.269
+        }
+      ]
+    },
+    {
+      "id": "empty_2",
+      "category": "empty",
+      "text": "Не нашлось.",
+      "takes": [
+        {
+          "file": "empty_2_01.wav",
+          "duration": 0.989
+        },
+        {
+          "file": "empty_2_02.wav",
+          "duration": 0.996
+        },
+        {
+          "file": "empty_2_03.wav",
+          "duration": 0.892
+        },
+        {
+          "file": "empty_2_04.wav",
+          "duration": 0.98
+        },
+        {
+          "file": "empty_2_05.wav",
+          "duration": 0.913
+        }
+      ]
+    },
+    {
+      "id": "empty_3",
+      "category": "empty",
+      "text": "По этому запросу пусто.",
+      "takes": [
+        {
+          "file": "empty_3_01.wav",
+          "duration": 1.786
+        },
+        {
+          "file": "empty_3_02.wav",
+          "duration": 1.745
+        },
+        {
+          "file": "empty_3_03.wav",
+          "duration": 1.735
+        },
+        {
+          "file": "empty_3_04.wav",
+          "duration": 1.895
+        },
+        {
+          "file": "empty_3_05.wav",
+          "duration": 1.826
+        }
+      ]
+    },
+    {
+      "id": "error_1",
+      "category": "error",
+      "text": "Сеть недоступна.",
+      "takes": [
+        {
+          "file": "error_1_01.wav",
+          "duration": 1.53
+        },
+        {
+          "file": "error_1_02.wav",
+          "duration": 1.395
+        },
+        {
+          "file": "error_1_03.wav",
+          "duration": 1.71
+        },
+        {
+          "file": "error_1_04.wav",
+          "duration": 1.358
+        },
+        {
+          "file": "error_1_05.wav",
+          "duration": 1.494
+        }
+      ]
+    },
+    {
+      "id": "error_2",
+      "category": "error",
+      "text": "Сервис не отвечает.",
+      "takes": [
+        {
+          "file": "error_2_01.wav",
+          "duration": 1.501
+        },
+        {
+          "file": "error_2_02.wav",
+          "duration": 1.56
+        },
+        {
+          "file": "error_2_03.wav",
+          "duration": 1.267
+        },
+        {
+          "file": "error_2_04.wav",
+          "duration": 1.52
+        },
+        {
+          "file": "error_2_05.wav",
+          "duration": 1.556
+        }
+      ]
+    },
+    {
+      "id": "error_3",
+      "category": "error",
+      "text": "Не получилось.",
+      "takes": [
+        {
+          "file": "error_3_01.wav",
+          "duration": 1.143
+        },
+        {
+          "file": "error_3_02.wav",
+          "duration": 1.379
+        },
+        {
+          "file": "error_3_03.wav",
+          "duration": 1.155
+        },
+        {
+          "file": "error_3_04.wav",
+          "duration": 1.247
+        },
+        {
+          "file": "error_3_05.wav",
+          "duration": 1.177
+        }
+      ]
+    },
+    {
+      "id": "error_4",
+      "category": "error",
+      "text": "Попробуйте позже.",
+      "takes": [
+        {
+          "file": "error_4_01.wav",
+          "duration": 1.251
+        },
+        {
+          "file": "error_4_02.wav",
+          "duration": 1.269
+        },
+        {
+          "file": "error_4_03.wav",
+          "duration": 1.348
+        },
+        {
+          "file": "error_4_04.wav",
+          "duration": 1.316
+        },
+        {
+          "file": "error_4_05.wav",
+          "duration": 1.224
+        }
+      ]
+    },
+    {
+      "id": "news_1",
+      "category": "news",
+      "text": "Собираю новости.",
+      "takes": [
+        {
+          "file": "news_1_01.wav",
+          "duration": 1.347
+        },
+        {
+          "file": "news_1_02.wav",
+          "duration": 1.568
+        },
+        {
+          "file": "news_1_03.wav",
+          "duration": 1.358
+        },
+        {
+          "file": "news_1_04.wav",
+          "duration": 1.233
+        },
+        {
+          "file": "news_1_05.wav",
+          "duration": 1.382
+        }
+      ]
+    },
+    {
+      "id": "news_2",
+      "category": "news",
+      "text": "Смотрю новости.",
+      "takes": [
+        {
+          "file": "news_2_01.wav",
+          "duration": 1.292
+        },
+        {
+          "file": "news_2_02.wav",
+          "duration": 1.27
+        },
+        {
+          "file": "news_2_03.wav",
+          "duration": 1.19
+        },
+        {
+          "file": "news_2_04.wav",
+          "duration": 1.351
+        },
+        {
+          "file": "news_2_05.wav",
+          "duration": 1.401
+        }
+      ]
+    },
+    {
+      "id": "news_3",
+      "category": "news",
+      "text": "Секунду, собираю сводку.",
+      "takes": [
+        {
+          "file": "news_3_01.wav",
+          "duration": 1.782
+        },
+        {
+          "file": "news_3_02.wav",
+          "duration": 1.973
+        },
+        {
+          "file": "news_3_03.wav",
+          "duration": 1.82
+        },
+        {
+          "file": "news_3_04.wav",
+          "duration": 1.823
+        },
+        {
+          "file": "news_3_05.wav",
+          "duration": 1.941
+        }
+      ]
+    },
+    {
+      "id": "weather_1",
+      "category": "weather",
+      "text": "Смотрю погоду.",
+      "takes": [
+        {
+          "file": "weather_1_01.wav",
+          "duration": 1.254
+        },
+        {
+          "file": "weather_1_02.wav",
+          "duration": 1.016
+        },
+        {
+          "file": "weather_1_03.wav",
+          "duration": 1.237
+        },
+        {
+          "file": "weather_1_04.wav",
+          "duration": 1.414
+        },
+        {
+          "file": "weather_1_05.wav",
+          "duration": 1.144
+        }
+      ]
+    },
+    {
+      "id": "weather_2",
+      "category": "weather",
+      "text": "Секунду, проверяю погоду.",
+      "takes": [
+        {
+          "file": "weather_2_01.wav",
+          "duration": 2.277
+        },
+        {
+          "file": "weather_2_02.wav",
+          "duration": 1.954
+        },
+        {
+          "file": "weather_2_03.wav",
+          "duration": 2.063
+        },
+        {
+          "file": "weather_2_04.wav",
+          "duration": 1.952
+        },
+        {
+          "file": "weather_2_05.wav",
+          "duration": 1.966
+        }
+      ]
+    },
+    {
+      "id": "agent_1",
+      "category": "agent",
+      "text": "Передаю агенту.",
+      "takes": [
+        {
+          "file": "agent_1_01.wav",
+          "duration": 1.107
+        },
+        {
+          "file": "agent_1_02.wav",
+          "duration": 1.301
+        },
+        {
+          "file": "agent_1_03.wav",
+          "duration": 1.133
+        },
+        {
+          "file": "agent_1_04.wav",
+          "duration": 1.15
+        },
+        {
+          "file": "agent_1_05.wav",
+          "duration": 1.266
+        }
+      ]
+    },
+    {
+      "id": "agent_2",
+      "category": "agent",
+      "text": "Это займёт время.",
+      "takes": [
+        {
+          "file": "agent_2_01.wav",
+          "duration": 1.629
+        },
+        {
+          "file": "agent_2_02.wav",
+          "duration": 1.338
+        },
+        {
+          "file": "agent_2_03.wav",
+          "duration": 1.357
+        },
+        {
+          "file": "agent_2_04.wav",
+          "duration": 1.414
+        },
+        {
+          "file": "agent_2_05.wav",
+          "duration": 1.485
+        }
+      ]
+    },
+    {
+      "id": "agent_3",
+      "category": "agent",
+      "text": "Думаю.",
+      "takes": [
+        {
+          "file": "agent_3_01.wav",
+          "duration": 0.739
+        },
+        {
+          "file": "agent_3_02.wav",
+          "duration": 0.71
+        },
+        {
+          "file": "agent_3_03.wav",
+          "duration": 0.821
+        },
+        {
+          "file": "agent_3_04.wav",
+          "duration": 0.808
+        },
+        {
+          "file": "agent_3_05.wav",
+          "duration": 0.735
+        }
+      ]
+    },
+    {
+      "id": "clarify_1",
+      "category": "clarify",
+      "text": "Уточните номер.",
+      "takes": [
+        {
+          "file": "clarify_1_01.wav",
+          "duration": 1.166
+        },
+        {
+          "file": "clarify_1_02.wav",
+          "duration": 1.139
+        },
+        {
+          "file": "clarify_1_03.wav",
+          "duration": 1.255
+        },
+        {
+          "file": "clarify_1_04.wav",
+          "duration": 1.134
+        },
+        {
+          "file": "clarify_1_05.wav",
+          "duration": 1.111
+        }
+      ]
+    },
+    {
+      "id": "clarify_2",
+      "category": "clarify",
+      "text": "Какую новость?",
+      "takes": [
+        {
+          "file": "clarify_2_01.wav",
+          "duration": 1.085
+        },
+        {
+          "file": "clarify_2_02.wav",
+          "duration": 0.94
+        },
+        {
+          "file": "clarify_2_03.wav",
+          "duration": 1.112
+        },
+        {
+          "file": "clarify_2_04.wav",
+          "duration": 0.975
+        },
+        {
+          "file": "clarify_2_05.wav",
+          "duration": 1.036
+        }
+      ]
+    },
+    {
+      "id": "media_1",
+      "category": "media",
+      "text": "Открываю.",
+      "takes": [
+        {
+          "file": "media_1_01.wav",
+          "duration": 0.806
+        },
+        {
+          "file": "media_1_02.wav",
+          "duration": 0.955
+        },
+        {
+          "file": "media_1_03.wav",
+          "duration": 0.861
+        },
+        {
+          "file": "media_1_04.wav",
+          "duration": 0.946
+        },
+        {
+          "file": "media_1_05.wav",
+          "duration": 0.856
+        }
+      ]
+    },
+    {
+      "id": "media_2",
+      "category": "media",
+      "text": "Включаю.",
+      "takes": [
+        {
+          "file": "media_2_01.wav",
+          "duration": 0.878
+        },
+        {
+          "file": "media_2_02.wav",
+          "duration": 0.778
+        },
+        {
+          "file": "media_2_03.wav",
+          "duration": 0.961
+        },
+        {
+          "file": "media_2_04.wav",
+          "duration": 0.824
+        },
+        {
+          "file": "media_2_05.wav",
+          "duration": 0.763
+        }
+      ]
+    },
+    {
+      "id": "media_3",
+      "category": "media",
+      "text": "Ставлю на паузу.",
+      "takes": [
+        {
+          "file": "media_3_01.wav",
+          "duration": 1.334
+        },
+        {
+          "file": "media_3_02.wav",
+          "duration": 1.236
+        },
+        {
+          "file": "media_3_03.wav",
+          "duration": 1.196
+        },
+        {
+          "file": "media_3_04.wav",
+          "duration": 1.082
+        },
+        {
+          "file": "media_3_05.wav",
+          "duration": 1.186
+        }
+      ]
+    },
+    {
+      "id": "media_4",
+      "category": "media",
+      "text": "Продолжаю.",
+      "takes": [
+        {
+          "file": "media_4_01.wav",
+          "duration": 0.739
+        },
+        {
+          "file": "media_4_02.wav",
+          "duration": 0.894
+        },
+        {
+          "file": "media_4_03.wav",
+          "duration": 0.863
+        },
+        {
+          "file": "media_4_04.wav",
+          "duration": 0.878
+        },
+        {
+          "file": "media_4_05.wav",
+          "duration": 0.966
+        }
+      ]
+    },
+    {
+      "id": "media_5",
+      "category": "media",
+      "text": "Следующий.",
+      "takes": [
+        {
+          "file": "media_5_01.wav",
+          "duration": 0.73
+        },
+        {
+          "file": "media_5_02.wav",
+          "duration": 0.862
+        },
+        {
+          "file": "media_5_03.wav",
+          "duration": 0.833
+        },
+        {
+          "file": "media_5_04.wav",
+          "duration": 0.932
+        },
+        {
+          "file": "media_5_05.wav",
+          "duration": 0.747
+        }
+      ]
+    },
+    {
+      "id": "sound_1",
+      "category": "sound",
+      "text": "Громкость выше.",
+      "takes": [
+        {
+          "file": "sound_1_01.wav",
+          "duration": 1.363
+        },
+        {
+          "file": "sound_1_02.wav",
+          "duration": 1.202
+        },
+        {
+          "file": "sound_1_03.wav",
+          "duration": 1.481
+        },
+        {
+          "file": "sound_1_04.wav",
+          "duration": 1.248
+        },
+        {
+          "file": "sound_1_05.wav",
+          "duration": 1.442
+        }
+      ]
+    },
+    {
+      "id": "sound_2",
+      "category": "sound",
+      "text": "Громкость ниже.",
+      "takes": [
+        {
+          "file": "sound_2_01.wav",
+          "duration": 1.276
+        },
+        {
+          "file": "sound_2_02.wav",
+          "duration": 1.521
+        },
+        {
+          "file": "sound_2_03.wav",
+          "duration": 1.544
+        },
+        {
+          "file": "sound_2_04.wav",
+          "duration": 1.226
+        },
+        {
+          "file": "sound_2_05.wav",
+          "duration": 1.207
+        }
+      ]
+    },
+    {
+      "id": "sound_3",
+      "category": "sound",
+      "text": "Звук выключен.",
+      "takes": [
+        {
+          "file": "sound_3_01.wav",
+          "duration": 1.297
+        },
+        {
+          "file": "sound_3_02.wav",
+          "duration": 1.439
+        },
+        {
+          "file": "sound_3_03.wav",
+          "duration": 1.269
+        },
+        {
+          "file": "sound_3_04.wav",
+          "duration": 1.314
+        },
+        {
+          "file": "sound_3_05.wav",
+          "duration": 1.206
+        }
+      ]
+    },
+    {
+      "id": "sound_4",
+      "category": "sound",
+      "text": "Звук включён.",
+      "takes": [
+        {
+          "file": "sound_4_01.wav",
+          "duration": 1.264
+        },
+        {
+          "file": "sound_4_02.wav",
+          "duration": 1.299
+        },
+        {
+          "file": "sound_4_03.wav",
+          "duration": 1.184
+        },
+        {
+          "file": "sound_4_04.wav",
+          "duration": 1.149
+        },
+        {
+          "file": "sound_4_05.wav",
+          "duration": 1.188
+        }
+      ]
+    },
+    {
+      "id": "timer_1",
+      "category": "timer",
+      "text": "Таймер поставлен.",
+      "takes": [
+        {
+          "file": "timer_1_01.wav",
+          "duration": 1.202
+        },
+        {
+          "file": "timer_1_02.wav",
+          "duration": 1.218
+        },
+        {
+          "file": "timer_1_03.wav",
+          "duration": 1.275
+        },
+        {
+          "file": "timer_1_04.wav",
+          "duration": 1.333
+        },
+        {
+          "file": "timer_1_05.wav",
+          "duration": 1.365
+        }
+      ]
+    },
+    {
+      "id": "timer_2",
+      "category": "timer",
+      "text": "Время вышло.",
+      "takes": [
+        {
+          "file": "timer_2_01.wav",
+          "duration": 1.175
+        },
+        {
+          "file": "timer_2_02.wav",
+          "duration": 1.034
+        },
+        {
+          "file": "timer_2_03.wav",
+          "duration": 1.192
+        },
+        {
+          "file": "timer_2_04.wav",
+          "duration": 1.208
+        },
+        {
+          "file": "timer_2_05.wav",
+          "duration": 1.043
+        }
+      ]
+    },
+    {
+      "id": "timer_3",
+      "category": "timer",
+      "text": "Таймер сработал.",
+      "takes": [
+        {
+          "file": "timer_3_01.wav",
+          "duration": 1.213
+        },
+        {
+          "file": "timer_3_02.wav",
+          "duration": 1.141
+        },
+        {
+          "file": "timer_3_03.wav",
+          "duration": 1.097
+        },
+        {
+          "file": "timer_3_04.wav",
+          "duration": 1.168
+        },
+        {
+          "file": "timer_3_05.wav",
+          "duration": 1.085
+        }
+      ]
+    },
+    {
+      "id": "mic_1",
+      "category": "mic",
+      "text": "Микрофон выключен.",
+      "takes": [
+        {
+          "file": "mic_1_01.wav",
+          "duration": 2.075
+        },
+        {
+          "file": "mic_1_02.wav",
+          "duration": 1.714
+        },
+        {
+          "file": "mic_1_03.wav",
+          "duration": 1.641
+        },
+        {
+          "file": "mic_1_04.wav",
+          "duration": 1.448
+        },
+        {
+          "file": "mic_1_05.wav",
+          "duration": 1.71
+        }
+      ]
+    },
+    {
+      "id": "mic_2",
+      "category": "mic",
+      "text": "Снова слушаю.",
+      "takes": [
+        {
+          "file": "mic_2_01.wav",
+          "duration": 1.332
+        },
+        {
+          "file": "mic_2_02.wav",
+          "duration": 1.119
+        },
+        {
+          "file": "mic_2_03.wav",
+          "duration": 1.163
+        },
+        {
+          "file": "mic_2_04.wav",
+          "duration": 1.214
+        },
+        {
+          "file": "mic_2_05.wav",
+          "duration": 1.059
+        }
+      ]
+    },
+    {
+      "id": "mic_3",
+      "category": "mic",
+      "text": "Пауза.",
+      "takes": [
+        {
+          "file": "mic_3_01.wav",
+          "duration": 0.607
+        },
+        {
+          "file": "mic_3_02.wav",
+          "duration": 0.544
+        },
+        {
+          "file": "mic_3_03.wav",
+          "duration": 0.525
+        },
+        {
+          "file": "mic_3_04.wav",
+          "duration": 0.549
+        },
+        {
+          "file": "mic_3_05.wav",
+          "duration": 0.562
+        }
+      ]
+    },
+    {
+      "id": "cancel_1",
+      "category": "cancel",
+      "text": "Отменяю.",
+      "takes": [
+        {
+          "file": "cancel_1_01.wav",
+          "duration": 0.755
+        },
+        {
+          "file": "cancel_1_02.wav",
+          "duration": 0.766
+        },
+        {
+          "file": "cancel_1_03.wav",
+          "duration": 0.794
+        },
+        {
+          "file": "cancel_1_04.wav",
+          "duration": 0.808
+        },
+        {
+          "file": "cancel_1_05.wav",
+          "duration": 0.789
+        }
+      ]
+    },
+    {
+      "id": "cancel_2",
+      "category": "cancel",
+      "text": "Остановлено.",
+      "takes": [
+        {
+          "file": "cancel_2_01.wav",
+          "duration": 0.998
+        },
+        {
+          "file": "cancel_2_02.wav",
+          "duration": 0.933
+        },
+        {
+          "file": "cancel_2_03.wav",
+          "duration": 0.995
+        },
+        {
+          "file": "cancel_2_04.wav",
+          "duration": 0.958
+        },
+        {
+          "file": "cancel_2_05.wav",
+          "duration": 0.905
+        }
+      ]
+    },
+    {
+      "id": "cancel_3",
+      "category": "cancel",
+      "text": "Отмена.",
+      "takes": [
+        {
+          "file": "cancel_3_01.wav",
+          "duration": 1.394
+        },
+        {
+          "file": "cancel_3_02.wav",
+          "duration": 0.74
+        },
+        {
+          "file": "cancel_3_03.wav",
+          "duration": 0.75
+        },
+        {
+          "file": "cancel_3_04.wav",
+          "duration": 0.675
+        },
+        {
+          "file": "cancel_3_05.wav",
+          "duration": 0.661
+        }
+      ]
+    },
+    {
+      "id": "bye_1",
+      "category": "bye",
+      "text": "Обращайтесь.",
+      "takes": [
+        {
+          "file": "bye_1_01.wav",
+          "duration": 1.054
+        },
+        {
+          "file": "bye_1_02.wav",
+          "duration": 0.929
+        },
+        {
+          "file": "bye_1_03.wav",
+          "duration": 1.016
+        },
+        {
+          "file": "bye_1_04.wav",
+          "duration": 1.099
+        },
+        {
+          "file": "bye_1_05.wav",
+          "duration": 1.084
+        }
+      ]
+    },
+    {
+      "id": "bye_2",
+      "category": "bye",
+      "text": "Всегда пожалуйста.",
+      "takes": [
+        {
+          "file": "bye_2_01.wav",
+          "duration": 1.351
+        },
+        {
+          "file": "bye_2_02.wav",
+          "duration": 1.214
+        },
+        {
+          "file": "bye_2_03.wav",
+          "duration": 1.419
+        },
+        {
+          "file": "bye_2_04.wav",
+          "duration": 1.259
+        },
+        {
+          "file": "bye_2_05.wav",
+          "duration": 1.518
+        }
+      ]
+    },
+    {
+      "id": "bye_3",
+      "category": "bye",
+      "text": "До связи.",
+      "takes": [
+        {
+          "file": "bye_3_01.wav",
+          "duration": 0.872
+        },
+        {
+          "file": "bye_3_02.wav",
+          "duration": 0.815
+        },
+        {
+          "file": "bye_3_03.wav",
+          "duration": 0.836
+        },
+        {
+          "file": "bye_3_04.wav",
+          "duration": 0.7
+        },
+        {
+          "file": "bye_3_05.wav",
+          "duration": 0.759
+        }
+      ]
+    },
+    {
+      "id": "hello_1",
+      "category": "hello",
+      "text": "Я на связи.",
+      "takes": [
+        {
+          "file": "hello_1_01.wav",
+          "duration": 0.995
+        },
+        {
+          "file": "hello_1_02.wav",
+          "duration": 0.996
+        },
+        {
+          "file": "hello_1_03.wav",
+          "duration": 0.908
+        },
+        {
+          "file": "hello_1_04.wav",
+          "duration": 1.01
+        },
+        {
+          "file": "hello_1_05.wav",
+          "duration": 0.813
+        }
+      ]
+    },
+    {
+      "id": "hello_2",
+      "category": "hello",
+      "text": "Ассистент запущен.",
+      "takes": [
+        {
+          "file": "hello_2_01.wav",
+          "duration": 1.569
+        },
+        {
+          "file": "hello_2_02.wav",
+          "duration": 1.784
+        },
+        {
+          "file": "hello_2_03.wav",
+          "duration": 1.54
+        },
+        {
+          "file": "hello_2_04.wav",
+          "duration": 1.422
+        },
+        {
+          "file": "hello_2_05.wav",
+          "duration": 1.689
+        }
+      ]
+    },
+    {
+      "id": "ok_1",
+      "category": "ok",
+      "text": "Хорошо.",
+      "takes": [
+        {
+          "file": "ok_1_01.wav",
+          "duration": 0.616
+        },
+        {
+          "file": "ok_1_02.wav",
+          "duration": 0.679
+        },
+        {
+          "file": "ok_1_03.wav",
+          "duration": 0.744
+        },
+        {
+          "file": "ok_1_04.wav",
+          "duration": 0.614
+        },
+        {
+          "file": "ok_1_05.wav",
+          "duration": 0.526
+        }
+      ]
+    },
+    {
+      "id": "ok_2",
+      "category": "ok",
+      "text": "Понятно.",
+      "takes": [
+        {
+          "file": "ok_2_01.wav",
+          "duration": 0.692
+        },
+        {
+          "file": "ok_2_02.wav",
+          "duration": 0.839
+        },
+        {
+          "file": "ok_2_03.wav",
+          "duration": 0.779
+        },
+        {
+          "file": "ok_2_04.wav",
+          "duration": 0.874
+        },
+        {
+          "file": "ok_2_05.wav",
+          "duration": 0.763
+        }
+      ]
+    },
+    {
+      "id": "ok_3",
+      "category": "ok",
+      "text": "Принято.",
+      "takes": [
+        {
+          "file": "ok_3_01.wav",
+          "duration": 0.652
+        },
+        {
+          "file": "ok_3_02.wav",
+          "duration": 0.672
+        },
+        {
+          "file": "ok_3_03.wav",
+          "duration": 0.574
+        },
+        {
+          "file": "ok_3_04.wav",
+          "duration": 0.503
+        },
+        {
+          "file": "ok_3_05.wav",
+          "duration": 0.593
+        }
+      ]
+    }
+  ]
+}

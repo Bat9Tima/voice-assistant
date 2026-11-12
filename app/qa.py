@@ -960,6 +960,14 @@ class QAService:
             or self._is_news_followup(text)
         )
 
+    def kind_of(self, text: str) -> str:
+        """Категория фразы-подводки: weather, news или wait."""
+        if is_weather_question(text):
+            return "weather"
+        if is_news_question(text) or self._is_news_followup(text):
+            return "news"
+        return "wait"
+
     def answer(self, text: str) -> QAAnswer:
         text = (text or "").strip()
         if not text:

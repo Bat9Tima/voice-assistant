@@ -144,6 +144,23 @@ DEFAULTS: dict[str, Any] = {
             "timeout_sec": 45,
         },
     },
+    # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
+    # через ProxyAPI. Ключ и голос задаются в config.json.
+    "tts": {
+        "enabled": False,
+        "base_url": "https://api.proxyapi.ru/v1/audio/speech",
+        "api_key": "",
+        "model": "fish-audio/drama-3",
+        "voice": "",
+        "phrases_dir": "",
+        "cache_dir": "",
+        "speak_answers": True,
+        "max_chars": 900,
+        "volume": 1.0,
+        "speed": 1.0,
+        "workers": 3,
+        "timeout_sec": 60,
+    },
 }
 
 

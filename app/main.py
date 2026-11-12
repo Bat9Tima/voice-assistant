@@ -25,6 +25,7 @@ from .single_instance import acquire
 from .stt import create_transcriber
 from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
+from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
 from .wake import OpenWakeWordDetector, WakeWordDetector
 
@@ -110,6 +111,7 @@ class Assistant:
         self.brain = OpenCodeBrain(cfg)
         self.local_llm = LocalLLM(cfg)
         self.qa = QAService(cfg, self.local_llm, self.browser)
+        self.tts = TTSService(cfg)
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -144,6 +146,7 @@ class Assistant:
         self._command_queue: queue.Queue[str] = queue.Queue()
         self._noise_floor = 0.0
         self._last_wake = 0.0
+        self._tts_was_speaking = False
         # Последние ~1-3 секунды звука: чтобы не потерять начало команды,
         # если пользователь заговорил сразу после ключевой фразы.
         self._preroll: deque[bytes] = deque(maxlen=12)
@@ -269,7 +272,8 @@ class Assistant:
             f"Ассистент запущен. Скажите «{self.cfg.get('wake_word', 'хей луна')}» "
             f"или нажмите {self.cfg['hotkey']}."
         )
-        beep(880, 90)
+        if not self.tts.phrase("hello"):
+            beep(880, 90)
 
         try:
             self._main_loop()
@@ -285,6 +289,21 @@ class Assistant:
             if self._paused:
                 time.sleep(0.15)
                 continue
+
+            if self.tts.speaking:
+                # Пока ассистент говорит, не слушаем собственный голос.
+                self._tts_was_speaking = True
+                if self.mic is not None:
+                    self.mic.read(timeout=0.05)
+                if self.wake is not None:
+                    self.wake.reset()
+                continue
+            if self._tts_was_speaking:
+                self._tts_was_speaking = False
+                if self.mic is not None:
+                    self.mic.flush()
+                if self.wake is not None:
+                    self.wake.reset()
 
             if self._force_listen.is_set():
                 self._force_listen.clear()
@@ -368,6 +387,7 @@ class Assistant:
         self._paused = not self._paused
         self.set_state("paused" if self._paused else "idle")
         self.notify("Пауза" if self._paused else "Снова слушаю")
+        self.tts.phrase("mic", phrase_id="mic_1" if self._paused else "mic_2")
 
     def show_status(self) -> None:
         info = self.status()
@@ -384,8 +404,14 @@ class Assistant:
         # Новая команда: убираем результат предыдущей, не ждём, пока
         # системный центр уведомлений до неё доберётся.
         self.clear_notifications()
-        beep(880, 80)
+        if not self.tts.phrase("wake"):
+            beep(880, 80)
         time.sleep(0.12)
+        # Фраза «Слушаю» не должна попасть в запись команды.
+        if self.mic is not None:
+            self.mic.flush()
+        if self.wake is not None:
+            self.wake.reset()
         if self.ducker is not None:
             # Музыка из браузера не должна попадать в запись команды.
             # Громкость вернётся сразу после захвата, до распознавания.
@@ -427,6 +453,7 @@ class Assistant:
         if not pcm:
             self.notify("Не услышал команду")
             beep(320, 120)
+            self.tts.phrase("repeat")
             self.set_state("idle")
             return
 
@@ -461,12 +488,14 @@ class Assistant:
             log.exception("Ошибка распознавания")
             self.notify(f"Ошибка распознавания: {exc}")
             beep(320, 120)
+            self.tts.phrase("error")
             self.set_state("idle")
             return
 
         if not text:
             self.notify("Не разобрал команду")
             beep(320, 120)
+            self.tts.phrase("repeat")
             self.set_state("idle")
             return
 
@@ -477,6 +506,7 @@ class Assistant:
         if not text:
             self.notify("Не разобрал команду")
             beep(320, 120)
+            self.tts.phrase("repeat")
             self.set_state("idle")
             return
 
@@ -578,22 +608,45 @@ class Assistant:
         self._command_queue.put(text)
         log.info("Текстовая команда из API: %s", text)
 
+    def _ack(self, text: str) -> None:
+        """Короткая фраза-подводка, чтобы ответ начинался сразу."""
+        if not self.tts.enabled:
+            return
+        if split_agent_trigger(text, self.agent_triggers)[0]:
+            category = "agent"
+        elif self.qa is not None and self.qa.handles(text):
+            category = self.qa.kind_of(text)
+        else:
+            category = "ack"
+        self.tts.phrase(category)
+
+    def _confirm(self, started: float) -> None:
+        """«Готово» только если операция заняла заметное время."""
+        if time.monotonic() - started >= 1.2:
+            self.tts.phrase("done")
+
     def _process(self, text: str) -> str:
         text = canonicalize(normalize(text))
         self.set_state("thinking")
         try:
+            self._ack(text)
+            started = time.monotonic()
+
             triggered, request = split_agent_trigger(text, self.agent_triggers)
             if triggered:
                 if not request:
                     message = "Что спросить у агента?"
                     self.notify(message)
+                    self.tts.phrase("clarify", phrase_id="clarify_1")
                     return message
                 answer = self.brain.ask(request)
                 answer = (answer or "").strip()
                 if answer:
                     self.notify(answer[:250])
+                    self.tts.say(answer)
                 else:
                     self.notify("Готово")
+                    self.tts.phrase("done")
                 return answer
 
             result = self.router.handle(text)
@@ -601,8 +654,11 @@ class Assistant:
                 message = result.message
                 if message:
                     self.notify(message)
-                if not result.ok:
+                if result.ok:
+                    self._confirm(started)
+                else:
                     beep(320, 120)
+                    self.tts.phrase("error")
                 return message
 
             qa = getattr(self, "qa", None)
@@ -612,8 +668,10 @@ class Assistant:
                 self.notify(message[:250])
                 if answer.ok:
                     qa.show(answer)
+                    self.tts.say(message)
                 else:
                     beep(320, 120)
+                    self.tts.phrase("error")
                 return message
 
             plan = None
@@ -630,18 +688,23 @@ class Assistant:
                 message = result.message
                 if message:
                     self.notify(message)
-                if not result.ok:
+                if result.ok:
+                    self._confirm(started)
+                else:
                     beep(320, 120)
+                    self.tts.phrase("error")
                 return message
 
             message = "Не понял команду"
             self.notify(message)
             beep(320, 120)
+            self.tts.phrase("unknown")
             return message
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка обработки команды")
             self.notify(f"Ошибка: {exc}"[:250])
             beep(320, 120)
+            self.tts.phrase("error")
             return f"Ошибка: {exc}"
         finally:
             self.set_state("idle")
