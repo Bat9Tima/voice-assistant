@@ -7,6 +7,8 @@ from app.qa import (
     QAAnswer,
     QAService,
     QASource,
+    _clean_answer,
+    answer_style,
     extract_city,
     first_sentence,
     is_news_question,
@@ -14,6 +16,7 @@ from app.qa import (
     is_weather_question,
     needs_search,
     search_query,
+    without_style,
 )
 from app.search import SearchError, SearchResult
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -195,6 +198,78 @@ class SearchQueryTest(unittest.TestCase):
             "какие новости",
         )
 
+    def test_style_words_are_removed_from_query(self) -> None:
+        self.assertEqual(
+            search_query("новости кратко", news=True),
+            "главные новости России сегодня",
+        )
+        self.assertEqual(
+            search_query("какой курс доллара подробно", news=False),
+            "какой курс доллара",
+        )
+
+
+class AnswerStyleTest(unittest.TestCase):
+    def test_short_synonyms(self) -> None:
+        for text in (
+            "новости кратко",
+            "новости коротко",
+            "новости вкратце",
+            "новости в двух словах",
+            "новости одним предложением",
+            "новости без подробностей",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(answer_style(text), "short")
+
+    def test_detailed_synonyms(self) -> None:
+        for text in (
+            "новости подробно",
+            "новости подробнее",
+            "новости поподробнее",
+            "новости детально",
+            "новости в деталях",
+            "новости с подробностями",
+            "новости развёрнуто",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(answer_style(text), "detailed")
+
+    def test_normal_by_default(self) -> None:
+        self.assertEqual(answer_style("какие новости"), "normal")
+        self.assertEqual(answer_style("какой курс доллара"), "normal")
+
+    def test_last_marker_wins(self) -> None:
+        self.assertEqual(answer_style("кратко, нет, подробнее"), "detailed")
+        self.assertEqual(answer_style("подробно, нет, кратко"), "short")
+
+    def test_without_style(self) -> None:
+        self.assertEqual(without_style("новости кратко"), "новости")
+        self.assertEqual(
+            without_style("расскажи подробнее о курсе доллара"),
+            "расскажи о курсе доллара",
+        )
+        self.assertEqual(
+            without_style("новости, в двух словах"),
+            "новости",
+        )
+
+
+class CleanAnswerTest(unittest.TestCase):
+    def test_removes_meta_intro_with_colon(self) -> None:
+        text = (
+            "На основе предоставленных источников, можно отметить "
+            "следующие новости:\n\n[1] Курс вырос [1]."
+        )
+        self.assertEqual(_clean_answer(text), "[1] Курс вырос [1].")
+
+    def test_removes_run_on_meta_intro(self) -> None:
+        text = (
+            "На основе данных из источников [1] и [2], в эти дни были "
+            "опубликованы новости о том, что курс вырос [1]."
+        )
+        self.assertEqual(_clean_answer(text), "курс вырос [1].")
+
 
 class CityExtractionTest(unittest.TestCase):
     def test_city_after_weather(self) -> None:
@@ -374,6 +449,62 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.answer("новости про выборы")
         self.assertEqual(qa.search.calls, [("новости про выборы", True)])
 
+    def test_news_default_uses_news_style(self) -> None:
+        llm = FakeLLM("Новость [1].")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст")]
+        )
+        qa.answer("какие новости")
+        self.assertEqual(llm.kwargs[0]["style"], "news")
+        self.assertEqual(llm.kwargs[0]["max_tokens"], 600)
+
+    def test_news_short_overrides_default(self) -> None:
+        llm = FakeLLM("Новость [1].")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст")]
+        )
+        qa.answer("новости кратко")
+        self.assertEqual(llm.kwargs[0]["style"], "news_short")
+        self.assertEqual(llm.kwargs[0]["max_tokens"], 220)
+        self.assertEqual(
+            qa.search.calls,
+            [("главные новости России сегодня", True)],
+        )
+
+    def test_news_detailed_overrides_default(self) -> None:
+        llm = FakeLLM("Новость [1].")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст")]
+        )
+        qa.answer("новости подробно")
+        self.assertEqual(llm.kwargs[0]["style"], "news_detailed")
+        self.assertEqual(
+            qa.search.calls,
+            [("главные новости России сегодня", True)],
+        )
+
+    def test_search_style_is_stripped_from_question(self) -> None:
+        llm = FakeLLM("Курс вырос [1].")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст")]
+        )
+        qa.answer("какой курс доллара подробно")
+        self.assertEqual(llm.calls[0][0], "какой курс доллара")
+        self.assertEqual(llm.kwargs[0]["style"], "detailed")
+
+    def test_local_style_is_passed(self) -> None:
+        llm = FakeLLM("Фотосинтез — это процесс.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(available=False)
+        qa.answer("расскажи про фотосинтез кратко")
+        self.assertEqual(llm.calls[0][0], "расскажи про фотосинтез")
+        self.assertEqual(llm.kwargs[0]["style"], "short")
+        self.assertEqual(llm.kwargs[0]["max_tokens"], 220)
+
     def test_search_fallback_without_citations(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос."))
         qa.search = FakeSearch(
@@ -491,6 +622,19 @@ class QARenderTest(unittest.TestCase):
         self.assertNotIn("<script>", page)
         self.assertIn("A &amp; B", page)
         self.assertIn("a=1&amp;b=2", page)
+
+    def test_splits_facts_into_paragraphs(self) -> None:
+        qa = make_service()
+        answer = QAAnswer(
+            True,
+            "новости",
+            "short",
+            "[1] Первый факт.\n[2] Второй факт.",
+            "search",
+        )
+        page = qa.render_html(answer)
+        self.assertIn("<p>[1] Первый факт.</p>", page)
+        self.assertIn("<p>[2] Второй факт.</p>", page)
 
     def test_show_opens_tab_only_for_success(self) -> None:
         browser = FakeBrowser()

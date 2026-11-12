@@ -373,6 +373,60 @@ class LocalLLMAnswerTest(unittest.TestCase):
         self.assertIn("Источники:", user)
         self.assertIn("[1] Источник", user)
 
+    def test_answer_short_uses_short_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="short")
+        self.assertIn("1–2", complete.call_args.args[0])
+
+    def test_answer_news_uses_news_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="news")
+        system = complete.call_args.args[0]
+        self.assertIn("3–5", system)
+        self.assertIn("с новой строки", system)
+
+    def test_answer_news_detailed_uses_news_detailed_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="news_detailed")
+        system = complete.call_args.args[0]
+        self.assertIn("4–6", system)
+        self.assertIn("с новой строки", system)
+
+    def test_answer_news_short_uses_single_news_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="news_short")
+        system = complete.call_args.args[0]
+        self.assertIn("одним предложением", system)
+        self.assertIn("номер источника", system)
+
+    def test_answer_detailed_uses_detailed_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="detailed")
+        self.assertIn("4–6", complete.call_args.args[0])
+
+    def test_answer_without_context_detailed_uses_detailed_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ"
+        ) as complete:
+            llm.answer("вопрос", style="detailed")
+        self.assertIn("4–6", complete.call_args.args[0])
+
     def test_answer_passes_limits(self) -> None:
         llm = make_llm()
         with patch.object(llm, "available", return_value=True), patch.object(

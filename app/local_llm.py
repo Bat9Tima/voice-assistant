@@ -87,7 +87,9 @@ def build_system_prompt(registry: ToolRegistry) -> str:
 
 SYSTEM_PROMPT = build_system_prompt(REGISTRY)
 
-ANSWER_SYSTEM = """Ты — голосовой ассистент. Ответь на вопрос кратко: 2–4 предложения, простым русским языком.
+
+def _answer_prompt(length: str) -> str:
+    return f"""Ты — голосовой ассистент. Ответь на вопрос {length}, простым русским языком.
 Правила:
 1. Если не знаешь ответа или вопрос требует свежих данных (новости, курс, цены, погода), скажи: «Не знаю, стоит поискать в интернете».
 2. Не выдумывай числа, даты, имена и события.
@@ -95,11 +97,51 @@ ANSWER_SYSTEM = """Ты — голосовой ассистент. Ответь 
 4. Без markdown, списков и пояснений вокруг ответа.
 """
 
-RAG_SYSTEM = """Ответь на вопрос по источникам ниже кратко, 2–4 предложения.
-Ставь ссылку [1] или [2] после каждого факта.
-Пиши сразу факт, без фраз «в источнике», «на сайте», «было сообщение».
-Не выдумывай. Если ответа нет, скажи: «Не знаю».
+
+ANSWER_SYSTEM = _answer_prompt("кратко: 2–4 предложения")
+ANSWER_SYSTEM_SHORT = _answer_prompt("совсем кратко: 1–2 предложения")
+ANSWER_SYSTEM_DETAILED = _answer_prompt("подробно: 4–6 предложений")
+
+
+def _rag_prompt(length: str) -> str:
+    return (
+        f"Ответь на вопрос по источникам ниже: {length}.\n"
+        "Ставь ссылку [1] или [2] после каждого факта.\n"
+        "Пиши сразу факт, без фраз «в источнике», «на сайте», «было сообщение».\n"
+        "Не выдумывай. Если ответа нет, скажи: «Не знаю».\n"
+    )
+
+
+def _news_prompt(length: str) -> str:
+    return f"""Выпиши из источников ниже {length} главных новостей.
+Каждую новость пиши с новой строки в формате: [n] предложение из источника.
+Выбери по одному главному факту из разных источников.
+Не добавляй пояснений и оценок. Не выдумывай.
 """
+
+
+RAG_SYSTEM = _rag_prompt("кратко, 2–4 предложения")
+RAG_SYSTEM_SHORT = _rag_prompt("совсем кратко, 1–2 предложения")
+RAG_SYSTEM_NEWS_SHORT = """Назови самую главную новость из источников ниже одним предложением.
+В начале поставь номер источника: [n].
+Только факт из источника, без пояснений и оценок.
+"""
+RAG_SYSTEM_NEWS = _news_prompt("3–5")
+RAG_SYSTEM_NEWS_DETAILED = _news_prompt("4–6")
+RAG_SYSTEM_DETAILED = _rag_prompt("подробно, 4–6 предложений")
+
+RAG_PROMPTS = {
+    "short": RAG_SYSTEM_SHORT,
+    "news_short": RAG_SYSTEM_NEWS_SHORT,
+    "news": RAG_SYSTEM_NEWS,
+    "news_detailed": RAG_SYSTEM_NEWS_DETAILED,
+    "detailed": RAG_SYSTEM_DETAILED,
+}
+
+ANSWER_PROMPTS = {
+    "short": ANSWER_SYSTEM_SHORT,
+    "detailed": ANSWER_SYSTEM_DETAILED,
+}
 
 
 class LocalLLMError(RuntimeError):
@@ -187,6 +229,7 @@ class LocalLLM:
         question: str,
         context: str = "",
         *,
+        style: str = "normal",
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
@@ -202,12 +245,13 @@ class LocalLLM:
         if not self.available():
             raise LocalLLMError("локальная LLM недоступна")
 
+        style = (style or "normal").strip().lower()
         context = (context or "").strip()
         if context:
-            system = RAG_SYSTEM
+            system = RAG_PROMPTS.get(style, RAG_SYSTEM)
             user = f"Вопрос: {question}\n\nИсточники:\n{context}"
         else:
-            system = ANSWER_SYSTEM
+            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
             user = question
         return self._complete(
             system,

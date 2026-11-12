@@ -103,6 +103,68 @@ NEWS_ONLY = re.compile(
     r"(?:\s+(?:(?:в|по|о)\s+)?(?:россии|мире|стране))?$"
 )
 
+STYLE_SHORT = (
+    "кратко",
+    "кратенько",
+    "коротко",
+    "покороче",
+    "вкратце",
+    "тезисно",
+    "сжато",
+    "в двух словах",
+    "одним предложением",
+    "без подробностей",
+)
+
+STYLE_DETAILED = (
+    "подробно",
+    "подробнее",
+    "поподробнее",
+    "детально",
+    "развернуто",
+    "развёрнуто",
+    "в деталях",
+    "с подробностями",
+    "обстоятельно",
+    "полностью",
+    "расширенно",
+)
+
+STYLE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(marker)
+        for marker in sorted(STYLE_SHORT + STYLE_DETAILED, key=len, reverse=True)
+    )
+    + r")\b",
+    re.IGNORECASE,
+)
+
+_STYLE_SHORT_SET = {marker.lower().replace("ё", "е") for marker in STYLE_SHORT}
+_STYLE_DETAILED_SET = {marker.lower().replace("ё", "е") for marker in STYLE_DETAILED}
+
+
+def answer_style(text: str) -> str:
+    """Режим ответа по словам-маркерам: «short», «detailed» или «normal»."""
+    style = "normal"
+    for match in STYLE_RE.finditer(text or ""):
+        marker = match.group(0).lower().replace("ё", "е")
+        if marker in _STYLE_DETAILED_SET:
+            style = "detailed"
+        elif marker in _STYLE_SHORT_SET:
+            style = "short"
+    return style
+
+
+def without_style(text: str) -> str:
+    """Убирает просьбы о формате ответа из вопроса и поискового запроса."""
+    cleaned = STYLE_RE.sub(" ", text or "")
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"^[\s,;:—–-]+", "", cleaned)
+    cleaned = re.sub(r"[\s,;:—–-]+$", "", cleaned)
+    return cleaned.strip()
+
 EXPLICIT_SEARCH = (
     "поищи",
     "погугли",
@@ -248,13 +310,14 @@ def needs_search(text: str) -> bool:
 
 
 def search_query(text: str, *, news: bool) -> str:
-    """Уточняет слишком общий новостной запрос вроде «какие новости»."""
+    """Убирает просьбы о формате и уточняет слишком общий новостной запрос."""
+    query = without_style(text)
     if not news:
-        return text
-    lowered = " ".join(_normalized(text).split())
+        return query or text
+    lowered = " ".join(_normalized(query).split())
     if NEWS_ONLY.match(lowered):
         return "главные новости России сегодня"
-    return text
+    return query or text
 
 
 def _looks_like_city(city: str) -> bool:
@@ -305,6 +368,19 @@ def _clean_answer(text: str) -> str:
     text = re.sub(r"\s*```$", "", text)
     text = CJK_RE.sub("", text)
     text = re.sub(
+        r"(?i)^\s*на основе (?:предоставленных |найденных |указанных |этих )?"
+        r"(?:источников|данных|материалов)[^:\n]{0,140}:\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?i)^\s*на основе [^,\n]{0,120},\s*"
+        r"(?:в эти дни\s+)?(?:были опубликованы|опубликованы)\s+"
+        r"(?:следующие\s+)?новости(?:\s+о том)?,?\s*что\s+",
+        "",
+        text,
+    )
+    text = re.sub(
         r"(?i)(?:^|(?<=[.!?]\s)|(?<=\]\s))"
         r"(?:в|на) (?:источнике|новости|статье|материале|обзоре)\b"
         r".{0,160}?"
@@ -314,6 +390,8 @@ def _clean_answer(text: str) -> str:
         "",
         text,
     )
+    text = re.sub(r"(?m)^\s*\d+[.)]?\s+(?=\[\d+\])", "", text)
+    text = re.sub(r"(?m)^\s*[•—–-]\s+(?=\[\d+\])", "", text)
     text = re.sub(
         r"(\[\d+\]\s+)([а-яё])",
         lambda match: match.group(1) + match.group(2).upper(),
@@ -559,6 +637,8 @@ class QAService:
         if not text:
             return self._error(text, "Пустой вопрос", "пустой вопрос")
 
+        style = answer_style(text)
+
         if is_weather_question(text):
             return self._answer_weather(text)
 
@@ -570,13 +650,15 @@ class QAService:
                     "Для свежих данных добавьте qa.search.api_key в config.json.",
                     error="нет ключа Tavily",
                 )
-            return self._answer_search(text, news=is_news_question(text))
+            return self._answer_search(
+                text, news=is_news_question(text), style=style
+            )
 
         if self._llm_available():
-            return self._answer_local(text)
+            return self._answer_local(text, style=style)
 
         if self.search.available():
-            return self._answer_search(text, news=False)
+            return self._answer_search(text, news=False, style=style)
 
         return self._error(
             text,
@@ -592,9 +674,9 @@ class QAService:
             "local": "Локальная модель",
         }.get(answer.kind, "Ответ")
         body = "".join(
-            f"<p>{html.escape(paragraph)}</p>"
-            for paragraph in answer.full.split("\n\n")
-            if paragraph.strip()
+            f"<p>{html.escape(line.strip())}</p>"
+            for line in answer.full.splitlines()
+            if line.strip()
         )
         sources = ""
         if answer.sources:
@@ -712,13 +794,20 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             [source],
         )
 
-    def _answer_local(self, text: str) -> QAAnswer:
+    def _answer_local(self, text: str, *, style: str = "normal") -> QAAnswer:
         if self.llm is None:
             return self._error(text, "Локальная LLM недоступна", "Локальная LLM недоступна.")
+        style = style if style in {"short", "detailed"} else "normal"
+        max_tokens = self.max_tokens
+        if style == "short":
+            max_tokens = min(max_tokens, 220)
+        elif style == "detailed":
+            max_tokens = max(max_tokens, 600)
         try:
             answer = self.llm.answer(
-                text,
-                max_tokens=self.max_tokens,
+                without_style(text) or text,
+                style=style,
+                max_tokens=max_tokens,
                 temperature=self.temperature,
                 timeout=self.timeout,
             )
@@ -734,8 +823,34 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             return self._error(text, "Пустой ответ модели", "Модель вернула пустой ответ.")
         return QAAnswer(True, text, first_sentence(answer), answer, "local")
 
-    def _answer_search(self, text: str, *, news: bool) -> QAAnswer:
+    def _answer_search(
+        self, text: str, *, news: bool, style: str = "normal"
+    ) -> QAAnswer:
         query = search_query(text, news=news)
+        if news and style == "short":
+            effective = "news_short"
+            source_limit, snippet_limit = 3, 400
+            max_tokens = min(self.max_tokens, 220)
+        elif news and style == "detailed":
+            effective = "news_detailed"
+            source_limit, snippet_limit = 5, 600
+            max_tokens = max(self.max_tokens, 600)
+        elif news:
+            effective = "news"
+            source_limit, snippet_limit = 5, 600
+            max_tokens = max(self.max_tokens, 600)
+        elif style == "short":
+            effective = "short"
+            source_limit, snippet_limit = 3, 400
+            max_tokens = min(self.max_tokens, 220)
+        elif style == "detailed":
+            effective = "detailed"
+            source_limit, snippet_limit = 5, 600
+            max_tokens = max(self.max_tokens, 600)
+        else:
+            effective = "normal"
+            source_limit, snippet_limit = 4, 500
+            max_tokens = self.max_tokens
         try:
             results = self.search.search(query, news=news)
         except SearchError as exc:
@@ -761,9 +876,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         answer = ""
         if self._llm_available() and self.llm is not None:
             blocks = []
-            for index, result in enumerate(results[:4], 1):
+            for index, result in enumerate(results[:source_limit], 1):
                 snippet = _clean_snippet(
-                    result.content, limit=500, title=result.title
+                    result.content, limit=snippet_limit, title=result.title
                 )
                 if not snippet:
                     continue
@@ -771,9 +886,10 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             context = "\n\n".join(blocks)
             try:
                 answer = self.llm.answer(
-                    text,
+                    without_style(text) or text,
                     context,
-                    max_tokens=self.max_tokens,
+                    style=effective,
+                    max_tokens=max_tokens,
                     temperature=self.temperature,
                     timeout=self.timeout,
                 )
@@ -796,7 +912,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             note = "Модель не смогла пересказать источники. Вот главное из найденного:\n\n"
         else:
             note = "Вот главное из найденного:\n\n"
-        full = note + _snippets_text(results)
+        fallback_limit = 3 if effective in {"short", "normal"} else 4
+        full = note + _snippets_text(results, limit=fallback_limit)
         short = (
             first_sentence(
                 _clean_snippet(results[0].content, title=results[0].title)
