@@ -112,22 +112,26 @@ def _rag_prompt(length: str) -> str:
     )
 
 
-def _news_prompt(length: str) -> str:
-    return f"""Выпиши из источников ниже {length} главных новостей.
-Каждую новость пиши с новой строки в формате: [n] предложение из источника.
+def _news_prompt(count: str, sentences: str) -> str:
+    return f"""Выпиши из источников ниже {count} главных новостей.
+Каждую новость пиши с новой строки, {sentences}, в начале номер источника: [n].
 Выбери по одному главному факту из разных источников.
+Бери только свежие новости за последнюю неделю, не включай старые события.
 Не добавляй пояснений и оценок. Не выдумывай.
 """
 
 
 RAG_SYSTEM = _rag_prompt("кратко, 2–4 предложения")
 RAG_SYSTEM_SHORT = _rag_prompt("совсем кратко, 1–2 предложения")
-RAG_SYSTEM_NEWS_SHORT = """Назови самую главную новость из источников ниже одним предложением.
-В начале поставь номер источника: [n].
-Только факт из источника, без пояснений и оценок.
+RAG_SYSTEM_NEWS_SHORT = _news_prompt("5–7", "1–2 предложения")
+RAG_SYSTEM_NEWS = _news_prompt("3–4", "3–4 предложения")
+RAG_SYSTEM_NEWS_DETAILED = _news_prompt("5–7", "2–3 предложения")
+RAG_SYSTEM_ARTICLE = """Составь подробный пересказ новости по источникам ниже.
+Используй важные детали: цифры, сроки, участников и планы.
+Напиши 4–6 предложений, каждое со ссылкой [1] или [2].
+Если источники расходятся в числах, укажи оба значения со ссылками.
+Пиши сразу факты, без вступлений и оценок. Не выдумывай.
 """
-RAG_SYSTEM_NEWS = _news_prompt("3–5")
-RAG_SYSTEM_NEWS_DETAILED = _news_prompt("4–6")
 RAG_SYSTEM_DETAILED = _rag_prompt("подробно, 4–6 предложений")
 
 RAG_PROMPTS = {
@@ -135,6 +139,7 @@ RAG_PROMPTS = {
     "news_short": RAG_SYSTEM_NEWS_SHORT,
     "news": RAG_SYSTEM_NEWS,
     "news_detailed": RAG_SYSTEM_NEWS_DETAILED,
+    "article": RAG_SYSTEM_ARTICLE,
     "detailed": RAG_SYSTEM_DETAILED,
 }
 
@@ -170,6 +175,7 @@ class LocalLLM:
         self.enabled = bool(section.get("enabled", False))
         self.base_url = str(section.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
         self.model = str(section.get("model") or "").strip()
+        self.article_model = str(section.get("article_model") or "").strip()
         self.api_key = str(section.get("api_key") or "").strip()
         self.timeout = float(section.get("timeout_sec") or 20)
         self.temperature = float(section.get("temperature") or 0.0)
@@ -233,6 +239,7 @@ class LocalLLM:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        model: str | None = None,
     ) -> str:
         """Отвечает на вопрос: по источникам (RAG) или из своих знаний."""
         question = (question or "").strip()
@@ -259,6 +266,7 @@ class LocalLLM:
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
+            model=model,
         )
 
     # ------------------------------------------------------------------- HTTP
@@ -273,9 +281,10 @@ class LocalLLM:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout: float | None = None,
+        model: str | None = None,
     ) -> str:
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

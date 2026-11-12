@@ -388,7 +388,7 @@ class LocalLLMAnswerTest(unittest.TestCase):
         ) as complete:
             llm.answer("вопрос", "[1] Источник", style="news")
         system = complete.call_args.args[0]
-        self.assertIn("3–5", system)
+        self.assertIn("3–4", system)
         self.assertIn("с новой строки", system)
 
     def test_answer_news_detailed_uses_news_detailed_prompt(self) -> None:
@@ -398,18 +398,52 @@ class LocalLLMAnswerTest(unittest.TestCase):
         ) as complete:
             llm.answer("вопрос", "[1] Источник", style="news_detailed")
         system = complete.call_args.args[0]
-        self.assertIn("4–6", system)
+        self.assertIn("5–7", system)
+        self.assertIn("2–3", system)
         self.assertIn("с новой строки", system)
 
-    def test_answer_news_short_uses_single_news_prompt(self) -> None:
+    def test_answer_news_short_uses_news_short_prompt(self) -> None:
         llm = make_llm()
         with patch.object(llm, "available", return_value=True), patch.object(
             llm, "_complete", return_value="Ответ [1]"
         ) as complete:
             llm.answer("вопрос", "[1] Источник", style="news_short")
         system = complete.call_args.args[0]
-        self.assertIn("одним предложением", system)
+        self.assertIn("5–7", system)
+        self.assertIn("1–2", system)
         self.assertIn("номер источника", system)
+
+    def test_answer_article_uses_article_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="article")
+        system = complete.call_args.args[0]
+        self.assertIn("подробный пересказ", system)
+        self.assertIn("4–6", system)
+        self.assertIn("[1] или [2]", system)
+
+    def test_answer_passes_model_override(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "available", return_value=True), patch.object(
+            llm, "_complete", return_value="Ответ [1]"
+        ) as complete:
+            llm.answer("вопрос", "[1] Источник", style="article", model="qwen2.5:7b")
+        self.assertEqual(complete.call_args.kwargs["model"], "qwen2.5:7b")
+
+    def test_article_model_from_config(self) -> None:
+        llm = LocalLLM(
+            {
+                "llm": {
+                    "enabled": True,
+                    "base_url": "http://127.0.0.1:11434/v1",
+                    "model": "qwen2.5:3b-instruct",
+                    "article_model": "qwen2.5:7b-instruct",
+                }
+            }
+        )
+        self.assertEqual(llm.article_model, "qwen2.5:7b-instruct")
 
     def test_answer_detailed_uses_detailed_prompt(self) -> None:
         llm = make_llm()

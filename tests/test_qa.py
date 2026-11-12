@@ -42,11 +42,17 @@ class FakeSearch:
         results: list[SearchResult] | None = None,
         available: bool = True,
         error: Exception | None = None,
+        article: str = "",
+        article_results: list[SearchResult] | None = None,
     ) -> None:
         self.results = results or []
         self.is_available = available
         self.error = error
+        self.article = article
+        self.article_results = article_results or []
         self.calls: list[tuple[str, bool]] = []
+        self.extract_calls: list[str] = []
+        self.article_calls: list[str] = []
 
     def available(self) -> bool:
         return self.is_available
@@ -56,6 +62,20 @@ class FakeSearch:
         if self.error is not None:
             raise self.error
         return self.results
+
+    def extract(self, url: str) -> str:
+        self.extract_calls.append(url)
+        if self.error is not None:
+            raise self.error
+        return self.article
+
+    def search_article(
+        self, query: str, *, limit: int = 3
+    ) -> list[SearchResult]:
+        self.article_calls.append(query)
+        if self.error is not None:
+            raise self.error
+        return self.article_results[:limit]
 
 
 class FakeLLM:
@@ -274,6 +294,13 @@ class CleanAnswerTest(unittest.TestCase):
         text = "На основе предоставленных источников, курс вырос [1]."
         self.assertEqual(_clean_answer(text), "курс вырос [1].")
 
+    def test_merges_standalone_citation_line(self) -> None:
+        text = "[1]\nКурс вырос на 2%.\n\n[2]\nЦена снизилась."
+        self.assertEqual(
+            _clean_answer(text),
+            "[1] Курс вырос на 2%.\n[2] Цена снизилась.",
+        )
+
 
 class CityExtractionTest(unittest.TestCase):
     def test_city_after_weather(self) -> None:
@@ -461,7 +488,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         qa.answer("какие новости")
         self.assertEqual(llm.kwargs[0]["style"], "news")
-        self.assertEqual(llm.kwargs[0]["max_tokens"], 600)
+        self.assertEqual(llm.kwargs[0]["max_tokens"], 800)
 
     def test_news_short_overrides_default(self) -> None:
         llm = FakeLLM("Новость [1].")
@@ -471,7 +498,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         qa.answer("новости кратко")
         self.assertEqual(llm.kwargs[0]["style"], "news_short")
-        self.assertEqual(llm.kwargs[0]["max_tokens"], 220)
+        self.assertEqual(llm.kwargs[0]["max_tokens"], 800)
         self.assertEqual(
             qa.search.calls,
             [("главные новости России сегодня", True)],
@@ -489,6 +516,240 @@ class QAServiceRoutingTest(unittest.TestCase):
             qa.search.calls,
             [("главные новости России сегодня", True)],
         )
+
+    def test_news_digest_stores_items_for_followup(self) -> None:
+        llm = FakeLLM(
+            "[1] Экспорт легковых автомобилей вырос на 62%.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Экспорт",
+                    "https://example.com/export",
+                    "Текст про экспорт",
+                ),
+                SearchResult(
+                    "Беспилотники",
+                    "https://example.com/drones",
+                    "Текст про дроны",
+                ),
+            ]
+        )
+        answer = qa.answer("новости кратко")
+        self.assertTrue(answer.ok)
+        self.assertEqual([item.index for item in qa.last_news], [1, 2])
+        self.assertEqual(qa.last_news[0].url, "https://example.com/export")
+        self.assertIn("[2] За ночь", answer.full)
+
+    def test_news_digest_skips_stale_items(self) -> None:
+        llm = FakeLLM(
+            "[1] 15 января 2020 года правительство ушло в отставку.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult("Старое", "https://example.com/old", "Текст"),
+                SearchResult("Дроны", "https://example.com/drones", "Текст"),
+            ]
+        )
+        answer = qa.answer("новости кратко")
+        self.assertEqual(
+            [item.fact for item in qa.last_news],
+            ["За ночь над Россией сбили 71 беспилотник."],
+        )
+        self.assertEqual(qa.last_news[0].index, 1)
+        self.assertNotIn("2020", answer.full)
+        self.assertIn("[1] За ночь", answer.full)
+
+    def test_news_context_replaces_generic_title(self) -> None:
+        llm = FakeLLM("[1] Экспорт вырос на 62%. Подробности поставок.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Выпуск за 10 ноября 2026",
+                    "https://example.com/issue",
+                    "Экспорт легковых автомобилей вырос на 62% в октябре. "
+                    "Ещё одна новость дня.",
+                )
+            ]
+        )
+        qa.answer("новости кратко")
+        context = llm.calls[-1][1]
+        self.assertNotIn("Выпуск за 10 ноября 2026", context)
+        self.assertIn("Экспорт легковых автомобилей", context)
+        self.assertEqual(qa.last_news[0].title, "Экспорт вырос на 62%.")
+
+    def test_news_followup_by_number_uses_article(self) -> None:
+        llm = FakeLLM(
+            "[1] Экспорт легковых автомобилей вырос на 62%.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Экспорт",
+                    "https://example.com/export",
+                    "Текст про экспорт",
+                ),
+                SearchResult(
+                    "Беспилотники",
+                    "https://example.com/drones",
+                    "Текст про дроны",
+                ),
+            ],
+            article_results=[
+                SearchResult(
+                    "Разбор экспорта",
+                    "https://example.com/export-analysis",
+                    "Поставки легковых автомобилей за рубеж выросли на 62% "
+                    "год к году до 932 тыс. единиц.",
+                )
+            ],
+        )
+        qa.answer("новости кратко")
+        llm.text = "Подробности: экспорт вырос на 62% [1]."
+        answer = qa.answer("расскажи про 1 новость подробнее")
+        self.assertTrue(answer.ok)
+        self.assertEqual(qa.search.extract_calls, [])
+        self.assertEqual(
+            qa.search.article_calls,
+            ["Экспорт легковых автомобилей вырос на 62%."],
+        )
+        self.assertEqual(llm.kwargs[-1]["style"], "article")
+        self.assertIn("Поставки легковых автомобилей", llm.calls[-1][1])
+        self.assertIn("Подробности", answer.full)
+
+    def test_news_followup_by_topic_selects_item(self) -> None:
+        llm = FakeLLM(
+            "[1] Экспорт легковых автомобилей вырос на 62%.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Экспорт",
+                    "https://example.com/export",
+                    "Текст про экспорт",
+                ),
+                SearchResult(
+                    "Беспилотники",
+                    "https://example.com/drones",
+                    "Текст про дроны",
+                ),
+            ],
+            article="Полный текст: экспорт легковых автомобилей вырос на 62% в октябре.",
+            article_results=[],
+        )
+        qa.answer("новости кратко")
+        llm.text = "Экспорт вырос на 62% [1]."
+        qa.answer("что там с экспортом автомобилей?")
+        self.assertEqual(qa.search.extract_calls, ["https://example.com/export"])
+        self.assertIn("Полный текст", llm.calls[-1][1])
+
+    def test_news_followup_topic_prefers_related_search(self) -> None:
+        llm = FakeLLM(
+            "[1] Экспорт легковых автомобилей вырос на 62%.\n"
+            "[2] За ночь над Россией сбили 71 беспилотник."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Экспорт",
+                    "https://example.com/export",
+                    "Текст про экспорт",
+                ),
+                SearchResult(
+                    "Беспилотники",
+                    "https://example.com/drones",
+                    "Текст про дроны",
+                ),
+            ],
+            article="Полный текст про экспорт автомобилей.",
+            article_results=[
+                SearchResult(
+                    "Разбор экспорта",
+                    "https://example.com/export-analysis",
+                    "Экспорт автомобилей из Китая вырос на 62% в октябре.",
+                )
+            ],
+        )
+        qa.answer("новости кратко")
+        llm.text = "Экспорт вырос на 62% [1]."
+        qa.answer("что там с экспортом автомобилей?")
+        self.assertEqual(qa.search.extract_calls, [])
+        self.assertIn("Экспорт автомобилей из Китая", llm.calls[-1][1])
+
+    def test_news_followup_ambiguous_asks_clarification(self) -> None:
+        llm = FakeLLM(
+            "[1] Экспорт автомобилей вырос.\n"
+            "[2] Экспорт нефти вырос."
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult("Авто", "https://example.com/cars", "Текст про авто"),
+                SearchResult("Нефть", "https://example.com/oil", "Текст про нефть"),
+            ]
+        )
+        qa.answer("новости кратко")
+        answer = qa.answer("что там с экспортом?")
+        self.assertIn("уточните номер", answer.short.lower())
+        self.assertEqual(qa.search.extract_calls, [])
+
+    def test_news_followup_with_unknown_number_asks_clarification(self) -> None:
+        llm = FakeLLM("[1] Экспорт вырос.\n[2] Снег выпал.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult("Экспорт", "https://example.com/export", "Текст"),
+                SearchResult("Снег", "https://example.com/snow", "Текст"),
+            ]
+        )
+        qa.answer("новости кратко")
+        answer = qa.answer("расскажи про 5 новость подробнее")
+        self.assertIn("Не понял", answer.short)
+        self.assertEqual(qa.search.extract_calls, [])
+
+    def test_news_followup_falls_back_to_snippet(self) -> None:
+        llm = FakeLLM("[1] Экспорт вырос.\n[2] Снег выпал.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult(
+                    "Экспорт",
+                    "https://example.com/export",
+                    "Подробный текст про экспорт автомобилей из Китая.",
+                ),
+                SearchResult("Снег", "https://example.com/snow", "Текст про снег"),
+            ]
+        )
+        qa.answer("новости кратко")
+        llm.text = "Не знаю."
+        answer = qa.answer("расскажи про 1 новость подробнее")
+        self.assertTrue(answer.ok)
+        self.assertIn("Подробный текст", answer.full)
+
+    def test_news_followup_does_not_hijack_local_question(self) -> None:
+        llm = FakeLLM("[1] Экспорт вырос.\n[2] Снег выпал.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(
+            [
+                SearchResult("Экспорт", "https://example.com/export", "Текст"),
+                SearchResult("Снег", "https://example.com/snow", "Текст"),
+            ]
+        )
+        qa.answer("новости кратко")
+        llm.text = "Фотосинтез — это процесс."
+        qa.answer("расскажи про фотосинтез подробно")
+        self.assertEqual(qa.search.extract_calls, [])
+        self.assertEqual(llm.kwargs[-1]["style"], "detailed")
 
     def test_search_style_is_stripped_from_question(self) -> None:
         llm = FakeLLM("Курс вырос [1].")

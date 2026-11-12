@@ -90,6 +90,15 @@ class TavilyRequestTest(unittest.TestCase):
         self.assertEqual(self.payload["days"], 3)
         self.assertEqual(self.payload["include_domains"], ["rbc.ru", "lenta.ru"])
 
+    def test_news_uses_separate_result_limit(self) -> None:
+        client = make_search(max_results=4, news_max_results=9)
+        with patch("app.search.urllib.request.urlopen", side_effect=self.fake_urlopen):
+            client.search("новости", news=True)
+        self.assertEqual(self.payload["max_results"], 9)
+        with patch("app.search.urllib.request.urlopen", side_effect=self.fake_urlopen):
+            client.search("курс доллара")
+        self.assertEqual(self.payload["max_results"], 4)
+
     def test_skips_results_without_url_or_content(self) -> None:
         body = json.dumps(
             {
@@ -113,6 +122,132 @@ class TavilyRequestTest(unittest.TestCase):
             return_value=FakeResponse(b'{"results": []}'),
         ):
             self.assertEqual(self.client.search("x"), [])
+
+
+class TavilyExtractTest(unittest.TestCase):
+    def test_extract_returns_raw_content(self) -> None:
+        payload: dict = {}
+        url = "https://example.com/news"
+
+        def fake_urlopen(request, timeout):
+            payload.update(json.loads(request.data.decode("utf-8")))
+            self.assertEqual(request.full_url, "https://api.tavily.com/extract")
+            return FakeResponse(
+                json.dumps(
+                    {
+                        "results": [
+                            {"url": url, "raw_content": "Полный текст статьи."}
+                        ]
+                    }
+                ).encode("utf-8")
+            )
+
+        client = make_search(extract_depth="advanced")
+        with patch("app.search.urllib.request.urlopen", side_effect=fake_urlopen):
+            text = client.extract(url)
+        self.assertEqual(text, "Полный текст статьи.")
+        self.assertEqual(payload["urls"], [url])
+        self.assertEqual(payload["extract_depth"], "advanced")
+        self.assertEqual(payload["format"], "text")
+
+    def test_extract_without_content_raises(self) -> None:
+        body = json.dumps({"results": [{"url": "https://example.com"}]}).encode(
+            "utf-8"
+        )
+        with patch(
+            "app.search.urllib.request.urlopen",
+            return_value=FakeResponse(body),
+        ):
+            with self.assertRaises(SearchError):
+                make_search().extract("https://example.com")
+
+    def test_extract_empty_url_raises(self) -> None:
+        with self.assertRaises(SearchError):
+            make_search().extract("  ")
+
+
+class TavilyArticleSearchTest(unittest.TestCase):
+    def test_payload_uses_advanced_and_raw_content(self) -> None:
+        payload: dict = {}
+
+        def fake_urlopen(request, timeout):
+            payload.update(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(b'{"results": []}')
+
+        with patch("app.search.urllib.request.urlopen", side_effect=fake_urlopen):
+            make_search().search_article("экспорт автомобилей", limit=3)
+        self.assertEqual(payload["search_depth"], "advanced")
+        self.assertEqual(payload["topic"], "general")
+        self.assertTrue(payload["include_raw_content"])
+        self.assertEqual(payload["max_results"], 3)
+
+    def test_filters_unrelated_and_uses_raw_excerpt(self) -> None:
+        query = "Экспорт легковых автомобилей из Китая вырос в октябре на 62%"
+        relevant = (
+            "Экспорт легковых автомобилей из Китая вырос в октябре на 62% "
+            "год к году. " + "Подробности поставок. " * 20
+        )
+        unrelated = "Погода в Москве завтра будет солнечной и тёплой. " * 10
+        raw = (
+            "По данным ассоциации, экспорт легковых автомобилей из Китая "
+            "вырос на 62% в октябре. " + "Детали рынка. " * 30
+        )
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Разбор экспорта",
+                        "url": "https://example.com/export",
+                        "content": relevant,
+                        "score": 0.5,
+                    },
+                    {
+                        "title": "Погода",
+                        "url": "https://example.com/weather",
+                        "content": unrelated,
+                        "score": 0.9,
+                    },
+                    {
+                        "title": "Короткая заметка",
+                        "url": "https://example.com/short",
+                        "content": "Коротко.",
+                        "raw_content": raw,
+                        "score": 0.3,
+                    },
+                ]
+            }
+        ).encode("utf-8")
+        with patch(
+            "app.search.urllib.request.urlopen",
+            return_value=FakeResponse(body),
+        ):
+            results = make_search().search_article(query, limit=3)
+        urls = [result.url for result in results]
+        self.assertIn("https://example.com/export", urls)
+        self.assertIn("https://example.com/short", urls)
+        self.assertNotIn("https://example.com/weather", urls)
+        short = next(result for result in results if result.url.endswith("/short"))
+        self.assertIn("ассоциации", short.content)
+
+    def test_short_query_keeps_single_token_match(self) -> None:
+        body = json.dumps(
+            {
+                "results": [
+                    {
+                        "title": "Курс",
+                        "url": "https://example.com/rate",
+                        "content": "Курс доллара вырос. " * 20,
+                        "score": 0.8,
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        with patch(
+            "app.search.urllib.request.urlopen",
+            return_value=FakeResponse(body),
+        ):
+            results = make_search().search_article("курс", limit=3)
+        self.assertEqual(len(results), 1)
 
 
 class TavilyErrorTest(unittest.TestCase):
