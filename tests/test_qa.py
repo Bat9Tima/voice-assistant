@@ -270,6 +270,10 @@ class CleanAnswerTest(unittest.TestCase):
         )
         self.assertEqual(_clean_answer(text), "курс вырос [1].")
 
+    def test_removes_meta_intro_without_colon(self) -> None:
+        text = "На основе предоставленных источников, курс вырос [1]."
+        self.assertEqual(_clean_answer(text), "курс вырос [1].")
+
 
 class CityExtractionTest(unittest.TestCase):
     def test_city_after_weather(self) -> None:
@@ -517,6 +521,16 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_search_fallback_for_citation_only_answer(self) -> None:
         qa = make_service(llm=FakeLLM("[1] [2]"))
+        qa.search = FakeSearch(
+            [SearchResult("Новость", "https://example.com", "Текст новости")]
+        )
+        answer = qa.answer("какой курс доллара")
+        self.assertTrue(answer.ok)
+        self.assertIn("Модель не смогла пересказать источники", answer.full)
+        self.assertIn("[1] Новость", answer.full)
+
+    def test_search_fallback_for_refusal_answer(self) -> None:
+        qa = make_service(llm=FakeLLM("[1] Не содержит актуального курса доллара."))
         qa.search = FakeSearch(
             [SearchResult("Новость", "https://example.com", "Текст новости")]
         )

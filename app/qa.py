@@ -381,6 +381,12 @@ def _clean_answer(text: str) -> str:
         text,
     )
     text = re.sub(
+        r"(?i)^\s*на основе (?:предоставленных |найденных |указанных |этих )?"
+        r"(?:источников|данных|материалов)[,\s]+",
+        "",
+        text,
+    )
+    text = re.sub(
         r"(?i)(?:^|(?<=[.!?]\s)|(?<=\]\s))"
         r"(?:в|на) (?:источнике|новости|статье|материале|обзоре)\b"
         r".{0,160}?"
@@ -418,9 +424,18 @@ def _has_citation(text: str) -> bool:
     return bool(re.search(r"\[\d+\]", text or ""))
 
 
+REFUSAL_RE = re.compile(
+    r"(?i)\b(?:не содержит|не содержат|не указан[аоы]?|"
+    r"нет данных|отсутствует информация|не удалось найти|"
+    r"не могу найти|не располагаю|неизвестно)\b"
+)
+
+
 def _usable_answer(text: str) -> bool:
-    """Отсекает ответы без ссылок и ответы из одних ссылок вроде «[1] [2]»."""
+    """Отсекает ответы без ссылок, ответы из одних ссылок и отказы модели."""
     if not _has_citation(text):
+        return False
+    if REFUSAL_RE.search(text):
         return False
     stripped = re.sub(r"\[\d+\]", " ", text)
     stripped = re.sub(r"[^\w]+", " ", stripped, flags=re.UNICODE)
