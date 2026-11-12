@@ -16,9 +16,9 @@ from .actions import ActionRouter
 from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
+from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .duck import AppVolumeDucker
-from .local_llm import LocalLLM, LocalLLMError
 from .qa import QAService
 from .server import ControlServer
 from .single_instance import acquire
@@ -109,8 +109,14 @@ class Assistant:
         self.browser = BrowserController(cfg)
         self.router = ActionRouter(cfg, self.browser)
         self.brain = OpenCodeBrain(cfg)
-        self.local_llm = LocalLLM(cfg)
-        self.qa = QAService(cfg, self.local_llm, self.browser)
+        self.planner = None
+        if (cfg.get("local_planner") or {}).get("enabled"):
+            # Модуль тянет реестр инструментов, поэтому импортируем его
+            # только когда планировщик действительно включён.
+            from .local_planner import LocalPlanner
+
+            self.planner = LocalPlanner(cfg)
+        self.qa = QAService(cfg, CloudLLM(cfg), self.browser)
         self.tts = TTSService(cfg)
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
@@ -675,14 +681,12 @@ class Assistant:
                 return message
 
             plan = None
-            local_llm = getattr(self, "local_llm", None)
-            if local_llm is not None:
+            planner = getattr(self, "planner", None)
+            if planner is not None:
                 try:
-                    plan = local_llm.plan(text)
-                except LocalLLMError as exc:
-                    log.warning("Локальная LLM: %s", exc)
-                except Exception:  # noqa: BLE001
-                    log.exception("Ошибка локальной LLM")
+                    plan = planner.plan(text)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Локальный планировщик: %s", exc)
             if plan is not None:
                 result = self.router.execute_plan(plan.action, plan.args)
                 message = result.message

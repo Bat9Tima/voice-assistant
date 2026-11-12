@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .audio import Microphone, list_input_devices, rms
 from .brain import OpenCodeBrain
+from .cloud_llm import CloudLLM
 from .config import (
     GIGAAM_DIR,
     ROOT,
@@ -18,7 +19,6 @@ from .config import (
     WHISPER_DIR,
     load_config,
 )
-from .local_llm import LocalLLM
 from .stt import create_transcriber
 from .vad import ensure_model
 from .wake import WakeWordDetector
@@ -174,15 +174,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  CLI: {brain.cli or 'НЕ найден'}")
     print(f"  Агент: {brain.agent}")
 
-    print("\n[Локальная LLM]")
-    llm_cfg = cfg.get("llm") or {}
-    if not llm_cfg.get("enabled"):
-        print("  Выключена (llm.enabled = false)")
+    print("\n[Облачная LLM]")
+    cloud = CloudLLM(cfg)
+    print(f"  URL: {cloud.base_url}")
+    print(f"  Модель: {cloud.model or 'НЕ задана'}")
+    print(f"  Запасные: {', '.join(cloud.fallback_models) or 'нет'}")
+    print(f"  Ключ: {'задан' if cloud.api_key else 'НЕ задан'}")
+    print(f"  Состояние: {'готово' if cloud.available() else 'выключено или нет ключа'}")
+
+    print("\n[Локальный планировщик]")
+    planner_cfg = cfg.get("local_planner") or {}
+    if not planner_cfg.get("enabled"):
+        print("  Выключен (local_planner.enabled = false)")
     else:
-        llm = LocalLLM(cfg)
-        print(f"  URL: {llm.base_url}")
-        print(f"  Модель: {llm.model or 'НЕ задана'}")
-        print("  Сервер: " + ("доступен" if llm.available() else "НЕ доступен"))
+        from .local_planner import LocalPlanner
+
+        planner = LocalPlanner(cfg)
+        print(f"  URL: {planner.base_url}")
+        print(f"  Модель: {planner.model or 'НЕ задана'}")
+        print("  Сервер: " + ("доступен" if planner.available() else "НЕ доступен"))
 
     print("\n[HTTP-мост]")
     control = cfg["control"]

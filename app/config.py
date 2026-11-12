@@ -98,10 +98,24 @@ DEFAULTS: dict[str, Any] = {
         "timeout_sec": 180,
         "standalone": False,
     },
-    # Свободные команды: локальная instruct-модель через OpenAI-совместимый
-    # API (Ollama/LM Studio). Модель только выбирает действие из белого
-    # списка, исполняет его ActionRouter.
-    "llm": {
+    # Ответы на вопросы, новости и рассуждения — через облачную модель
+    # ProxyAPI. Ключ можно не дублировать: при пустом api_key берётся
+    # tts.api_key, потому что оба сервиса работают через ProxyAPI.
+    "cloud_llm": {
+        "enabled": True,
+        "base_url": "https://api.proxyapi.ru/v1",
+        "api_key": "",
+        "model": "anthropic/claude-haiku-5-5",
+        "fallback_models": ["xiaomi/mimo-v2.6-flash"],
+        "reasoning_effort": "minimal",
+        "max_completion_tokens": 2000,
+        "temperature": 0.2,
+        "timeout_sec": 90,
+        "retries": 2,
+    },
+    # Аварийный локальный планировщик свободных команд (Ollama/LM Studio).
+    # По умолчанию выключен и никогда не участвует в ответах на вопросы.
+    "local_planner": {
         "enabled": False,
         "base_url": "http://127.0.0.1:11434/v1",
         "model": "qwen2.5:3b-instruct",
@@ -112,7 +126,7 @@ DEFAULTS: dict[str, Any] = {
         "keep_alive": "30m",
     },
     # Вопросы: погода через Open-Meteo (без ключа), свежие данные через
-    # Tavily (нужен ключ), остальное — локальная LLM.
+    # Tavily (нужен ключ), остальное — облачная LLM.
     "qa": {
         "enabled": True,
         "weather": {

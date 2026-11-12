@@ -7,10 +7,10 @@ import urllib.error
 from unittest.mock import patch
 
 from app.actions import ActionRouter
-from app.local_llm import (
-    LocalLLM,
-    LocalLLMError,
+from app.local_planner import (
     LocalPlan,
+    LocalPlanner,
+    LocalPlannerError,
     _build_plan,
     _extract_json,
 )
@@ -58,10 +58,10 @@ class FakeResponse:
         return self.body
 
 
-def make_llm(enabled: bool = True) -> LocalLLM:
-    return LocalLLM(
+def make_planner(enabled: bool = True) -> LocalPlanner:
+    return LocalPlanner(
         {
-            "llm": {
+            "local_planner": {
                 "enabled": enabled,
                 "base_url": "http://127.0.0.1:11434/v1",
                 "model": "qwen2.5:3b-instruct",
@@ -224,57 +224,57 @@ class PlanValidationTest(unittest.TestCase):
         self.assertIsNone(_build_plan({"action": "play", "site": "vk"}))
 
 
-class LocalLLMPlanTest(unittest.TestCase):
+class LocalPlannerPlanTest(unittest.TestCase):
     def test_disabled_returns_none(self) -> None:
-        self.assertIsNone(make_llm(enabled=False).plan("включи музыку"))
+        self.assertIsNone(make_planner(enabled=False).plan("включи музыку"))
 
     def test_plan_parses_model_answer(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_chat", return_value='{"action": "pause"}'
+        planner = make_planner()
+        with patch.object(planner, "available", return_value=True), patch.object(
+            planner, "_chat", return_value='{"action": "pause"}'
         ):
-            self.assertEqual(llm.plan("пауза"), LocalPlan("pause"))
+            self.assertEqual(planner.plan("пауза"), LocalPlan("pause"))
 
     def test_invalid_json_returns_none(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_chat", return_value="не знаю"
+        planner = make_planner()
+        with patch.object(planner, "available", return_value=True), patch.object(
+            planner, "_chat", return_value="не знаю"
         ):
-            self.assertIsNone(llm.plan("что-то"))
+            self.assertIsNone(planner.plan("что-то"))
 
     def test_unavailable_returns_none(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=False):
-            self.assertIsNone(llm.plan("включи музыку"))
+        planner = make_planner()
+        with patch.object(planner, "available", return_value=False):
+            self.assertIsNone(planner.plan("включи музыку"))
 
 
-class LocalLLMHttpTest(unittest.TestCase):
+class LocalPlannerHttpTest(unittest.TestCase):
     def test_available_true_on_200(self) -> None:
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             return_value=FakeResponse(status=200),
         ):
-            self.assertTrue(llm.available())
+            self.assertTrue(planner.available())
 
     def test_available_false_when_server_down(self) -> None:
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             side_effect=urllib.error.URLError("connection refused"),
         ):
-            self.assertFalse(llm.available())
+            self.assertFalse(planner.available())
 
     def test_chat_parses_openai_response(self) -> None:
         body = json.dumps(
             {"choices": [{"message": {"content": '{"action": "play"}'}}]}
         ).encode("utf-8")
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             return_value=FakeResponse(body=body),
         ):
-            self.assertEqual(llm._chat("включи"), '{"action": "play"}')
+            self.assertEqual(planner._chat("включи"), '{"action": "play"}')
 
     def test_chat_sends_keep_alive(self) -> None:
         body = json.dumps(
@@ -286,12 +286,12 @@ class LocalLLMHttpTest(unittest.TestCase):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeResponse(body=body)
 
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             side_effect=fake_urlopen,
         ):
-            llm._chat("включи")
+            planner._chat("включи")
         self.assertEqual(captured["payload"]["keep_alive"], "30m")
 
     def test_chat_omits_empty_keep_alive(self) -> None:
@@ -304,13 +304,13 @@ class LocalLLMHttpTest(unittest.TestCase):
             captured["payload"] = json.loads(request.data.decode("utf-8"))
             return FakeResponse(body=body)
 
-        llm = make_llm()
-        llm.keep_alive = ""
+        planner = make_planner()
+        planner.keep_alive = ""
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             side_effect=fake_urlopen,
         ):
-            llm._chat("включи")
+            planner._chat("включи")
         self.assertNotIn("keep_alive", captured["payload"])
 
     def test_complete_uses_custom_timeout(self) -> None:
@@ -323,12 +323,12 @@ class LocalLLMHttpTest(unittest.TestCase):
             captured["timeout"] = timeout
             return FakeResponse(body=body)
 
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             side_effect=fake_urlopen,
         ):
-            llm._complete("system", "user", timeout=42)
+            planner._complete("system", "user", timeout=42)
         self.assertEqual(captured["timeout"], 42)
 
     def test_http_error_is_reported(self) -> None:
@@ -339,159 +339,14 @@ class LocalLLMHttpTest(unittest.TestCase):
             hdrs=None,
             fp=io.BytesIO(b"model is not loaded"),
         )
-        llm = make_llm()
+        planner = make_planner()
         with patch(
-            "app.local_llm.urllib.request.urlopen",
+            "app.local_planner.urllib.request.urlopen",
             side_effect=error,
         ):
-            with self.assertRaises(LocalLLMError) as ctx:
-                llm._chat("включи")
+            with self.assertRaises(LocalPlannerError) as ctx:
+                planner._chat("включи")
         self.assertIn("model is not loaded", str(ctx.exception))
-
-
-class LocalLLMAnswerTest(unittest.TestCase):
-    def test_answer_without_context_uses_answer_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ"
-        ) as complete:
-            self.assertEqual(llm.answer("что такое фотосинтез"), "Ответ")
-        system, user = complete.call_args.args
-        self.assertIn("голосовой ассистент", system)
-        self.assertNotIn("источников", system)
-        self.assertEqual(user, "что такое фотосинтез")
-
-    def test_answer_with_context_uses_rag_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник\nтекст")
-        system, user = complete.call_args.args
-        self.assertIn("по источникам", system)
-        self.assertIn("ссылку", system)
-        self.assertIn("Источники:", user)
-        self.assertIn("[1] Источник", user)
-
-    def test_answer_short_uses_short_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="short")
-        self.assertIn("1–2", complete.call_args.args[0])
-
-    def test_answer_news_uses_news_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="news")
-        system = complete.call_args.args[0]
-        self.assertIn("3–4", system)
-        self.assertIn("с новой строки", system)
-
-    def test_answer_news_detailed_uses_news_detailed_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="news_detailed")
-        system = complete.call_args.args[0]
-        self.assertIn("5–7", system)
-        self.assertIn("2–3", system)
-        self.assertIn("с новой строки", system)
-
-    def test_answer_news_short_uses_news_short_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="news_short")
-        system = complete.call_args.args[0]
-        self.assertIn("5–7", system)
-        self.assertIn("1–2", system)
-        self.assertIn("номер источника", system)
-
-    def test_answer_article_uses_article_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="article")
-        system = complete.call_args.args[0]
-        self.assertIn("подробный пересказ", system)
-        self.assertIn("4–6", system)
-        self.assertIn("[1] или [2]", system)
-
-    def test_answer_passes_model_override(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="article", model="qwen2.5:7b")
-        self.assertEqual(complete.call_args.kwargs["model"], "qwen2.5:7b")
-
-    def test_article_model_from_config(self) -> None:
-        llm = LocalLLM(
-            {
-                "llm": {
-                    "enabled": True,
-                    "base_url": "http://127.0.0.1:11434/v1",
-                    "model": "qwen2.5:3b-instruct",
-                    "article_model": "qwen2.5:7b-instruct",
-                }
-            }
-        )
-        self.assertEqual(llm.article_model, "qwen2.5:7b-instruct")
-
-    def test_answer_detailed_uses_detailed_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ [1]"
-        ) as complete:
-            llm.answer("вопрос", "[1] Источник", style="detailed")
-        self.assertIn("4–6", complete.call_args.args[0])
-
-    def test_answer_without_context_detailed_uses_detailed_prompt(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ"
-        ) as complete:
-            llm.answer("вопрос", style="detailed")
-        self.assertIn("4–6", complete.call_args.args[0])
-
-    def test_answer_passes_limits(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ"
-        ) as complete:
-            llm.answer("вопрос", max_tokens=123, temperature=0.5)
-        self.assertEqual(complete.call_args.kwargs["max_tokens"], 123)
-        self.assertEqual(complete.call_args.kwargs["temperature"], 0.5)
-
-    def test_answer_passes_timeout(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=True), patch.object(
-            llm, "_complete", return_value="Ответ"
-        ) as complete:
-            llm.answer("вопрос", timeout=42)
-        self.assertEqual(complete.call_args.kwargs["timeout"], 42)
-
-    def test_answer_disabled(self) -> None:
-        with self.assertRaises(LocalLLMError):
-            make_llm(enabled=False).answer("вопрос")
-
-    def test_answer_unavailable(self) -> None:
-        llm = make_llm()
-        with patch.object(llm, "available", return_value=False):
-            with self.assertRaises(LocalLLMError):
-                llm.answer("вопрос")
-
-    def test_answer_empty_question(self) -> None:
-        with self.assertRaises(LocalLLMError):
-            make_llm().answer("  ")
-
 
 class ExecutePlanTest(unittest.TestCase):
     def setUp(self) -> None:

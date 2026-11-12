@@ -90,9 +90,14 @@ class ConfigTest(unittest.TestCase):
         self.assertIn(cfg["wake_word"], cfg["wake_aliases"])
         self.assertTrue(cfg["browser"]["profile_dir"])
         self.assertEqual(DEFAULTS["wake_word"], "хей луна")
-        self.assertFalse(DEFAULTS["llm"]["enabled"])
-        self.assertIn("11434", DEFAULTS["llm"]["base_url"])
-        self.assertEqual(DEFAULTS["llm"]["model"], "qwen2.5:3b-instruct")
+        self.assertFalse(DEFAULTS["local_planner"]["enabled"])
+        self.assertIn("11434", DEFAULTS["local_planner"]["base_url"])
+        self.assertEqual(DEFAULTS["local_planner"]["model"], "qwen2.5:3b-instruct")
+        self.assertTrue(DEFAULTS["cloud_llm"]["enabled"])
+        self.assertIn("proxyapi", DEFAULTS["cloud_llm"]["base_url"])
+        self.assertEqual(
+            DEFAULTS["cloud_llm"]["model"], "anthropic/claude-haiku-5-5"
+        )
 
 
 if __name__ == "__main__":

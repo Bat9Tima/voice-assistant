@@ -1,3 +1,11 @@
+"""Опциональный локальный планировщик свободных команд.
+
+Маленькая instruct-модель через OpenAI-совместимый API (Ollama/LM Studio)
+только выбирает действие из белого списка. Ответы на вопросы, новости и
+рассуждения идут через облако (``app.cloud_llm``); этот модуль по
+умолчанию выключен и нужен лишь как аварийный разбор команд.
+"""
+
 from __future__ import annotations
 
 import json
@@ -88,68 +96,7 @@ def build_system_prompt(registry: ToolRegistry) -> str:
 SYSTEM_PROMPT = build_system_prompt(REGISTRY)
 
 
-def _answer_prompt(length: str) -> str:
-    return f"""Ты — голосовой ассистент. Ответь на вопрос {length}, простым русским языком.
-Правила:
-1. Если не знаешь ответа или вопрос требует свежих данных (новости, курс, цены, погода), скажи: «Не знаю, стоит поискать в интернете».
-2. Не выдумывай числа, даты, имена и события.
-3. Пиши только по-русски. Не используй иероглифы и другие алфавиты, кроме имён и названий.
-4. Без markdown, списков и пояснений вокруг ответа.
-"""
-
-
-ANSWER_SYSTEM = _answer_prompt("кратко: 2–4 предложения")
-ANSWER_SYSTEM_SHORT = _answer_prompt("совсем кратко: 1–2 предложения")
-ANSWER_SYSTEM_DETAILED = _answer_prompt("подробно: 4–6 предложений")
-
-
-def _rag_prompt(length: str) -> str:
-    return (
-        f"Ответь на вопрос по источникам ниже: {length}.\n"
-        "Ставь ссылку [1] или [2] после каждого факта.\n"
-        "Пиши сразу факт, без фраз «в источнике», «на сайте», «было сообщение».\n"
-        "Не выдумывай. Если ответа нет, скажи: «Не знаю».\n"
-    )
-
-
-def _news_prompt(count: str, sentences: str) -> str:
-    return f"""Выпиши из источников ниже {count} главных новостей.
-Каждую новость пиши с новой строки, {sentences}, в начале номер источника: [n].
-Выбери по одному главному факту из разных источников.
-Бери только свежие новости за последнюю неделю, не включай старые события.
-Не добавляй пояснений и оценок. Не выдумывай.
-"""
-
-
-RAG_SYSTEM = _rag_prompt("кратко, 2–4 предложения")
-RAG_SYSTEM_SHORT = _rag_prompt("совсем кратко, 1–2 предложения")
-RAG_SYSTEM_NEWS_SHORT = _news_prompt("5–7", "1–2 предложения")
-RAG_SYSTEM_NEWS = _news_prompt("3–4", "3–4 предложения")
-RAG_SYSTEM_NEWS_DETAILED = _news_prompt("5–7", "2–3 предложения")
-RAG_SYSTEM_ARTICLE = """Составь подробный пересказ новости по источникам ниже.
-Используй важные детали: цифры, сроки, участников и планы.
-Напиши 4–6 предложений, каждое со ссылкой [1] или [2].
-Если источники расходятся в числах, укажи оба значения со ссылками.
-Пиши сразу факты, без вступлений и оценок. Не выдумывай.
-"""
-RAG_SYSTEM_DETAILED = _rag_prompt("подробно, 4–6 предложений")
-
-RAG_PROMPTS = {
-    "short": RAG_SYSTEM_SHORT,
-    "news_short": RAG_SYSTEM_NEWS_SHORT,
-    "news": RAG_SYSTEM_NEWS,
-    "news_detailed": RAG_SYSTEM_NEWS_DETAILED,
-    "article": RAG_SYSTEM_ARTICLE,
-    "detailed": RAG_SYSTEM_DETAILED,
-}
-
-ANSWER_PROMPTS = {
-    "short": ANSWER_SYSTEM_SHORT,
-    "detailed": ANSWER_SYSTEM_DETAILED,
-}
-
-
-class LocalLLMError(RuntimeError):
+class LocalPlannerError(RuntimeError):
     pass
 
 
@@ -159,7 +106,7 @@ class LocalPlan:
     args: dict[str, Any] = field(default_factory=dict)
 
 
-class LocalLLM:
+class LocalPlanner:
     """Планировщик свободных команд через локальную instruct-модель.
 
     Модель только выбирает действие из белого списка. Проверка аргументов
@@ -169,13 +116,12 @@ class LocalLLM:
     def __init__(
         self, cfg: dict[str, Any], registry: ToolRegistry | None = None
     ) -> None:
-        section = (cfg or {}).get("llm") or {}
+        section = (cfg or {}).get("local_planner") or {}
         self.registry = registry or REGISTRY
         self.system_prompt = build_system_prompt(self.registry)
         self.enabled = bool(section.get("enabled", False))
         self.base_url = str(section.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
-        self.model = str(section.get("model") or "").strip()
-        self.article_model = str(section.get("article_model") or "").strip()
+        self.model = str(section.get("model") or DEFAULT_MODEL).strip()
         self.api_key = str(section.get("api_key") or "").strip()
         self.timeout = float(section.get("timeout_sec") or 20)
         self.temperature = float(section.get("temperature") or 0.0)
@@ -204,7 +150,7 @@ class LocalLLM:
                 status = int(getattr(response, "status", 200))
             self._up = 200 <= status < 300
         except Exception as exc:  # noqa: BLE001
-            log.debug("Локальная LLM недоступна: %s", exc)
+            log.debug("Локальный планировщик недоступен: %s", exc)
             self._up = False
             self._retry_at = now + 30.0
         return bool(self._up)
@@ -214,60 +160,21 @@ class LocalLLM:
         if not text or not self.enabled:
             return None
         if not self.model:
-            raise LocalLLMError("не задана модель llm.model")
+            raise LocalPlannerError("не задана модель local_planner.model")
         if not self.available():
             return None
 
         content = self._chat(text)
         data = _extract_json(content)
         if data is None:
-            log.warning("Локальная LLM вернула не JSON: %s", content[:300])
+            log.warning("Локальный планировщик вернул не JSON: %s", content[:300])
             return None
         plan = _build_plan(data, self.registry)
         if plan is None:
-            log.info("Локальная LLM: действие отклонено: %s", data)
+            log.info("Локальный планировщик: действие отклонено: %s", data)
         else:
-            log.info("Локальная LLM: %s %s", plan.action, plan.args)
+            log.info("Локальный планировщик: %s %s", plan.action, plan.args)
         return plan
-
-    def answer(
-        self,
-        question: str,
-        context: str = "",
-        *,
-        style: str = "normal",
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        timeout: float | None = None,
-        model: str | None = None,
-    ) -> str:
-        """Отвечает на вопрос: по источникам (RAG) или из своих знаний."""
-        question = (question or "").strip()
-        if not question:
-            raise LocalLLMError("пустой вопрос")
-        if not self.enabled:
-            raise LocalLLMError("локальная LLM выключена")
-        if not self.model:
-            raise LocalLLMError("не задана модель llm.model")
-        if not self.available():
-            raise LocalLLMError("локальная LLM недоступна")
-
-        style = (style or "normal").strip().lower()
-        context = (context or "").strip()
-        if context:
-            system = RAG_PROMPTS.get(style, RAG_SYSTEM)
-            user = f"Вопрос: {question}\n\nИсточники:\n{context}"
-        else:
-            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
-            user = question
-        return self._complete(
-            system,
-            user,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
-            model=model,
-        )
 
     # ------------------------------------------------------------------- HTTP
     def _chat(self, text: str) -> str:
@@ -316,18 +223,18 @@ class LocalLLM:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:300]
             self._mark_down()
-            raise LocalLLMError(f"HTTP {exc.code}: {detail}") from exc
+            raise LocalPlannerError(f"HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             self._mark_down()
-            raise LocalLLMError(f"сервер недоступен: {exc}") from exc
+            raise LocalPlannerError(f"сервер недоступен: {exc}") from exc
 
         try:
             data = json.loads(body)
         except json.JSONDecodeError as exc:
-            raise LocalLLMError("сервер вернул не JSON") from exc
+            raise LocalPlannerError("сервер вернул не JSON") from exc
         choices = data.get("choices") or []
         if not choices:
-            raise LocalLLMError("в ответе нет choices")
+            raise LocalPlannerError("в ответе нет choices")
         message = (choices[0] or {}).get("message") or {}
         content = message.get("content")
         if isinstance(content, list):
@@ -337,7 +244,7 @@ class LocalLLM:
                 if isinstance(part, dict)
             )
         if not isinstance(content, str) or not content.strip():
-            raise LocalLLMError("пустой ответ модели")
+            raise LocalPlannerError("пустой ответ модели")
         return content
 
     def _mark_down(self) -> None:

@@ -15,7 +15,7 @@ from app.catalog import (
     validate_catalog,
 )
 from app.config import ROOT
-from app.local_llm import SITE_KEYS
+from app.local_planner import SITE_KEYS
 from app.tools import build_default_registry
 
 

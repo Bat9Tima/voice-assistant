@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .local_llm import LocalLLM, LocalLLMError
+from .cloud_llm import CloudLLM, LLMError
 from .search import SearchError, SearchResult, TavilySearch
 from .weather import WeatherClient, WeatherError, format_report
 
@@ -929,7 +929,7 @@ class QAService:
     def __init__(
         self,
         cfg: dict[str, Any],
-        llm: LocalLLM | None = None,
+        llm: CloudLLM | None = None,
         browser: Any = None,
     ) -> None:
         self.cfg = cfg or {}
@@ -939,8 +939,6 @@ class QAService:
         self.search = TavilySearch(self.cfg)
         self.llm = llm
         self.browser = browser
-        llm_cfg = self.cfg.get("llm") or {}
-        self.article_model = str(llm_cfg.get("article_model") or "").strip()
         answer_cfg = section.get("answer") or {}
         self.max_tokens = int(answer_cfg.get("max_tokens") or 400)
         self.temperature = float(answer_cfg.get("temperature") or 0.2)
@@ -994,7 +992,7 @@ class QAService:
             )
 
         if self._llm_available():
-            return self._answer_local(text, style=style)
+            return self._answer_general(text, style=style)
 
         if self.search.available():
             return self._answer_search(text, news=False, style=style)
@@ -1002,7 +1000,7 @@ class QAService:
         return self._error(
             text,
             "Не могу ответить",
-            "Локальная LLM недоступна, ключ поиска не задан.",
+            "Модель недоступна, ключ поиска не задан.",
             error="нет доступных источников ответа",
         )
 
@@ -1010,7 +1008,7 @@ class QAService:
         kind = {
             "weather": "Погода",
             "search": "Поиск в интернете",
-            "local": "Локальная модель",
+            "general": "Модель",
         }.get(answer.kind, "Ответ")
         body = "".join(
             f"<p>{html.escape(line.strip())}</p>"
@@ -1210,10 +1208,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     max_tokens=max_tokens,
                     temperature=self.temperature,
                     timeout=max(self.timeout, 90),
-                    model=self.article_model or None,
                 )
-            except LocalLLMError as exc:
-                log.warning("Q&A: локальная LLM не ответила по статье: %s", exc)
+            except LLMError as exc:
+                log.warning("Q&A: модель не ответила по статье: %s", exc)
         answer = _clean_answer(answer)
         if answer and _usable_answer(answer):
             full = f"[{item.index}] {item.title}\n\n{answer}"
@@ -1279,9 +1276,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             [source],
         )
 
-    def _answer_local(self, text: str, *, style: str = "normal") -> QAAnswer:
+    def _answer_general(self, text: str, *, style: str = "normal") -> QAAnswer:
         if self.llm is None:
-            return self._error(text, "Локальная LLM недоступна", "Локальная LLM недоступна.")
+            return self._error(text, "Модель недоступна", "Модель недоступна.")
         style = style if style in {"short", "detailed"} else "normal"
         max_tokens = self.max_tokens
         if style == "short":
@@ -1296,17 +1293,17 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 temperature=self.temperature,
                 timeout=self.timeout,
             )
-        except LocalLLMError as exc:
+        except LLMError as exc:
             return self._error(
                 text,
-                f"Локальная LLM: {exc}",
-                f"Локальная LLM: {exc}",
+                f"Модель: {exc}",
+                f"Модель: {exc}",
                 error=str(exc),
             )
         answer = _clean_answer(answer)
         if not answer:
             return self._error(text, "Пустой ответ модели", "Модель вернула пустой ответ.")
-        return QAAnswer(True, text, first_sentence(answer), answer, "local")
+        return QAAnswer(True, text, first_sentence(answer), answer, "general")
 
     def _answer_search(
         self, text: str, *, news: bool, style: str = "normal"
@@ -1391,8 +1388,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     temperature=self.temperature,
                     timeout=llm_timeout,
                 )
-            except LocalLLMError as exc:
-                log.warning("Q&A: локальная LLM не ответила: %s", exc)
+            except LLMError as exc:
+                log.warning("Q&A: модель не ответила: %s", exc)
         answer = _clean_answer(answer)
 
         if answer and _usable_answer(answer):

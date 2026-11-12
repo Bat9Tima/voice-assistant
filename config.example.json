@@ -84,7 +84,20 @@
     "standalone": false
   },
 
-  "llm": {
+  "cloud_llm": {
+    "enabled": true,
+    "base_url": "https://api.proxyapi.ru/v1",
+    "api_key": "",
+    "model": "anthropic/claude-haiku-5-5",
+    "fallback_models": ["xiaomi/mimo-v2.6-flash"],
+    "reasoning_effort": "minimal",
+    "max_completion_tokens": 2000,
+    "temperature": 0.2,
+    "timeout_sec": 90,
+    "retries": 2
+  },
+
+  "local_planner": {
     "enabled": false,
     "base_url": "http://127.0.0.1:11434/v1",
     "model": "qwen2.5:3b-instruct",

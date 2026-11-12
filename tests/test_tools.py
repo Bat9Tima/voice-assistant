@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 
 from app.actions import SITE_URLS
-from app.local_llm import (
+from app.local_planner import (
     REGISTRY,
     SITE_KEYS,
     SYSTEM_PROMPT,
-    LocalLLM,
     LocalPlan,
+    LocalPlanner,
     _build_plan,
 )
 from app.tools import Tool, ToolParam, ToolRegistry, build_default_registry
@@ -397,8 +397,8 @@ class PromptFromRegistryTest(unittest.TestCase):
 
     def test_custom_registry_changes_prompt_and_plan(self) -> None:
         registry = ToolRegistry([Tool("ping", "проверка.")])
-        llm = LocalLLM(
-            {"llm": {"enabled": True, "model": "test"}}, registry=registry
+        llm = LocalPlanner(
+            {"local_planner": {"enabled": True, "model": "test"}}, registry=registry
         )
         self.assertIn("- ping", llm.system_prompt)
         self.assertNotIn("- youtube", llm.system_prompt)

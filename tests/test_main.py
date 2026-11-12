@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
-from app.local_llm import LocalLLMError, LocalPlan
+from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
 from app.qa import QAAnswer
 
@@ -38,7 +38,7 @@ class FakeBrain:
         return self.answer
 
 
-class FakeLocalLLM:
+class FakeLocalPlanner:
     def __init__(
         self, plan: LocalPlan | None = None, error: Exception | None = None
     ) -> None:
@@ -53,6 +53,19 @@ class FakeLocalLLM:
         return self.plan_result
 
 
+class FakeTTS:
+    def __init__(self, enabled: bool = False) -> None:
+        self.enabled = enabled
+        self.phrases: list[str] = []
+        self.said: list[str] = []
+
+    def phrase(self, category: str, phrase_id: str | None = None) -> None:
+        self.phrases.append(category)
+
+    def say(self, text: str) -> None:
+        self.said.append(text)
+
+
 class FakeTray:
     def __init__(self, status: dict[str, Any]) -> None:
         self._status = status
@@ -64,7 +77,7 @@ class FakeTray:
 class FakeQA:
     def __init__(self, answer: QAAnswer | None = None) -> None:
         self.result = answer or QAAnswer(
-            True, "вопрос", "Короткий ответ", "Полный ответ", "local"
+            True, "вопрос", "Короткий ответ", "Полный ответ", "general"
         )
         self.handled: list[str] = []
         self.shown: list[QAAnswer] = []
@@ -115,8 +128,9 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
         assistant.brain = FakeBrain()
-        assistant.local_llm = FakeLocalLLM()
+        assistant.planner = FakeLocalPlanner()
         assistant.qa = None
+        assistant.tts = FakeTTS()
         assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
@@ -163,9 +177,9 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         self.assertEqual(message, "Открываю Google")
         self.assertEqual(assistant.router.seen, ["открой гугл"])
 
-    def test_free_form_command_uses_local_llm(self) -> None:
+    def test_free_form_command_uses_local_planner(self) -> None:
         assistant = self.make()
-        assistant.local_llm = FakeLocalLLM(
+        assistant.planner = FakeLocalPlanner(
             LocalPlan("youtube", {"query": "lo-fi", "index": 1})
         )
         assistant.router.plan_result = CommandResult(
@@ -173,46 +187,46 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         )
         message = assistant.run_text("вруби лофай на ютубе")
         self.assertEqual(message, "Включаю на YouTube: lo-fi")
-        self.assertEqual(assistant.local_llm.seen, ["вруби лоуфай на ютубе"])
+        self.assertEqual(assistant.planner.seen, ["вруби лоуфай на ютубе"])
         self.assertEqual(
             assistant.router.plans,
             [("youtube", {"query": "lo-fi", "index": 1})],
         )
 
-    def test_local_llm_none_falls_back(self) -> None:
+    def test_local_planner_none_falls_back(self) -> None:
         assistant = self.make()
         with patch("app.main.beep") as beep:
             message = assistant.run_text("сделай что-нибудь странное")
         self.assertEqual(message, "Не понял команду")
         self.assertEqual(
-            assistant.local_llm.seen, ["сделай что нибудь странное"]
+            assistant.planner.seen, ["сделай что нибудь странное"]
         )
         beep.assert_called_once_with(320, 120)
 
-    def test_router_command_skips_local_llm(self) -> None:
+    def test_router_command_skips_local_planner(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
         assistant.run_text("открой ютуб")
-        self.assertEqual(assistant.local_llm.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
 
-    def test_local_llm_error_falls_back(self) -> None:
+    def test_local_planner_error_falls_back(self) -> None:
         assistant = self.make()
-        assistant.local_llm = FakeLocalLLM(error=LocalLLMError("нет сервера"))
+        assistant.planner = FakeLocalPlanner(error=LocalPlannerError("нет сервера"))
         with patch("app.main.beep") as beep:
             message = assistant.run_text("вруби музыку")
         self.assertEqual(message, "Не понял команду")
         beep.assert_called_once_with(320, 120)
 
-    def test_agent_trigger_skips_local_llm(self) -> None:
+    def test_agent_trigger_skips_local_planner(self) -> None:
         assistant = self.make()
         assistant.run_text("спроси агента, какая погода")
-        self.assertEqual(assistant.local_llm.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
 
-    def test_question_uses_qa_before_local_llm(self) -> None:
+    def test_question_uses_qa_before_local_planner(self) -> None:
         assistant = self.make()
         assistant.qa = FakeQA()
         message = assistant.run_text("что такое фотосинтез")
         self.assertEqual(message, "Короткий ответ")
-        self.assertEqual(assistant.local_llm.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
         self.assertEqual(assistant.qa.handled, ["что такое фотосинтез"])
         self.assertEqual(len(assistant.qa.shown), 1)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.local_llm import LocalLLMError
+from app.cloud_llm import LLMError
 from app.qa import (
     QAAnswer,
     QAService,
@@ -791,7 +791,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(llm.calls[0][0], "какой курс доллара")
         self.assertEqual(llm.kwargs[0]["style"], "detailed")
 
-    def test_local_style_is_passed(self) -> None:
+    def test_general_style_is_passed(self) -> None:
         llm = FakeLLM("Фотосинтез — это процесс.")
         qa = make_service(llm=llm)
         qa.search = FakeSearch(available=False)
@@ -874,15 +874,15 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertFalse(answer.ok)
         self.assertIn("Поиск не удался", answer.short)
 
-    def test_local_answer(self) -> None:
+    def test_general_answer(self) -> None:
         qa = make_service(llm=FakeLLM("Фотосинтез — это процесс."))
         qa.search = FakeSearch(available=False)
         answer = qa.answer("расскажи про фотосинтез")
         self.assertTrue(answer.ok)
-        self.assertEqual(answer.kind, "local")
+        self.assertEqual(answer.kind, "general")
         self.assertEqual(qa.search.calls, [])
 
-    def test_local_answer_passes_qa_timeout(self) -> None:
+    def test_general_answer_passes_qa_timeout(self) -> None:
         llm = FakeLLM("Фотосинтез — это процесс.")
         qa = make_service(llm=llm)
         qa.search = FakeSearch(available=False)
@@ -890,15 +890,15 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.answer("расскажи про фотосинтез")
         self.assertEqual(llm.kwargs[0]["timeout"], 42)
 
-    def test_local_answer_removes_cjk(self) -> None:
+    def test_general_answer_removes_cjk(self) -> None:
         qa = make_service(llm=FakeLLM("Вода и二氧化碳."))
         qa.search = FakeSearch(available=False)
         answer = qa.answer("расскажи про воду")
         self.assertNotIn("二氧化碳", answer.full)
         self.assertIn("Вода и", answer.full)
 
-    def test_local_llm_error(self) -> None:
-        qa = make_service(llm=FakeLLM(error=LocalLLMError("down")))
+    def test_llm_error(self) -> None:
+        qa = make_service(llm=FakeLLM(error=LLMError("down")))
         qa.search = FakeSearch(available=False)
         answer = qa.answer("расскажи про фотосинтез")
         self.assertFalse(answer.ok)
@@ -944,7 +944,7 @@ class QARenderTest(unittest.TestCase):
     def test_show_opens_tab_only_for_success(self) -> None:
         browser = FakeBrowser()
         qa = make_service(browser=browser)
-        self.assertTrue(qa.show(QAAnswer(True, "q", "s", "f", "local")))
+        self.assertTrue(qa.show(QAAnswer(True, "q", "s", "f", "general")))
         self.assertEqual(browser.calls[0][0], "render")
         self.assertFalse(qa.show(QAAnswer(False, "q", "s", "f", "error")))
         self.assertEqual(len(browser.calls), 1)
