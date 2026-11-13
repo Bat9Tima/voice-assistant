@@ -8,3 +8,15 @@ ignore = [
     # Длинные строки в данных/URL/докстрингах — не повод ломать читаемость.
     "E501",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

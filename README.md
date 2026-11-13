@@ -874,16 +874,26 @@ energy_threshold» — она считается по нижнему проце�
 .\scripts\check.cmd
 ```
 
+Покрытие — отдельно, оно не входит в обязательные проверки:
+
+```powershell
+.\scripts\coverage.cmd
+```
+
+Отчёт: `coverage_html\index.html`, XML — `coverage.xml`. Порога нет:
+CI публикует цифру артефактом `coverage`, но не валит сборку из-за процента.
+
 То же самое делает CI (`.github/workflows/ci.yml`) на каждый push в `main`
 и на каждый pull request: отдельный job для `ruff check` и `ruff format --check`,
-отдельный — для тестов в Windows с зависимостями из `requirements.lock`.
+отдельный — для тестов в Windows с зависимостями из `requirements.lock`;
+он же публикует отчёт о покрытии.
 
 Разделение файлов зависимостей:
 
 - `requirements.txt` — диапазоны версий, человекочитаемый список;
 - `requirements.lock` — точные версии, на которых CI зелёный; из него ставит
   установщик;
-- `requirements-dev.txt` — `ruff` для локальных проверок.
+- `requirements-dev.txt` — `ruff` и `coverage` для локальных проверок.
 
 После осознанного обновления пакета правьте и `requirements.lock` (включая
 транзитивные зависимости), затем прогоняйте `.\scripts\check.cmd`.

@@ -43,7 +43,34 @@ jobs:
           cache-dependency-path: requirements.lock
       - name: Установить зависимости
         run: pip install -r requirements.lock
+      - name: Установить coverage
+        run: pip install "coverage==7.17.3"
       - name: unittest
         env:
           PYTHONUTF8: "1"
-        run: python -m unittest discover -s tests
+        run: python -m coverage run -m unittest discover -s tests
+      - name: Покрытие
+        if: always()
+        shell: pwsh
+        run: |
+          $report = coverage report --show-missing
+          $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          coverage html -d coverage_html
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          coverage xml -o coverage.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          '### Покрытие (без порога)' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $report | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - name: Сохранить отчёт о покрытии
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            coverage_html/
+          if-no-files-found: warn
+          retention-days: 14
