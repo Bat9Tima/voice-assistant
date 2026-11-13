@@ -13,9 +13,10 @@ concurrency:
 permissions:
   contents: read
 
+# Имена job'ов (lint, tests) — это и есть имена проверок в GitHub.
+# Правило защиты main требует именно их: переименование заблокирует все PR.
 jobs:
   lint:
-    name: Линтер и форматирование
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,7 +32,6 @@ jobs:
         run: ruff format --check app tests
 
   tests:
-    name: Тесты (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
