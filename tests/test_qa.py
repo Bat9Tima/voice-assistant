@@ -227,10 +227,44 @@ class SearchQueryTest(unittest.TestCase):
                     "главные новости России сегодня",
                 )
 
+    def test_free_news_formulations_become_concrete(self) -> None:
+        for text in (
+            "новости за последний день",
+            "новости за сегодня",
+            "новости за вчера",
+            "новости за последнюю неделю",
+            "новости за последние 24 часа",
+            "последние новости за день",
+            "что нового за неделю",
+            "что случилось за сегодня",
+            "какие новости на сегодня",
+            "расскажи новости за последние сутки",
+            "сводка новостей за вчера",
+            "что там по новостям",
+            "что пишут в новостях",
+            "что в мире творится",
+            "последние события в мире",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    search_query(text, news=True),
+                    "главные новости России сегодня",
+                )
+
     def test_topical_news_request_is_kept(self) -> None:
         self.assertEqual(
             search_query("новости про выборы", news=True),
             "новости про выборы",
+        )
+
+    def test_topical_news_with_time_is_kept(self) -> None:
+        self.assertEqual(
+            search_query("новости про выборы за последний день", news=True),
+            "новости про выборы за последний день",
+        )
+        self.assertEqual(
+            search_query("новости за 2024 год", news=True),
+            "новости за 2024 год",
         )
 
     def test_general_search_is_kept(self) -> None:
