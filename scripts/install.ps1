@@ -124,7 +124,7 @@ if ($DryRun) {
     if ($InstallPython) {
         Write-Host "  - при отсутствии Python 3.12 установить его через winget"
     }
-    Write-Host "  - установить зависимости из requirements.txt"
+    Write-Host "  - установить зависимости из requirements.lock"
     Write-Host "  - скачать Vosk RU для wake word"
     Write-Host "  - скачать GigaAM v3, если модели нет"
     if ($ModelsDir) {
@@ -222,7 +222,7 @@ try {
                     Write-Host "  - обновлено: $dirName"
                 }
             }
-            foreach ($fileName in @("config.example.json", "requirements.txt", "requirements-whisper.txt", "requirements-dev.txt", "pyproject.toml", "README.md")) {
+            foreach ($fileName in @("config.example.json", "requirements.txt", "requirements.lock", "requirements-whisper.txt", "requirements-dev.txt", "pyproject.toml", "README.md")) {
                 $from = Join-Path $sourceRoot $fileName
                 if (Test-Path -LiteralPath $from) {
                     Copy-Item -LiteralPath $from -Destination $root -Force

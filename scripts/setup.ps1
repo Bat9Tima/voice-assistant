@@ -141,7 +141,9 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 }
 $vpy = Join-Path $root ".venv\Scripts\python.exe"
 & $vpy -m pip install --upgrade pip
-& $vpy -m pip install -r requirements.txt
+# requirements.lock — проверенный CI набор версий, requirements.txt — диапазоны.
+$requirements = if (Test-Path "requirements.lock") { "requirements.lock" } else { "requirements.txt" }
+& $vpy -m pip install -r $requirements
 
 # --- Модели: рабочие файлы и папка-«флешка» с архивами ---
 $dataDir = Join-Path $env:LOCALAPPDATA "VoiceAssistant"

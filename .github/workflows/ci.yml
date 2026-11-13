@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Линтер и форматирование
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Установить ruff
+        run: pip install "ruff==0.17.4"
+      - name: ruff check
+        run: ruff check app tests
+      - name: ruff format --check
+        run: ruff format --check app tests
+
+  tests:
+    name: Тесты (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Установить зависимости
+        run: pip install -r requirements.lock
+      - name: unittest
+        env:
+          PYTHONUTF8: "1"
+        run: python -m unittest discover -s tests

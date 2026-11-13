@@ -1,0 +1,9 @@
+# Единые переводы строк: и в репозитории, и в рабочей копии — LF.
+# core.autocrlf=true иначе переписывает файлы при checkout и плодит шум в diff.
+* text=auto eol=lf
+
+*.wav binary
+*.onnx binary
+*.png binary
+*.ico binary
+*.zip binary
