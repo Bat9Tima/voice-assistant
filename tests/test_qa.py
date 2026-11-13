@@ -70,9 +70,7 @@ class FakeSearch:
             raise self.error
         return self.article
 
-    def search_article(
-        self, query: str, *, limit: int = 3
-    ) -> list[SearchResult]:
+    def search_article(self, query: str, *, limit: int = 3) -> list[SearchResult]:
         self.article_calls.append(query)
         if self.error is not None:
             raise self.error
@@ -361,9 +359,7 @@ class CityExtractionTest(unittest.TestCase):
     def test_city_after_weather(self) -> None:
         self.assertEqual(extract_city("погода в Москве"), "Москве")
         self.assertEqual(extract_city("какая погода в Казани"), "Казани")
-        self.assertEqual(
-            extract_city("погода в Санкт-Петербурге"), "Санкт-Петербурге"
-        )
+        self.assertEqual(extract_city("погода в Санкт-Петербурге"), "Санкт-Петербурге")
 
     def test_city_before_weather(self) -> None:
         self.assertEqual(extract_city("в Москве погода"), "Москве")
@@ -491,9 +487,7 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_search_answer_with_citations(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос [1]."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст новости")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст новости")])
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
         self.assertEqual(answer.kind, "search")
@@ -502,22 +496,14 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(qa.search.calls, [("какой курс доллара", False)])
 
     def test_search_answer_removes_meta_phrases(self) -> None:
-        qa = make_service(
-            llm=FakeLLM("В источнике [1] сообщается о том, что курс вырос [1].")
-        )
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Курс вырос")]
-        )
+        qa = make_service(llm=FakeLLM("В источнике [1] сообщается о том, что курс вырос [1]."))
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Курс вырос")])
         answer = qa.answer("какой курс доллара")
         self.assertEqual(answer.full, "курс вырос [1].")
 
     def test_search_answer_removes_news_meta_phrases(self) -> None:
-        qa = make_service(
-            llm=FakeLLM("[1] В новости о курсе говорится, что курс вырос [1].")
-        )
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Курс вырос")]
-        )
+        qa = make_service(llm=FakeLLM("[1] В новости о курсе говорится, что курс вырос [1]."))
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Курс вырос")])
         answer = qa.answer("какой курс доллара")
         self.assertEqual(answer.full, "[1] Курс вырос [1].")
 
@@ -528,38 +514,27 @@ class QAServiceRoutingTest(unittest.TestCase):
                 "сообщает, что она показала фигуру [1]."
             )
         )
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст новости")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст новости")])
         answer = qa.answer("какие новости")
         self.assertEqual(answer.full, "[1] Она показала фигуру [1].")
 
     def test_search_answer_removes_trailing_dont_know(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос [1]. Не знаю."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Курс вырос")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Курс вырос")])
         answer = qa.answer("какой курс доллара")
         self.assertEqual(answer.full, "Курс вырос [1].")
 
     def test_search_answer_removes_refusal_sentences(self) -> None:
         qa = make_service(
-            llm=FakeLLM(
-                "[1] Курс вырос [1]. Не знаю. "
-                "В представленных источниках нет информации."
-            )
+            llm=FakeLLM("[1] Курс вырос [1]. Не знаю. В представленных источниках нет информации.")
         )
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Курс вырос")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Курс вырос")])
         answer = qa.answer("какой курс доллара")
         self.assertEqual(answer.full, "[1] Курс вырос [1].")
 
     def test_news_query_uses_news_mode(self) -> None:
         qa = make_service(llm=FakeLLM("Новость [1]."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("какие новости")
         self.assertEqual(
             qa.search.calls,
@@ -568,18 +543,14 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_topical_news_query_is_kept(self) -> None:
         qa = make_service(llm=FakeLLM("Новость [1]."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("новости про выборы")
         self.assertEqual(qa.search.calls, [("новости про выборы", True)])
 
     def test_news_default_uses_news_style(self) -> None:
         llm = FakeLLM("Новость [1].")
         qa = make_service(llm=llm)
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("какие новости")
         self.assertEqual(llm.kwargs[0]["style"], "news")
         self.assertEqual(llm.kwargs[0]["max_tokens"], 800)
@@ -587,9 +558,7 @@ class QAServiceRoutingTest(unittest.TestCase):
     def test_news_short_overrides_default(self) -> None:
         llm = FakeLLM("Новость [1].")
         qa = make_service(llm=llm)
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("новости кратко")
         self.assertEqual(llm.kwargs[0]["style"], "news_short")
         self.assertEqual(llm.kwargs[0]["max_tokens"], 800)
@@ -601,9 +570,7 @@ class QAServiceRoutingTest(unittest.TestCase):
     def test_news_detailed_overrides_default(self) -> None:
         llm = FakeLLM("Новость [1].")
         qa = make_service(llm=llm)
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("новости подробно")
         self.assertEqual(llm.kwargs[0]["style"], "news_detailed")
         self.assertEqual(
@@ -689,8 +656,7 @@ class QAServiceRoutingTest(unittest.TestCase):
                 SearchResult(
                     "Выпуск за 10 ноября 2026",
                     "https://example.com/issue",
-                    "Экспорт легковых автомобилей вырос на 62% в октябре. "
-                    "Ещё одна новость дня.",
+                    "Экспорт легковых автомобилей вырос на 62% в октябре. Ещё одна новость дня.",
                 )
             ]
         )
@@ -804,10 +770,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertIn("Экспорт автомобилей из Китая", llm.calls[-1][1])
 
     def test_news_followup_ambiguous_asks_clarification(self) -> None:
-        llm = FakeLLM(
-            "[1] Экспорт автомобилей вырос.\n"
-            "[2] Экспорт нефти вырос."
-        )
+        llm = FakeLLM("[1] Экспорт автомобилей вырос.\n[2] Экспорт нефти вырос.")
         qa = make_service(llm=llm)
         qa.search = FakeSearch(
             [
@@ -871,9 +834,7 @@ class QAServiceRoutingTest(unittest.TestCase):
     def test_search_style_is_stripped_from_question(self) -> None:
         llm = FakeLLM("Курс вырос [1].")
         qa = make_service(llm=llm)
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст")])
         qa.answer("какой курс доллара подробно")
         self.assertEqual(llm.calls[0][0], "какой курс доллара")
         self.assertEqual(llm.kwargs[0]["style"], "detailed")
@@ -889,9 +850,7 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_search_fallback_without_citations(self) -> None:
         qa = make_service(llm=FakeLLM("Курс вырос."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст новости")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст новости")])
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
         self.assertIn("Модель не смогла пересказать источники", answer.full)
@@ -899,9 +858,7 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_search_fallback_for_citation_only_answer(self) -> None:
         qa = make_service(llm=FakeLLM("[1] [2]"))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст новости")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст новости")])
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
         self.assertIn("Модель не смогла пересказать источники", answer.full)
@@ -909,9 +866,7 @@ class QAServiceRoutingTest(unittest.TestCase):
 
     def test_search_fallback_for_refusal_answer(self) -> None:
         qa = make_service(llm=FakeLLM("[1] Не содержит актуального курса доллара."))
-        qa.search = FakeSearch(
-            [SearchResult("Новость", "https://example.com", "Текст новости")]
-        )
+        qa.search = FakeSearch([SearchResult("Новость", "https://example.com", "Текст новости")])
         answer = qa.answer("какой курс доллара")
         self.assertTrue(answer.ok)
         self.assertIn("Модель не смогла пересказать источники", answer.full)
@@ -1082,9 +1037,7 @@ class QASearchFallbackTest(unittest.TestCase):
         )
 
     def test_confident_answer_does_not_search(self) -> None:
-        qa = make_service(
-            llm=FakeLLM("Фотосинтез — это процесс получения энергии из света.")
-        )
+        qa = make_service(llm=FakeLLM("Фотосинтез — это процесс получения энергии из света."))
         qa.search = FakeSearch([self.result])
 
         answer = qa.answer("что такое фотосинтез")

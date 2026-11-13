@@ -160,10 +160,7 @@ class VolumeContextTest(unittest.TestCase):
         self.assertEqual(result.message, "Громкость: 40%")
         self.assertAlmostEqual(self.volume.level, 0.4)
         self.assertFalse(
-            any(
-                action == "soundcloud_volume"
-                for action, _ in self.browser.calls[before:]
-            )
+            any(action == "soundcloud_volume" for action, _ in self.browser.calls[before:])
         )
 
     def test_explicit_quiet_without_context_targets_system(self) -> None:
@@ -178,9 +175,7 @@ class VolumeContextTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.message, "Громкость: 40%")
         self.assertAlmostEqual(self.volume.level, 0.4)
-        self.assertFalse(
-            any(action == "soundcloud_volume" for action, _ in self.browser.calls)
-        )
+        self.assertFalse(any(action == "soundcloud_volume" for action, _ in self.browser.calls))
 
     def test_explicit_quiet_after_system_volume_targets_system(self) -> None:
         self.router.handle("громкость пять")
@@ -188,9 +183,7 @@ class VolumeContextTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.message, "Громкость: 40%")
         self.assertAlmostEqual(self.volume.level, 0.4)
-        self.assertFalse(
-            any(action == "soundcloud_volume" for action, _ in self.browser.calls)
-        )
+        self.assertFalse(any(action == "soundcloud_volume" for action, _ in self.browser.calls))
 
 
 if __name__ == "__main__":

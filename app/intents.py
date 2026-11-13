@@ -63,9 +63,7 @@ class IntentSet:
         intents: Iterable[Intent] = (),
         slot_defs: Mapping[str, SlotDefinition] | None = None,
     ) -> None:
-        self.intents = tuple(
-            sorted(intents, key=lambda item: item.priority, reverse=True)
-        )
+        self.intents = tuple(sorted(intents, key=lambda item: item.priority, reverse=True))
         self._defs = dict(slot_defs or {})
 
     # ------------------------------------------------------------------ public
@@ -106,9 +104,7 @@ class IntentSet:
             if requires is not None:
                 requires = str(requires)
                 if requires not in CommandContext.KINDS:
-                    raise ValueError(
-                        f"у интента {intent_id} неизвестный контекст: {requires}"
-                    )
+                    raise ValueError(f"у интента {intent_id} неизвестный контекст: {requires}")
 
             try:
                 priority = int(raw.get("priority", 0))
@@ -198,20 +194,17 @@ def _slot_definitions(
     site_names: Iterable[str],
     volume_parser: Callable[[str], int | None] | None,
 ) -> dict[str, SlotDefinition]:
-    sites = sorted({normalize(name) for name in site_names if normalize(name)}, key=lambda item: (-len(item), item))
+    sites = sorted(
+        {normalize(name) for name in site_names if normalize(name)},
+        key=lambda item: (-len(item), item),
+    )
     if sites:
-        site_re = "|".join(
-            re.escape(site).replace(r"\ ", r"\s+") for site in sites
-        )
+        site_re = "|".join(re.escape(site).replace(r"\ ", r"\s+") for site in sites)
     else:
         site_re = "(?!)"
 
-    tab_words = "|".join(
-        re.escape(word) for word in sorted(TAB_WORDS, key=len, reverse=True)
-    )
-    result_words = "|".join(
-        re.escape(word) for word in sorted(RESULT_WORDS, key=len, reverse=True)
-    )
+    tab_words = "|".join(re.escape(word) for word in sorted(TAB_WORDS, key=len, reverse=True))
+    result_words = "|".join(re.escape(word) for word in sorted(RESULT_WORDS, key=len, reverse=True))
 
     def parse_query(raw: str) -> str | None:
         value = normalize(raw)
@@ -264,9 +257,7 @@ def _slot_definitions(
         "site": SlotDefinition(f"(?:{site_re})", parse_site),
         "media_site": SlotDefinition(media_site_re, parse_media_site),
         "tab": SlotDefinition(rf"(?:\d{{1,2}}|{tab_words})", parse_tab),
-        "ordinal": SlotDefinition(
-            rf"(?:\d{{1,2}}|{result_words})", parse_ordinal
-        ),
+        "ordinal": SlotDefinition(rf"(?:\d{{1,2}}|{result_words})", parse_ordinal),
         "ordinal_word": SlotDefinition(
             rf"(?:{result_words})", lambda raw: parse_ordinal(raw, words_only=True)
         ),
@@ -292,13 +283,9 @@ def _compile_template(
             if not name or not re.fullmatch(r"\w+", name):
                 raise ValueError(f"у интента {intent_id} неверный слот: {token}")
             if name not in slots:
-                raise ValueError(
-                    f"у интента {intent_id} слот {name} не описан в slots"
-                )
+                raise ValueError(f"у интента {intent_id} слот {name} не описан в slots")
             if name in seen:
-                raise ValueError(
-                    f"у интента {intent_id} слот {name} повторяется в шаблоне"
-                )
+                raise ValueError(f"у интента {intent_id} слот {name} повторяется в шаблоне")
             seen.add(name)
             slot_names.append(name)
             parts.append(f"(?P<{name}>{slot_defs[slots[name]].regex})")
@@ -375,9 +362,7 @@ def _match_unordered(
         if has_prefix and prefix_count == 0:
             continue
         removed = set(positions)
-        remaining = [
-            token for index, token in enumerate(tokens) if index not in removed
-        ]
+        remaining = [token for index, token in enumerate(tokens) if index not in removed]
         slots = _assign_slots(
             intent,
             pattern.slots,
@@ -442,9 +427,7 @@ def _order_score(positions: tuple[int, ...]) -> tuple[int, int, int]:
     if not positions:
         return (0, 0, 0)
     adjacent = sum(
-        1
-        for left, right in zip(positions, positions[1:], strict=False)
-        if right == left + 1
+        1 for left, right in zip(positions, positions[1:], strict=False) if right == left + 1
     )
     ordered = sum(
         1
@@ -466,9 +449,7 @@ def _assign_slots(
     if prefix_count is not None:
         if prefix_count <= 0 or prefix_count > len(remaining):
             return None
-        prefix = _parse_slot(
-            intent, "prefix", remaining[:prefix_count], slot_defs
-        )
+        prefix = _parse_slot(intent, "prefix", remaining[:prefix_count], slot_defs)
         if prefix is None:
             return None
         other_slots = tuple(name for name in slot_names if name != "prefix")
@@ -491,9 +472,7 @@ def _assign_slots(
         for order in itertools.permutations(range(len(chunks))):
             values: dict[str, Any] = {}
             for name, chunk_index in zip(slot_names, order, strict=False):
-                parsed = _parse_slot(
-                    intent, name, chunks[chunk_index], slot_defs
-                )
+                parsed = _parse_slot(intent, name, chunks[chunk_index], slot_defs)
                 if parsed is None:
                     break
                 values.update(parsed)

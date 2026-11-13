@@ -148,19 +148,11 @@ def _parse(text: str) -> _Request | None:
     tokens = normalized.split()
     token_set = set(tokens)
 
-    if (
-        token_set & {"год", "году"}
-        and token_set & _QUESTION_WORDS
-        and token_set <= _YEAR_WORDS
-    ):
+    if token_set & {"год", "году"} and token_set & _QUESTION_WORDS and token_set <= _YEAR_WORDS:
         return _Request("year")
 
     has_date_target = bool(token_set & {"число", "дата", "день", "дня"})
-    if (
-        has_date_target
-        and token_set & _QUESTION_WORDS
-        and token_set <= _DATE_WORDS
-    ):
+    if has_date_target and token_set & _QUESTION_WORDS and token_set <= _DATE_WORDS:
         return _Request("date", _shift(tokens))
     return None
 

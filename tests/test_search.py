@@ -134,11 +134,7 @@ class TavilyExtractTest(unittest.TestCase):
             self.assertEqual(request.full_url, "https://api.tavily.com/extract")
             return FakeResponse(
                 json.dumps(
-                    {
-                        "results": [
-                            {"url": url, "raw_content": "Полный текст статьи."}
-                        ]
-                    }
+                    {"results": [{"url": url, "raw_content": "Полный текст статьи."}]}
                 ).encode("utf-8")
             )
 
@@ -151,9 +147,7 @@ class TavilyExtractTest(unittest.TestCase):
         self.assertEqual(payload["format"], "text")
 
     def test_extract_without_content_raises(self) -> None:
-        body = json.dumps({"results": [{"url": "https://example.com"}]}).encode(
-            "utf-8"
-        )
+        body = json.dumps({"results": [{"url": "https://example.com"}]}).encode("utf-8")
         with patch(
             "app.search.urllib.request.urlopen",
             return_value=FakeResponse(body),

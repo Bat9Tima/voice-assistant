@@ -900,9 +900,7 @@ def validate_catalog() -> list[str]:
             if not action.examples:
                 problems.append(f"у действия {action.name} нет examples")
         elif action.doc_example:
-            problems.append(
-                f"у недокументированного действия {action.name} есть doc_example"
-            )
+            problems.append(f"у недокументированного действия {action.name} есть doc_example")
     return problems
 
 

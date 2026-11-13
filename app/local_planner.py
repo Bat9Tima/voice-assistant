@@ -113,9 +113,7 @@ class LocalPlanner:
     и исполнение остаются на стороне ActionRouter.
     """
 
-    def __init__(
-        self, cfg: dict[str, Any], registry: ToolRegistry | None = None
-    ) -> None:
+    def __init__(self, cfg: dict[str, Any], registry: ToolRegistry | None = None) -> None:
         section = (cfg or {}).get("local_planner") or {}
         self.registry = registry or REGISTRY
         self.system_prompt = build_system_prompt(self.registry)
@@ -196,9 +194,7 @@ class LocalPlanner:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": (
-                self.temperature if temperature is None else float(temperature)
-            ),
+            "temperature": (self.temperature if temperature is None else float(temperature)),
             "max_tokens": self.max_tokens if max_tokens is None else int(max_tokens),
             "stream": False,
         }
@@ -239,9 +235,7 @@ class LocalPlanner:
         content = message.get("content")
         if isinstance(content, list):
             content = "".join(
-                str(part.get("text") or "")
-                for part in content
-                if isinstance(part, dict)
+                str(part.get("text") or "") for part in content if isinstance(part, dict)
             )
         if not isinstance(content, str) or not content.strip():
             raise LocalPlannerError("пустой ответ модели")
@@ -268,9 +262,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _build_plan(
-    data: dict[str, Any], registry: ToolRegistry = REGISTRY
-) -> LocalPlan | None:
+def _build_plan(data: dict[str, Any], registry: ToolRegistry = REGISTRY) -> LocalPlan | None:
     """Превращает ответ модели в план, проверяя его по реестру.
 
     Реестр сам отбрасывает неизвестные действия, лишние аргументы,

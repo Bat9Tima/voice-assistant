@@ -249,10 +249,7 @@ class BrowserController(threading.Thread):
             return None
         for page in reversed(pages):
             try:
-                if (
-                    "soundcloud.com" in page.url
-                    and page.locator(".playControls__play").count()
-                ):
+                if "soundcloud.com" in page.url and page.locator(".playControls__play").count():
                     return page
             except Exception:
                 continue
@@ -290,9 +287,7 @@ class BrowserController(threading.Thread):
             except Exception:
                 continue
             try:
-                cdp.send(
-                    "Emulation.setFocusEmulationEnabled", {"enabled": False}
-                )
+                cdp.send("Emulation.setFocusEmulationEnabled", {"enabled": False})
             except Exception:
                 try:
                     cdp.detach()
@@ -312,9 +307,7 @@ class BrowserController(threading.Thread):
         finally:
             for _, cdp in sessions:
                 try:
-                    cdp.send(
-                        "Emulation.setFocusEmulationEnabled", {"enabled": True}
-                    )
+                    cdp.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
                 except Exception:
                     pass
                 try:
@@ -334,8 +327,7 @@ class BrowserController(threading.Thread):
             if "soundcloud.com" in page.url:
                 return page.locator(".playControls__play").count() > 0
             return page.evaluate(
-                "() => [...document.querySelectorAll('video, audio')]"
-                ".some(m => m.readyState > 0)"
+                "() => [...document.querySelectorAll('video, audio')].some(m => m.readyState > 0)"
             )
         except Exception:
             return False
@@ -390,9 +382,7 @@ class BrowserController(threading.Thread):
         if site == "soundcloud":
             page = self._soundcloud_page()
             if page is None:
-                raise BrowserError(
-                    "SoundCloud не открыт. Скажите «открой саундклауд»."
-                )
+                raise BrowserError("SoundCloud не открыт. Скажите «открой саундклауд».")
             return page
         if site == "youtube":
             page = self._youtube_page()
@@ -616,10 +606,13 @@ class BrowserController(threading.Thread):
         for selector in selectors:
             try:
                 page.wait_for_selector(selector, timeout=15000)
-                hrefs = page.eval_on_selector_all(
-                    selector,
-                    "els => els.map(el => el.href).filter(Boolean)",
-                ) or []
+                hrefs = (
+                    page.eval_on_selector_all(
+                        selector,
+                        "els => els.map(el => el.href).filter(Boolean)",
+                    )
+                    or []
+                )
                 available = max(available, len(hrefs))
                 if len(hrefs) >= index:
                     href = hrefs[index - 1]
@@ -865,9 +858,7 @@ class BrowserController(threading.Thread):
             }).filter(item => item.title)"""
         )
 
-    def _load_soundcloud_likes(
-        self, page: Any, minimum: int, rounds: int
-    ) -> list[dict[str, Any]]:
+    def _load_soundcloud_likes(self, page: Any, minimum: int, rounds: int) -> list[dict[str, Any]]:
         items = self._soundcloud_like_items(page)
         for _ in range(rounds):
             if len(items) >= minimum:
@@ -886,9 +877,7 @@ class BrowserController(threading.Thread):
         return items
 
     @staticmethod
-    def _find_soundcloud_like(
-        items: list[dict[str, Any]], query: str
-    ) -> dict[str, Any] | None:
+    def _find_soundcloud_like(items: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
         needle = normalize(query)
         if not needle:
             return None
@@ -966,10 +955,7 @@ class BrowserController(threading.Thread):
             filter_input.fill(candidate)
             page.wait_for_timeout(900)
             items = self._soundcloud_like_items(page)
-            usable = [
-                entry for entry in items
-                if entry.get("playable") or entry.get("playing")
-            ]
+            usable = [entry for entry in items if entry.get("playable") or entry.get("playing")]
             if not usable:
                 continue
             item = self._find_soundcloud_like(usable, query)
@@ -994,9 +980,7 @@ class BrowserController(threading.Thread):
         button = row.locator("a.sc-button-play").first
         for attempt in range(2):
             try:
-                row.evaluate(
-                    "el => el.scrollIntoView({block: 'center', inline: 'nearest'})"
-                )
+                row.evaluate("el => el.scrollIntoView({block: 'center', inline: 'nearest'})")
                 page.wait_for_timeout(400)
                 row.hover(timeout=5000)
                 page.wait_for_timeout(300)
@@ -1100,18 +1084,12 @@ class BrowserController(threading.Thread):
                 item = self._filter_soundcloud_like(page, filter_input, query)
             if item is None:
                 items = self._soundcloud_like_items(page)
-                usable = [
-                    entry for entry in items
-                    if entry.get("playable") or entry.get("playing")
-                ]
+                usable = [entry for entry in items if entry.get("playable") or entry.get("playing")]
                 item = self._find_soundcloud_like(usable, query)
         if item is None:
             items = self._load_soundcloud_likes(page, minimum=minimum, rounds=rounds)
             playable = [entry for entry in items if entry.get("playable")]
-            usable = [
-                entry for entry in items
-                if entry.get("playable") or entry.get("playing")
-            ]
+            usable = [entry for entry in items if entry.get("playable") or entry.get("playing")]
             if not usable:
                 self._require_soundcloud_login(page, "лайкнутые треки")
                 raise BrowserError("В лайкнутых треках нет доступных для воспроизведения")
@@ -1164,9 +1142,7 @@ class BrowserController(threading.Thread):
         if "google." not in url or "/search" not in url:
             query = str(args.get("query") or "").strip()
             if not query:
-                raise BrowserError(
-                    "Сейчас открыта не выдача Google. Сначала скажите «открой …»"
-                )
+                raise BrowserError("Сейчас открыта не выдача Google. Сначала скажите «открой …»")
             page.goto(
                 "https://www.google.com/search?q=" + quote_plus(query),
                 wait_until="domcontentloaded",
@@ -1179,8 +1155,9 @@ class BrowserController(threading.Thread):
         except PlaywrightTimeout:
             pass
 
-        items = page.evaluate(
-            """() => {
+        items = (
+            page.evaluate(
+                """() => {
                 const seen = new Set();
                 const out = [];
                 for (const a of document.querySelectorAll('#rso a, #search a')) {
@@ -1203,7 +1180,9 @@ class BrowserController(threading.Thread):
                 }
                 return out;
             }"""
-        ) or []
+            )
+            or []
+        )
 
         if not items:
             if page.locator("form#captcha-form, #recaptcha, iframe[src*='recaptcha']").count():
@@ -1353,9 +1332,7 @@ class BrowserController(threading.Thread):
             raise BrowserError("На странице нет видео или аудио")
         return {"state": "stopped", "url": page.url, **result}
 
-    def _act_seek(
-        self, seconds: int | float | str, site: str | None = None
-    ) -> dict[str, Any]:
+    def _act_seek(self, seconds: int | float | str, site: str | None = None) -> dict[str, Any]:
         try:
             delta = int(seconds)
         except (TypeError, ValueError) as exc:

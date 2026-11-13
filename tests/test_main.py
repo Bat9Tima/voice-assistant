@@ -39,9 +39,7 @@ class FakeBrain:
 
 
 class FakeLocalPlanner:
-    def __init__(
-        self, plan: LocalPlan | None = None, error: Exception | None = None
-    ) -> None:
+    def __init__(self, plan: LocalPlan | None = None, error: Exception | None = None) -> None:
         self.plan_result = plan
         self.error = error
         self.seen: list[str] = []
@@ -117,9 +115,7 @@ class TrayStatusTest(unittest.TestCase):
             "restarts": 2,
         }
         status = self.make(FakeTray(tray_status)).status()
-        self.assertEqual(
-            set(status["tray"]), {"available", "running", "error", "restarts"}
-        )
+        self.assertEqual(set(status["tray"]), {"available", "running", "error", "restarts"})
         self.assertEqual(status["tray"], tray_status)
 
 
@@ -179,12 +175,8 @@ class AgentTriggerRoutingTest(unittest.TestCase):
 
     def test_free_form_command_uses_local_planner(self) -> None:
         assistant = self.make()
-        assistant.planner = FakeLocalPlanner(
-            LocalPlan("youtube", {"query": "lo-fi", "index": 1})
-        )
-        assistant.router.plan_result = CommandResult(
-            True, True, "Включаю на YouTube: lo-fi"
-        )
+        assistant.planner = FakeLocalPlanner(LocalPlan("youtube", {"query": "lo-fi", "index": 1}))
+        assistant.router.plan_result = CommandResult(True, True, "Включаю на YouTube: lo-fi")
         message = assistant.run_text("вруби лофай на ютубе")
         self.assertEqual(message, "Включаю на YouTube: lo-fi")
         self.assertEqual(assistant.planner.seen, ["вруби лоуфай на ютубе"])
@@ -198,9 +190,7 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         with patch("app.main.beep") as beep:
             message = assistant.run_text("сделай что-нибудь странное")
         self.assertEqual(message, "Не понял команду")
-        self.assertEqual(
-            assistant.planner.seen, ["сделай что нибудь странное"]
-        )
+        self.assertEqual(assistant.planner.seen, ["сделай что нибудь странное"])
         beep.assert_called_once_with(320, 120)
 
     def test_router_command_skips_local_planner(self) -> None:
@@ -232,9 +222,7 @@ class AgentTriggerRoutingTest(unittest.TestCase):
 
     def test_qa_error_beeps_without_tab(self) -> None:
         assistant = self.make()
-        assistant.qa = FakeQA(
-            QAAnswer(False, "вопрос", "Нужен ключ", "Нужен ключ", "error")
-        )
+        assistant.qa = FakeQA(QAAnswer(False, "вопрос", "Нужен ключ", "Нужен ключ", "error"))
         with patch("app.main.beep") as beep:
             message = assistant.run_text("какие новости")
         self.assertEqual(message, "Нужен ключ")

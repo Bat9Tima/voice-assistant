@@ -184,9 +184,7 @@ class Dictionary:
             # normalize() схлопывает пробелы, но во входе их может быть больше.
             escaped = escaped.replace(r"\ ", r"\s+").replace(" ", r"\s+")
             parts.append(escaped)
-        return re.compile(
-            r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.UNICODE
-        )
+        return re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.UNICODE)
 
 
 _dictionary: Dictionary | None = None

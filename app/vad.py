@@ -21,12 +21,7 @@ def _installed_openwakeword_model() -> Path | None:
         import openwakeword
     except Exception:  # noqa: BLE001
         return None
-    path = (
-        Path(openwakeword.__file__).resolve().parent
-        / "resources"
-        / "models"
-        / VAD_FILENAME
-    )
+    path = Path(openwakeword.__file__).resolve().parent / "resources" / "models" / VAD_FILENAME
     return path if path.is_file() else None
 
 
@@ -161,10 +156,10 @@ class SileroVad:
         speech = False
         for index in range(count):
             start = index * self._window
-            window = samples[start:start + self._window]
+            window = samples[start : start + self._window]
             if self._model.is_speech(window):
                 speech = True
-        self._pending = samples[count * self._window:].copy()
+        self._pending = samples[count * self._window :].copy()
         return speech
 
     def reset(self) -> None:

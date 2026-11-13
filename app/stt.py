@@ -29,20 +29,49 @@ _HALLUCINATIONS = {
 # Слова, после которых начинается поисковый запрос. Нужны, чтобы отличить
 # русскую команду от английской фразы, которую GigaAM записал кириллицей.
 _RU_COMMAND_WORDS = {
-    "найди", "поищи", "загугли", "погугли", "ищи",
-    "включи", "поставь", "запусти", "покажи", "открой",
+    "найди",
+    "поищи",
+    "загугли",
+    "погугли",
+    "ищи",
+    "включи",
+    "поставь",
+    "запусти",
+    "покажи",
+    "открой",
 }
 _RU_PLAY_WORDS = {"включи", "поставь", "запусти", "играй", "слушай"}
 _RU_SITE_WORDS = {
-    "ютуб", "ютубе", "ютуба", "youtube",
-    "саундклауд", "саундклауде", "саундклауда", "саундклоуд", "soundcloud",
-    "саунтлауди", "саунтлауде", "саундклауди", "санклауд", "санклауде",
-    "гугл", "гугле", "google",
+    "ютуб",
+    "ютубе",
+    "ютуба",
+    "youtube",
+    "саундклауд",
+    "саундклауде",
+    "саундклауда",
+    "саундклоуд",
+    "soundcloud",
+    "саунтлауди",
+    "саунтлауде",
+    "саундклауди",
+    "санклауд",
+    "санклауде",
+    "гугл",
+    "гугле",
+    "google",
 }
 _RU_SITE_PREPOSITIONS = {"на", "в", "у", "для", "on", "in"}
 _EN_COMMAND_WORDS = {
-    "find", "search", "look", "lookup", "google",
-    "play", "open", "show", "start", "put",
+    "find",
+    "search",
+    "look",
+    "lookup",
+    "google",
+    "play",
+    "open",
+    "show",
+    "start",
+    "put",
 }
 _EN_LEADING_FILLERS = {"for", "me", "up"}
 
@@ -209,11 +238,7 @@ def _site_prefix(text: str) -> str | None:
     key = _word_key(text)
     if key in _RU_SITE_WORDS:
         return None
-    matches = [
-        site
-        for site in _RU_SITE_WORDS
-        if len(site) >= 4 and key.startswith(site)
-    ]
+    matches = [site for site in _RU_SITE_WORDS if len(site) >= 4 and key.startswith(site)]
     return max(matches, key=len) if matches else None
 
 
@@ -248,16 +273,10 @@ def _textual_merge(ru: Transcript, en: Transcript | None) -> tuple[str, str]:
 
     ru_words = list(ru.words)
     trigger_index = next(
-        (
-            index
-            for index, word in enumerate(ru_words)
-            if _word_key(word.text) in _RU_COMMAND_WORDS
-        ),
+        (index for index, word in enumerate(ru_words) if _word_key(word.text) in _RU_COMMAND_WORDS),
         None,
     )
-    en_has_trigger = any(
-        _word_key(word) in _EN_COMMAND_WORDS for word in en_text.split()
-    )
+    en_has_trigger = any(_word_key(word) in _EN_COMMAND_WORDS for word in en_text.split())
 
     # Уверенная русская команда: английский «мусор» без английской команды
     # не дописываем. Настоящая английская речь в «дыре» обрабатывается
@@ -270,9 +289,7 @@ def _textual_merge(ru: Transcript, en: Transcript | None) -> tuple[str, str]:
             return en_text, "en"
         # Чистая английская команда, которую GigaAM записал кириллицей
         # («оупен ютуб»), уверенно определяется по английскому триггеру.
-        if en_has_trigger and (
-            en.avg_logprob is None or en.avg_logprob >= _MIN_ENGLISH_LOGPROB
-        ):
+        if en_has_trigger and (en.avg_logprob is None or en.avg_logprob >= _MIN_ENGLISH_LOGPROB):
             return en_text, "en"
         if en_has_trigger and ru.confidence < _RU_CONFIDENT:
             return en_text, "en"
@@ -289,18 +306,13 @@ def _textual_merge(ru: Transcript, en: Transcript | None) -> tuple[str, str]:
     if en_has_trigger:
         query = _strip_leading_command(query)
     elif len(query.split()) < 2 or (
-        en.avg_logprob is not None
-        and en.avg_logprob < _MIN_FALLBACK_ENGLISH_LOGPROB
+        en.avg_logprob is not None and en.avg_logprob < _MIN_FALLBACK_ENGLISH_LOGPROB
     ):
         # Без Vosk легко принять «Bye-bye» или русскую транслитерацию за
         # английский запрос. Короткий/неуверенный текст не дописываем.
         return ru_text, "ru"
 
-    site_indices = {
-        index
-        for index, word in enumerate(ru_words)
-        if _is_site_word(word.text)
-    }
+    site_indices = {index for index, word in enumerate(ru_words) if _is_site_word(word.text)}
     for index in list(site_indices):
         if index > 0 and _word_key(ru_words[index - 1].text) in _RU_SITE_PREPOSITIONS:
             site_indices.add(index - 1)
@@ -342,17 +354,12 @@ def _spans_from_vosk(
     preserved_words = [russian_words[index] for index in sorted(preserved)]
 
     def overlaps_preserved(word: Word) -> bool:
-        return any(
-            word.end >= item.start and word.start <= item.end
-            for item in preserved_words
-        )
+        return any(word.end >= item.start and word.start <= item.end for item in preserved_words)
 
     candidates = [
         word
         for word in locator_words
-        if _has_latin(word.text)
-        and word.probability >= 0.35
-        and not overlaps_preserved(word)
+        if _has_latin(word.text) and word.probability >= 0.35 and not overlaps_preserved(word)
     ]
     if not candidates:
         return []
@@ -402,9 +409,7 @@ def _gap_spans(russian: Transcript, spans: list[EnglishSpan]) -> list[EnglishSpa
     if russian.confidence < _RU_CONFIDENT:
         return spans
     return [
-        span
-        for span in spans
-        if _span_overlap_ratio(span, russian.words) <= _SPAN_MAX_RU_OVERLAP
+        span for span in spans if _span_overlap_ratio(span, russian.words) <= _SPAN_MAX_RU_OVERLAP
     ]
 
 
@@ -668,8 +673,7 @@ class VoskEnglishLocator:
                 return
             if not self.model_dir.exists():
                 raise FileNotFoundError(
-                    f"Модель Vosk EN не найдена: {self.model_dir}. "
-                    "Запустите scripts\\setup.cmd"
+                    f"Модель Vosk EN не найдена: {self.model_dir}. Запустите scripts\\setup.cmd"
                 )
             import vosk
 
@@ -805,9 +809,7 @@ class ParallelTranscriber:
             if len(crop) < 3200:
                 continue
             try:
-                result = self.english.transcribe_details(
-                    crop, beam_size=self.crop_beam_size
-                )
+                result = self.english.transcribe_details(crop, beam_size=self.crop_beam_size)
             except Exception as exc:  # noqa: BLE001
                 log.warning("Ошибка распознавания английского фрагмента: %s", exc)
                 result = None
@@ -972,9 +974,7 @@ def create_transcriber(
         )
 
     if engine not in _GIGAAM_ALIASES:
-        raise ValueError(
-            f"Неизвестный stt.engine: {engine!r}. Допустимо: gigaam, whisper"
-        )
+        raise ValueError(f"Неизвестный stt.engine: {engine!r}. Допустимо: gigaam, whisper")
 
     russian = GigaAMTranscriber(
         num_threads=int(stt.get("num_threads") or 4),

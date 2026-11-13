@@ -48,10 +48,7 @@ class BrainCommandTest(unittest.TestCase):
 
 class BrainRunTest(unittest.TestCase):
     def test_text_event_is_returned(self) -> None:
-        stdout = (
-            '{"type":"text","sessionID":"ses_1","part":'
-            '{"type":"text","text":"Четыре."}}\n'
-        )
+        stdout = '{"type":"text","sessionID":"ses_1","part":{"type":"text","text":"Четыре."}}\n'
         completed = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
         with patch("app.brain.subprocess.run", return_value=completed):
             self.assertEqual(make_brain()._run("два плюс два", None), "Четыре.")
@@ -69,9 +66,7 @@ class BrainRunTest(unittest.TestCase):
         self.assertIn("not available in your country", str(ctx.exception))
 
     def test_missing_session_returns_none(self) -> None:
-        completed = subprocess.CompletedProcess(
-            [], 1, stdout="", stderr="session not found"
-        )
+        completed = subprocess.CompletedProcess([], 1, stdout="", stderr="session not found")
         with patch("app.brain.subprocess.run", return_value=completed):
             self.assertIsNone(make_brain()._run("привет", "ses_1"))
 
@@ -131,14 +126,10 @@ class BrainSessionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session.json"
             path.write_text(
-                json.dumps(
-                    {"session_id": "ses_1", "signature": "abc", "root": "C:\\old"}
-                ),
+                json.dumps({"session_id": "ses_1", "signature": "abc", "root": "C:\\old"}),
                 encoding="utf-8",
             )
-            with patch("app.brain.SESSION_FILE", path), patch(
-                "app.brain.ROOT", Path(tmp) / "new"
-            ):
+            with patch("app.brain.SESSION_FILE", path), patch("app.brain.ROOT", Path(tmp) / "new"):
                 self.assertIsNone(self._brain("abc")._load_session())
 
     def test_saved_session_keeps_signature(self) -> None:

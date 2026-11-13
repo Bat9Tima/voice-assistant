@@ -109,22 +109,16 @@ class PhraseBankTest(unittest.TestCase):
                 {
                     "id": "done_1",
                     "category": "done",
-                    "takes": [
-                        {"file": f"done_1_{index}.wav"} for index in range(1, 4)
-                    ],
+                    "takes": [{"file": f"done_1_{index}.wav"} for index in range(1, 4)],
                 },
                 {
                     "id": "done_2",
                     "category": "done",
-                    "takes": [
-                        {"file": f"done_2_{index}.wav"} for index in range(1, 4)
-                    ],
+                    "takes": [{"file": f"done_2_{index}.wav"} for index in range(1, 4)],
                 },
             ]
         }
-        (directory / "manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return PhraseBank(directory)
 
     def test_never_repeats_previous_file(self) -> None:
@@ -166,12 +160,13 @@ class TTSServiceTest(unittest.TestCase):
             service = make_service(Path(tmp))
             played: list[int] = []
             text = "Первое предложение здесь. Второе предложение тоже здесь."
-            with patch.object(
-                service, "_request", return_value=make_pcm()
-            ) as request, patch.object(
-                service,
-                "_play",
-                side_effect=lambda data: played.append(len(data)) or True,
+            with (
+                patch.object(service, "_request", return_value=make_pcm()) as request,
+                patch.object(
+                    service,
+                    "_play",
+                    side_effect=lambda data: played.append(len(data)) or True,
+                ),
             ):
                 self.assertTrue(service.say(text))
                 self.assertTrue(service.say(text))
@@ -182,16 +177,15 @@ class TTSServiceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             first = make_service(Path(tmp), voice="one")
             second = make_service(Path(tmp), voice="two")
-            self.assertNotEqual(
-                first._cache_path("текст"), second._cache_path("текст")
-            )
+            self.assertNotEqual(first._cache_path("текст"), second._cache_path("текст"))
 
     def test_say_truncates_long_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = make_service(Path(tmp), max_chars=40)
-            with patch.object(
-                service, "_request", return_value=make_pcm()
-            ) as request, patch.object(service, "_play", return_value=True):
+            with (
+                patch.object(service, "_request", return_value=make_pcm()) as request,
+                patch.object(service, "_play", return_value=True),
+            ):
                 service.say("слово " * 100)
             sent = request.call_args.args[0]
             self.assertLessEqual(len(sent), 41)

@@ -22,9 +22,7 @@ class CommandContextTest(unittest.TestCase):
         self.context = CommandContext(ttl_sec=60, clock=self.clock)
 
     def test_remembers_search_and_media_independently(self) -> None:
-        self.context.remember(
-            "search", "youtube_search", site="youtube", query="котики", index=1
-        )
+        self.context.remember("search", "youtube_search", site="youtube", query="котики", index=1)
         self.context.remember("media", "pause", site="youtube")
         self.assertEqual(self.context.get("search").action, "youtube_search")
         self.assertEqual(self.context.get("search").slots["query"], "котики")

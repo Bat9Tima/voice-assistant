@@ -144,13 +144,9 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
         for index, (original, match) in enumerate(pairs):
             if match is not None or not original.process:
                 continue
-            candidates = [
-                target for target in remaining if target.process == original.process
-            ]
+            candidates = [target for target in remaining if target.process == original.process]
             same_process = [
-                item
-                for item in pairs
-                if item[1] is None and item[0].process == original.process
+                item for item in pairs if item[1] is None and item[0].process == original.process
             ]
             if len(candidates) == 1 and len(same_process) == 1:
                 chosen = candidates[0]
@@ -333,9 +329,7 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
             # Незавершённые записи для отсутствующих сессий сохраняем.
             current_keys = {item.key for item in saved if item.key}
             pending = [
-                item
-                for item in self._load_state()
-                if item.key and item.key not in current_keys
+                item for item in self._load_state() if item.key and item.key not in current_keys
             ]
             self._write_state([*pending, *saved])
             self._saved = []
@@ -363,9 +357,7 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
                 return
 
             restored = 0
-            pending = {
-                item.key: item for item in self._load_state() if item.key
-            }
+            pending = {item.key: item for item in self._load_state() if item.key}
             for original, target in self._pair(self._saved, self._targets()):
                 # Сессия могла быть пересоздана: тогда пишем в актуальный
                 # объект, а не в протухший COM-интерфейс.
@@ -387,8 +379,6 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
             if restored:
                 log.info("Вернул звук приложений после команды")
             elif self._saved:
-                log.warning(
-                    "Не удалось вернуть звук приложений: %d сесс.", len(self._saved)
-                )
+                log.warning("Не удалось вернуть звук приложений: %d сесс.", len(self._saved))
             self._saved.clear()
             self._active = False

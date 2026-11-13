@@ -124,7 +124,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 payload["value"] = int(rest[1])
             except ValueError:
-                print("Использование: soundcloud_volume <up|down|set|mute|unmute> [0-100]", file=sys.stderr)
+                print(
+                    "Использование: soundcloud_volume <up|down|set|mute|unmute> [0-100]",
+                    file=sys.stderr,
+                )
                 return 2
     elif action == "soundcloud_likes":
         words: list[str] = []
@@ -181,7 +184,18 @@ def main(argv: list[str] | None = None) -> int:
         payload["script"] = " ".join(rest)
     elif action == "type":
         payload["text"] = " ".join(rest)
-    elif action in {"status", "tabs", "back", "forward", "reload", "play", "pause", "next", "prev", "closetab"}:
+    elif action in {
+        "status",
+        "tabs",
+        "back",
+        "forward",
+        "reload",
+        "play",
+        "pause",
+        "next",
+        "prev",
+        "closetab",
+    }:
         pass
     else:
         print(f"Неизвестное действие: {action}", file=sys.stderr)

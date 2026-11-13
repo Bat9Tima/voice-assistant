@@ -291,9 +291,7 @@ class TrayLifecycleTest(unittest.TestCase):
         self.assertEqual(len(factory.icons), 1)
 
     def test_start_nim_add_failure_does_not_report_success(self) -> None:
-        factory = self._install_fakes(
-            behavior="nim_add", shell_notify=Mock(return_value=False)
-        )
+        factory = self._install_fakes(behavior="nim_add", shell_notify=Mock(return_value=False))
 
         with self.assertLogs("app.tray", level="INFO") as logs:
             self.ui.start()
@@ -307,9 +305,7 @@ class TrayLifecycleTest(unittest.TestCase):
         self.assertIsNotNone(status["error"])
         self.assertIn("NIM_ADD", status["error"])
         # Guard действительно установлен поверх fake-функции.
-        self.assertIs(
-            getattr(factory.win32.Shell_NotifyIcon, tray_module._GUARD_MARK, None), True
-        )
+        self.assertIs(getattr(factory.win32.Shell_NotifyIcon, tray_module._GUARD_MARK, None), True)
 
     # ----------------------------------------------------------- watchdog
     def test_watchdog_restarts_dead_icon(self) -> None:

@@ -23,8 +23,7 @@ qc = _load("record_dataset_qc", TOOLS / "qc.py")
 
 class ParseOnlyTest(unittest.TestCase):
     def test_indices_and_names(self) -> None:
-        indices, names = record.parse_only(
-            ["155", "175_M_wake_22", "178_M_wake_25.wav"])
+        indices, names = record.parse_only(["155", "175_M_wake_22", "178_M_wake_25.wav"])
         self.assertEqual(indices, {155})
         self.assertEqual(names, {"175_M_wake_22", "178_M_wake_25"})
 
@@ -32,8 +31,7 @@ class ParseOnlyTest(unittest.TestCase):
         self.assertEqual(record.parse_only(["", " ", ","]), (set(), set()))
 
     def test_full_path_reduced_to_name(self) -> None:
-        _indices, names = record.parse_only(
-            [r"C:\data\audio\209_O_cmd02_music.wav"])
+        _indices, names = record.parse_only([r"C:\data\audio\209_O_cmd02_music.wav"])
         self.assertEqual(names, {"209_O_cmd02_music"})
 
 
@@ -53,8 +51,7 @@ class SelectRowsTest(unittest.TestCase):
         self.assertEqual([row["index"] for row in selected], [1])
 
     def test_only_by_file_stem(self) -> None:
-        selected = record.select_rows(
-            self.rows, "all", ["155_M_wake_02.wav"])
+        selected = record.select_rows(self.rows, "all", ["155_M_wake_02.wav"])
         self.assertEqual([row["index"] for row in selected], [155])
 
     def test_only_keeps_session(self) -> None:

@@ -28,9 +28,7 @@ class SearchResult:
 
 def _tokens(text: str) -> list[str]:
     return [
-        token
-        for token in re.findall(r"[а-яёa-z0-9]+", (text or "").lower())
-        if len(token) >= 4
+        token for token in re.findall(r"[а-яёa-z0-9]+", (text or "").lower()) if len(token) >= 4
     ]
 
 
@@ -54,11 +52,7 @@ def _overlap(text: str, query: str) -> int:
 def _best_excerpt(text: str, query: str, limit: int = 3000) -> str:
     """Берёт окно вокруг первого упоминания темы, а не начало страницы."""
     lowered = (text or "").lower()
-    positions = [
-        lowered.find(token)
-        for token in _tokens(query)
-        if lowered.find(token) >= 0
-    ]
+    positions = [lowered.find(token) for token in _tokens(query) if lowered.find(token) >= 0]
     if not positions:
         return (text or "")[:limit]
     start = max(0, min(positions) - 600)
@@ -86,9 +80,7 @@ class TavilySearch:
         self.enabled = bool(section.get("enabled", True))
         self.api_key = str(section.get("api_key") or "").strip()
         self.max_results = max(1, min(int(section.get("max_results") or 5), 10))
-        self.news_max_results = max(
-            1, min(int(section.get("news_max_results") or 8), 10)
-        )
+        self.news_max_results = max(1, min(int(section.get("news_max_results") or 8), 10))
         self.search_depth = str(section.get("search_depth") or "basic")
         self.extract_depth = str(section.get("extract_depth") or "basic")
         self.topic = str(section.get("topic") or "general")
@@ -142,9 +134,7 @@ class TavilySearch:
             parsed.append(SearchResult(title or url, url, content, score))
         return parsed
 
-    def search_article(
-        self, query: str, *, limit: int = 3
-    ) -> list[SearchResult]:
+    def search_article(self, query: str, *, limit: int = 3) -> list[SearchResult]:
         """Ищет разборы по теме новости, а не только ленты СМИ."""
         query = (query or "").strip()
         if not query:
@@ -222,9 +212,7 @@ class TavilySearch:
                 return raw
         raise SearchError("Tavily не вернул текст статьи")
 
-    def _post(
-        self, payload: dict[str, Any], url: str = TAVILY_URL
-    ) -> dict[str, Any]:
+    def _post(self, payload: dict[str, Any], url: str = TAVILY_URL) -> dict[str, Any]:
         request = urllib.request.Request(
             url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),

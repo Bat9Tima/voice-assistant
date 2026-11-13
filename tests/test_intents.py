@@ -286,12 +286,8 @@ class ShippedIntentsTest(unittest.TestCase):
                 self.assertTrue(match is None or match.intent.id != intent_id)
 
     def test_bare_volume_is_system_intent(self) -> None:
-        self.assertEqual(
-            self.intents.match("тише").intent.id, "system_volume_down"
-        )
-        self.assertEqual(
-            self.intents.match("громче").intent.id, "system_volume_up"
-        )
+        self.assertEqual(self.intents.match("тише").intent.id, "system_volume_down")
+        self.assertEqual(self.intents.match("громче").intent.id, "system_volume_up")
 
 
 class WordOrderTest(unittest.TestCase):
@@ -408,9 +404,7 @@ class WordOrderTest(unittest.TestCase):
     def test_stop_with_site_in_any_order(self) -> None:
         self.assert_match("стоп на ютубе", "stop", site="youtube")
         self.assert_match("на ютубе стоп", "stop", site="youtube")
-        self.assert_match(
-            "останови трек на саундклауде", "stop", site="soundcloud"
-        )
+        self.assert_match("останови трек на саундклауде", "stop", site="soundcloud")
         self.assert_match("стоп видео", "stop")
 
     def test_seek_seconds_and_direction(self) -> None:

@@ -299,8 +299,7 @@ STYLE_DETAILED = (
 STYLE_RE = re.compile(
     r"\b(?:"
     + "|".join(
-        re.escape(marker)
-        for marker in sorted(STYLE_SHORT + STYLE_DETAILED, key=len, reverse=True)
+        re.escape(marker) for marker in sorted(STYLE_SHORT + STYLE_DETAILED, key=len, reverse=True)
     )
     + r")\b",
     re.IGNORECASE,
@@ -821,14 +820,10 @@ RUBRIC_WORDS = (
 )
 
 RUBRIC_SPLIT = re.compile(
-    r"(?<![.:!?])\s+(?:"
-    + "|".join(re.escape(word) for word in RUBRIC_WORDS)
-    + r")\s+"
+    r"(?<![.:!?])\s+(?:" + "|".join(re.escape(word) for word in RUBRIC_WORDS) + r")\s+"
 )
 
-RUBRIC_TIME = re.compile(
-    r"\s+[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}$"
-)
+RUBRIC_TIME = re.compile(r"\s+[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}$")
 INLINE_RUBRIC_TIME = re.compile(
     r"\s+[А-ЯЁ][а-яё]+,\s*(?:\d{1,2}\s+[а-яё]{3,8},\s*)?\d{1,2}:\d{2}\s+"
 )
@@ -898,9 +893,7 @@ def _snippet_parts(text: str, limit: int = 3) -> list[str]:
     return parts
 
 
-def _clean_snippet(
-    text: str, limit: int = 400, title: str = "", sentences: int = 3
-) -> str:
+def _clean_snippet(text: str, limit: int = 400, title: str = "", sentences: int = 3) -> str:
     if title:
         parts = [title]
         for separator in (" - ", " — ", " – ", " | "):
@@ -915,14 +908,10 @@ def _clean_snippet(
     return _clip(". ".join(parts), limit)
 
 
-def _snippets_text(
-    results: list[SearchResult], limit: int = 3, sentences: int = 3
-) -> str:
+def _snippets_text(results: list[SearchResult], limit: int = 3, sentences: int = 3) -> str:
     parts = []
     for index, result in enumerate(results[:limit], 1):
-        snippet = _clean_snippet(
-            result.content, title=result.title, sentences=sentences
-        )
+        snippet = _clean_snippet(result.content, title=result.title, sentences=sentences)
         block = f"[{index}] {result.title}"
         if snippet:
             block += f"\n{snippet}"
@@ -990,11 +979,7 @@ def _news_reference(text: str) -> int | None:
 
 def _topic_tokens(text: str) -> list[str]:
     tokens = re.findall(r"[а-яёa-z0-9]+", _normalized(text))
-    return [
-        token
-        for token in tokens
-        if len(token) >= 3 and token not in NEWS_TOPIC_STOPWORDS
-    ]
+    return [token for token in tokens if len(token) >= 3 and token not in NEWS_TOPIC_STOPWORDS]
 
 
 def _tokens_match(left: str, right: str) -> bool:
@@ -1088,9 +1073,7 @@ def _city_from_followup(text: str) -> str | None:
     return city if _looks_like_city(city) else None
 
 
-def _select_news_item(
-    text: str, items: list[NewsItem]
-) -> tuple[NewsItem | None, bool]:
+def _select_news_item(text: str, items: list[NewsItem]) -> tuple[NewsItem | None, bool]:
     """Выбирает новость по номеру или ключевым словам.
 
     Второе значение — неоднозначность: несколько новостей подходят одинаково.
@@ -1106,11 +1089,7 @@ def _select_news_item(
     best = max(scores)
     if best <= 0:
         return None, False
-    winners = [
-        item
-        for item, score in zip(items, scores, strict=True)
-        if score == best
-    ]
+    winners = [item for item, score in zip(items, scores, strict=True) if score == best]
     if len(winners) > 1:
         return None, True
     return winners[0], False
@@ -1158,9 +1137,7 @@ def _prepare_news_digest(
     return "\n".join(lines), sources, items
 
 
-def _news_items_from_results(
-    results: list[SearchResult], limit: int
-) -> list[NewsItem]:
+def _news_items_from_results(results: list[SearchResult], limit: int) -> list[NewsItem]:
     items: list[NewsItem] = []
     for result in results[:limit]:
         snippet = _clean_snippet(result.content, title=result.title)
@@ -1170,9 +1147,7 @@ def _news_items_from_results(
         title = result.title
         if GENERIC_NEWS_TITLE_RE.search(title):
             title = fact
-        items.append(
-            NewsItem(len(items) + 1, fact, title, result.url, result.content)
-        )
+        items.append(NewsItem(len(items) + 1, fact, title, result.url, result.content))
     return items
 
 
@@ -1230,9 +1205,7 @@ class QAService:
         self.temperature = float(answer_cfg.get("temperature") or 0.2)
         self.timeout = float(answer_cfg.get("timeout_sec") or 45)
         self.news_ttl = float(answer_cfg.get("news_ttl_sec") or 900)
-        self.context_ttl = max(
-            0.0, float(answer_cfg.get("context_ttl_sec") or 180)
-        )
+        self.context_ttl = max(0.0, float(answer_cfg.get("context_ttl_sec") or 180))
         self.search_fallback = bool(answer_cfg.get("search_fallback", True))
         self.last_news: list[NewsItem] = []
         self._news_at = 0.0
@@ -1304,9 +1277,7 @@ class QAService:
                     "Для свежих данных добавьте qa.search.api_key в config.json.",
                     error="нет ключа Tavily",
                 )
-            return self._answer_search(
-                text, news=is_news_question(text), style=style
-            )
+            return self._answer_search(text, news=is_news_question(text), style=style)
 
         if self._llm_available():
             return self._answer_general(text, style=style)
@@ -1423,9 +1394,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         return QAAnswer(False, question, short, full, kind, error=error or full)
 
     def _last_news_valid(self) -> bool:
-        return bool(self.last_news) and (
-            time.monotonic() - self._news_at <= self.news_ttl
-        )
+        return bool(self.last_news) and (time.monotonic() - self._news_at <= self.news_ttl)
 
     def _remember_news(self, items: list[NewsItem]) -> None:
         if not items:
@@ -1463,9 +1432,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             return self._general_followup(text, style=style)
         return None
 
-    def _weather_followup(
-        self, text: str, turn: DialogTurn, *, style: str
-    ) -> FollowUp | None:
+    def _weather_followup(self, text: str, turn: DialogTurn, *, style: str) -> FollowUp | None:
         core = _followup_core(text)
         part = "full"
         for marker, name in WEATHER_DAY_PARTS:
@@ -1557,14 +1524,10 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         )
 
     def _news_sources(self) -> list[QASource]:
-        return [
-            QASource(item.title, item.url, item.snippet) for item in self.last_news
-        ]
+        return [QASource(item.title, item.url, item.snippet) for item in self.last_news]
 
     def _news_clarification(self, text: str, message: str) -> QAAnswer:
-        lines = "\n".join(
-            f"[{item.index}] {item.fact}" for item in self.last_news
-        )
+        lines = "\n".join(f"[{item.index}] {item.fact}" for item in self.last_news)
         return QAAnswer(
             True,
             text,
@@ -1574,9 +1537,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             self._news_sources(),
         )
 
-    def _answer_news_detail(
-        self, text: str, *, style: str = "normal"
-    ) -> QAAnswer:
+    def _answer_news_detail(self, text: str, *, style: str = "normal") -> QAAnswer:
         item, ambiguous = _select_news_item(text, self.last_news)
         if item is None:
             message = (
@@ -1599,9 +1560,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 article = self.search.extract(item.url)
             except SearchError as exc:
                 log.info("Q&A: полный текст статьи недоступен: %s", exc)
-            article = _clean_snippet(
-                article, limit=2000, title=item.title, sentences=12
-            )
+            article = _clean_snippet(article, limit=2000, title=item.title, sentences=12)
             if article and _news_score(article, item) < 4:
                 article = ""
 
@@ -1610,9 +1569,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             blocks[0] += f"\n{article}"
         sources = [QASource(item.title, item.url, item.snippet)]
         for result in related:
-            snippet = _clean_snippet(
-                result.content, limit=1200, title=result.title, sentences=10
-            )
+            snippet = _clean_snippet(result.content, limit=1200, title=result.title, sentences=10)
             if not snippet:
                 continue
             number = len(blocks) + 1
@@ -1622,9 +1579,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 break
         context = "\n\n".join(blocks)
 
-        max_tokens = min(self.max_tokens, 300) if style == "short" else max(
-            self.max_tokens, 700
-        )
+        max_tokens = min(self.max_tokens, 300) if style == "short" else max(self.max_tokens, 700)
         answer = ""
         if self._llm_available() and self.llm is not None:
             try:
@@ -1659,9 +1614,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 sentences=10,
             )
         if not best:
-            best = _clean_snippet(
-                item.snippet, limit=1200, title=item.title, sentences=10
-            )
+            best = _clean_snippet(item.snippet, limit=1200, title=item.title, sentences=10)
         if not best:
             best = item.fact
         full = f"[{item.index}] {item.title}\n\n{item.fact}"
@@ -1842,28 +1795,20 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             fresh = [
                 result
                 for result in results
-                if not _looks_stale(
-                    _clean_snippet(result.content, title=result.title)
-                )
+                if not _looks_stale(_clean_snippet(result.content, title=result.title))
             ]
             if fresh:
                 results = fresh
 
-        sources = [
-            QASource(result.title, result.url, result.content) for result in results
-        ]
+        sources = [QASource(result.title, result.url, result.content) for result in results]
         answer = ""
         if self._llm_available() and self.llm is not None:
             blocks = []
             for index, result in enumerate(results[:source_limit], 1):
-                snippet = _clean_snippet(
-                    result.content, limit=snippet_limit, title=result.title
-                )
+                snippet = _clean_snippet(result.content, limit=snippet_limit, title=result.title)
                 if not snippet:
                     continue
-                blocks.append(
-                    f"[{index}] {_context_title(result)}\n{result.url}\n{snippet}"
-                )
+                blocks.append(f"[{index}] {_context_title(result)}\n{result.url}\n{snippet}")
             context = "\n\n".join(blocks)
             llm_timeout = max(self.timeout, 90) if news else self.timeout
             try:
@@ -1882,12 +1827,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 
         if answer and _usable_answer(answer):
             if news:
-                answer, news_sources, items = _prepare_news_digest(
-                    answer, results[:source_limit]
-                )
-                self._remember_news(
-                    items or _news_items_from_results(results, source_limit)
-                )
+                answer, news_sources, items = _prepare_news_digest(answer, results[:source_limit])
+                self._remember_news(items or _news_items_from_results(results, source_limit))
                 sources = news_sources or sources
             return QAAnswer(
                 True,
@@ -1913,13 +1854,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             fallback_limit, fallback_sentences = 4, 3
         if news:
             self._remember_news(_news_items_from_results(results, fallback_limit))
-        full = note + _snippets_text(
-            results, limit=fallback_limit, sentences=fallback_sentences
-        )
+        full = note + _snippets_text(results, limit=fallback_limit, sentences=fallback_sentences)
         short = (
-            first_sentence(
-                _clean_snippet(results[0].content, title=results[0].title)
-            )
+            first_sentence(_clean_snippet(results[0].content, title=results[0].title))
             or results[0].title
         )
         return QAAnswer(

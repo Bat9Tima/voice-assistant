@@ -58,6 +58,7 @@ def _check_whisper() -> bool:
         return False
     return any(WHISPER_DIR.rglob("model.bin"))
 
+
 def _check_cdp(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.5) as r:
@@ -115,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--record", type=float, metavar="СЕК", help="Записать пробу с микрофона")
     parser.add_argument("--file", metavar="WAV", help="Проверить WAV-файл вместо микрофона")
     parser.add_argument("--wake", action="store_true", help="Проверить ключевое слово на записи")
-    parser.add_argument("--stt", action="store_true", help="Распознать запись выбранным движком STT")
+    parser.add_argument(
+        "--stt", action="store_true", help="Распознать запись выбранным движком STT"
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config()
@@ -166,7 +169,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Профиль: {cfg['browser']['profile_dir']}")
     print(
         "  CDP: "
-        + ("работает" if _check_cdp(int(cfg["browser"]["port"])) else "не запущен (стартует по команде)")
+        + (
+            "работает"
+            if _check_cdp(int(cfg["browser"]["port"]))
+            else "не запущен (стартует по команде)"
+        )
     )
 
     print("\n[OpenCode]")

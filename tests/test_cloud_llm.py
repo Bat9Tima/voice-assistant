@@ -206,9 +206,7 @@ class CloudLLMAnswerTest(unittest.TestCase):
         llm = make_llm(article_model="anthropic/claude-haiku-5-5")
         with patch.object(llm, "_complete", return_value="Ответ") as complete:
             llm.answer("вопрос", "[1] Источник", style="article")
-        self.assertEqual(
-            complete.call_args.args[0], "anthropic/claude-haiku-5-5"
-        )
+        self.assertEqual(complete.call_args.args[0], "anthropic/claude-haiku-5-5")
 
     def test_model_override(self) -> None:
         llm = make_llm()
@@ -257,8 +255,9 @@ class CloudLLMFallbackTest(unittest.TestCase):
                 raise LLMError("временная ошибка", retryable=True)
             return "Ответ"
 
-        with patch.object(llm, "_complete", side_effect=fake_complete), patch(
-            "app.cloud_llm.time.sleep"
+        with (
+            patch.object(llm, "_complete", side_effect=fake_complete),
+            patch("app.cloud_llm.time.sleep"),
         ):
             self.assertEqual(llm.answer("вопрос"), "Ответ")
         self.assertEqual(calls, ["anthropic/claude-haiku-5-5"] * 2)
@@ -282,9 +281,7 @@ class CloudLLMFallbackTest(unittest.TestCase):
 
     def test_all_models_failed(self) -> None:
         llm = make_llm()
-        with patch.object(
-            llm, "_complete", side_effect=LLMError("пустой ответ модели")
-        ):
+        with patch.object(llm, "_complete", side_effect=LLMError("пустой ответ модели")):
             with self.assertRaises(LLMError) as ctx:
                 llm.answer("вопрос")
         self.assertIn("модель не ответила", str(ctx.exception))
@@ -302,9 +299,7 @@ class CloudLLMHttpTest(unittest.TestCase):
             return FakeResponse(body=response_body("Ответ"))
 
         llm = make_llm()
-        with patch(
-            "app.cloud_llm.urllib.request.urlopen", side_effect=fake_urlopen
-        ):
+        with patch("app.cloud_llm.urllib.request.urlopen", side_effect=fake_urlopen):
             text = llm._complete(
                 "anthropic/claude-haiku-5-5",
                 "system",
@@ -314,9 +309,7 @@ class CloudLLMHttpTest(unittest.TestCase):
                 timeout=30,
             )
         self.assertEqual(text, "Ответ")
-        self.assertEqual(
-            captured["url"], "https://api.proxyapi.ru/v1/chat/completions"
-        )
+        self.assertEqual(captured["url"], "https://api.proxyapi.ru/v1/chat/completions")
         self.assertEqual(captured["auth"], "Bearer test-key")
         payload = captured["payload"]
         self.assertEqual(payload["model"], "anthropic/claude-haiku-5-5")
@@ -365,9 +358,7 @@ class CloudLLMHttpTest(unittest.TestCase):
             fp=io.BytesIO(b'{"error": "bad model"}'),
         )
         llm = make_llm(retries=2, fallback_models=[])
-        with patch(
-            "app.cloud_llm.urllib.request.urlopen", side_effect=error
-        ) as urlopen:
+        with patch("app.cloud_llm.urllib.request.urlopen", side_effect=error) as urlopen:
             with self.assertRaises(LLMError) as ctx:
                 llm.answer("вопрос")
         self.assertEqual(urlopen.call_count, 1)
@@ -383,17 +374,18 @@ class CloudLLMHttpTest(unittest.TestCase):
             fp=io.BytesIO(b"boom"),
         )
         llm = make_llm(retries=1, fallback_models=[])
-        with patch(
-            "app.cloud_llm.urllib.request.urlopen",
-            side_effect=[error, FakeResponse(body=response_body("Ответ"))],
-        ) as urlopen, patch("app.cloud_llm.time.sleep"):
+        with (
+            patch(
+                "app.cloud_llm.urllib.request.urlopen",
+                side_effect=[error, FakeResponse(body=response_body("Ответ"))],
+            ) as urlopen,
+            patch("app.cloud_llm.time.sleep"),
+        ):
             self.assertEqual(llm.answer("вопрос"), "Ответ")
         self.assertEqual(urlopen.call_count, 2)
 
     def test_empty_response_is_an_error(self) -> None:
-        body = json.dumps(
-            {"choices": [{"message": {"content": "  "}}]}
-        ).encode("utf-8")
+        body = json.dumps({"choices": [{"message": {"content": "  "}}]}).encode("utf-8")
         llm = make_llm(retries=0, fallback_models=[])
         with patch(
             "app.cloud_llm.urllib.request.urlopen",

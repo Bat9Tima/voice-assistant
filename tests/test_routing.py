@@ -37,9 +37,7 @@ class RoutingTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.ok)
         self.assertEqual(self.browser.last[0], "youtube")
-        self.assertEqual(
-            self.browser.last[1]["query"], "rick astley never gonna give you up"
-        )
+        self.assertEqual(self.browser.last[1]["query"], "rick astley never gonna give you up")
 
     def test_open_youtube_without_query(self) -> None:
         result = self.router.handle("открой ютуб")
@@ -95,9 +93,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(DEFAULTS["local_planner"]["model"], "qwen2.5:3b-instruct")
         self.assertTrue(DEFAULTS["cloud_llm"]["enabled"])
         self.assertIn("proxyapi", DEFAULTS["cloud_llm"]["base_url"])
-        self.assertEqual(
-            DEFAULTS["cloud_llm"]["model"], "anthropic/claude-haiku-5-5"
-        )
+        self.assertEqual(DEFAULTS["cloud_llm"]["model"], "anthropic/claude-haiku-5-5")
 
 
 if __name__ == "__main__":

@@ -223,15 +223,10 @@ class TrayUI:
                 return result
             code = _last_win_error()
             if dw_message == _NIM_ADD:
-                message = (
-                    "Shell_NotifyIcon(NIM_ADD) не добавил иконку: "
-                    f"WinError {code}"
-                )
+                message = f"Shell_NotifyIcon(NIM_ADD) не добавил иконку: WinError {code}"
                 log.warning(message)
                 raise OSError(code, message)
-            log.debug(
-                "Shell_NotifyIcon(%s) вернул FALSE (WinError %s)", dw_message, code
-            )
+            log.debug("Shell_NotifyIcon(%s) вернул FALSE (WinError %s)", dw_message, code)
             return False
 
         setattr(_guarded_shell_notify_icon, _GUARD_MARK, True)
@@ -307,9 +302,7 @@ class TrayUI:
 
     def _make_menu(self, pystray: Any) -> Any:
         return pystray.Menu(
-            pystray.MenuItem(
-                "Слушать сейчас", lambda: self.app.trigger_listen(), default=True
-            ),
+            pystray.MenuItem("Слушать сейчас", lambda: self.app.trigger_listen(), default=True),
             pystray.MenuItem("Пауза / продолжить", lambda: self.app.toggle_pause()),
             pystray.MenuItem("Статус", lambda: self.app.show_status()),
             pystray.MenuItem("Открыть лог", self._open_log),
@@ -374,9 +367,7 @@ class TrayUI:
                 try:
                     shown_icon.stop()
                 except Exception:  # noqa: BLE001
-                    log.debug(
-                        "Не удалось остановить лишнюю иконку трея", exc_info=True
-                    )
+                    log.debug("Не удалось остановить лишнюю иконку трея", exc_info=True)
 
         try:
             icon.run(setup=setup)
@@ -431,9 +422,7 @@ class TrayUI:
             thread = self._watchdog_thread
             if thread is not None and thread.is_alive():
                 return
-            thread = threading.Thread(
-                target=self._watchdog_loop, daemon=True, name="tray-watchdog"
-            )
+            thread = threading.Thread(target=self._watchdog_loop, daemon=True, name="tray-watchdog")
             self._watchdog_thread = thread
         thread.start()
 
@@ -505,9 +494,7 @@ class TrayUI:
             return {
                 "available": bool(self._available),
                 "running": bool(
-                    thread is not None
-                    and thread.is_alive()
-                    and not self._stop_event.is_set()
+                    thread is not None and thread.is_alive() and not self._stop_event.is_set()
                 ),
                 "error": self._error,
                 "restarts": int(self._restarts),
@@ -524,10 +511,7 @@ class TrayUI:
                 return
             self._unavailable_notified = True
         details = _error_text(error) if isinstance(error, BaseException) else str(error)
-        text = (
-            f"Иконка в трее недоступна: {details}. "
-            "Работает Ctrl+Alt+space"
-        )
+        text = f"Иконка в трее недоступна: {details}. Работает Ctrl+Alt+space"
         log.warning(text)
         if not self._show_toast(text, "Ассистент"):
             log.debug("Уведомление о недоступности трея не показано (Toast нет)")
@@ -552,9 +536,7 @@ class TrayUI:
                 toaster.show_toast(toast)
                 return True
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "Windows Toast не сработал, откатываюсь на pystray: %s", exc
-                )
+                log.warning("Windows Toast не сработал, откатываюсь на pystray: %s", exc)
                 self._toaster = None
                 self._toast_class = None
                 return False
@@ -628,9 +610,7 @@ class TrayUI:
             except Exception:  # noqa: BLE001
                 log.debug("Не удалось дождаться трей-потока", exc_info=True)
             if thread.is_alive():
-                log.warning(
-                    "Трей-поток не завершился за %.0f с", self._thread_join_timeout
-                )
+                log.warning("Трей-поток не завершился за %.0f с", self._thread_join_timeout)
 
     def stop(self) -> None:
         """Останавливает watchdog, иконку и трей-поток. Не бросает исключений."""

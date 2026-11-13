@@ -13,8 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 
-_spec = importlib.util.spec_from_file_location(
-    "wake_eval", ROOT / "tools" / "wake_eval.py")
+_spec = importlib.util.spec_from_file_location("wake_eval", ROOT / "tools" / "wake_eval.py")
 we = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(we)
 
@@ -48,13 +47,11 @@ def write_wav(path: Path, samples: list[int], rate: int = 16000) -> None:
         f.setnchannels(1)
         f.setsampwidth(2)
         f.setframerate(rate)
-        f.writeframes(b''.join(
-            (s & 0xFFFF).to_bytes(2, "little") for s in samples))
+        f.writeframes(b"".join((s & 0xFFFF).to_bytes(2, "little") for s in samples))
 
 
 def write_labels(path: Path, rows: list[dict]) -> None:
-    fields = ["index", "file", "block", "kind", "level", "distance_cm",
-              "condition"]
+    fields = ["index", "file", "block", "kind", "level", "distance_cm", "condition"]
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields, delimiter=";")
         writer.writeheader()
@@ -92,27 +89,64 @@ class DatasetTestCase(unittest.TestCase):
         write_wav(self.audio / "003_N_neg_01.wav", silent_samples())
         write_wav(self.audio / "004_N_neg_02.wav", samples_with_marker())
         write_wav(self.audio / "005_O_cmd01_tv.wav", samples_with_marker())
-        write_wav(self.audio / "006_M_wake_03.wav", samples_with_marker(),
-                  rate=8000)
+        write_wav(self.audio / "006_M_wake_03.wav", samples_with_marker(), rate=8000)
 
-        write_labels(self.base / "labels.csv", [
-            {"file": "001_M_wake_01.wav", "block": "M", "kind": "wake",
-             "level": "normal", "distance_cm": "60", "condition": "silence"},
-            {"file": "002_M_wake_02.wav", "block": "M", "kind": "wake",
-             "level": "normal", "distance_cm": "150", "condition": "music"},
-            {"file": "003_N_neg_01.wav", "block": "N", "kind": "negative",
-             "level": "normal", "distance_cm": "60", "condition": "silence"},
-            {"file": "004_N_neg_02.wav", "block": "N", "kind": "negative",
-             "level": "normal", "distance_cm": "150", "condition": "tv"},
-            {"file": "005_O_cmd01_tv.wav", "block": "O", "kind": "command",
-             "level": "normal", "distance_cm": "150", "condition": "tv"},
-            {"file": "006_M_wake_03.wav", "block": "M", "kind": "wake",
-             "level": "normal", "distance_cm": "200", "condition": "fan"},
-        ])
+        write_labels(
+            self.base / "labels.csv",
+            [
+                {
+                    "file": "001_M_wake_01.wav",
+                    "block": "M",
+                    "kind": "wake",
+                    "level": "normal",
+                    "distance_cm": "60",
+                    "condition": "silence",
+                },
+                {
+                    "file": "002_M_wake_02.wav",
+                    "block": "M",
+                    "kind": "wake",
+                    "level": "normal",
+                    "distance_cm": "150",
+                    "condition": "music",
+                },
+                {
+                    "file": "003_N_neg_01.wav",
+                    "block": "N",
+                    "kind": "negative",
+                    "level": "normal",
+                    "distance_cm": "60",
+                    "condition": "silence",
+                },
+                {
+                    "file": "004_N_neg_02.wav",
+                    "block": "N",
+                    "kind": "negative",
+                    "level": "normal",
+                    "distance_cm": "150",
+                    "condition": "tv",
+                },
+                {
+                    "file": "005_O_cmd01_tv.wav",
+                    "block": "O",
+                    "kind": "command",
+                    "level": "normal",
+                    "distance_cm": "150",
+                    "condition": "tv",
+                },
+                {
+                    "file": "006_M_wake_03.wav",
+                    "block": "M",
+                    "kind": "wake",
+                    "level": "normal",
+                    "distance_cm": "200",
+                    "condition": "fan",
+                },
+            ],
+        )
 
     def read_rows(self) -> list[dict]:
-        with open(self.base / "labels.csv", encoding="utf-8-sig",
-                  newline="") as f:
+        with open(self.base / "labels.csv", encoding="utf-8-sig", newline="") as f:
             return list(csv.DictReader(f, delimiter=";"))
 
 
@@ -123,9 +157,15 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(we.rate(0, 0), "0/0")
 
     def test_distance_label(self) -> None:
-        for value, want in (("60", "60 см"), ("150", "150 см"),
-                            ("1,5", "1.5 см"), ("200.0", "200 см"),
-                            ("", "? см"), (None, "? см"), ("?", "? см")):
+        for value, want in (
+            ("60", "60 см"),
+            ("150", "150 см"),
+            ("1,5", "1.5 см"),
+            ("200.0", "200 см"),
+            ("", "? см"),
+            (None, "? см"),
+            ("?", "? см"),
+        ):
             with self.subTest(value=value):
                 self.assertEqual(we.distance_label(value), want)
 
@@ -150,8 +190,8 @@ class HelpersTest(unittest.TestCase):
     def test_feed_propagates_hit_from_any_chunk(self) -> None:
         det = StubDetector()
         data = np.zeros(12000, dtype=np.int16)
-        data[5999] = MARKER          # внутри второго чанка (8000:16000)
-        pcm = b''.join(s.to_bytes(2, "little") for s in data.tolist())
+        data[5999] = MARKER  # внутри второго чанка (8000:16000)
+        pcm = b"".join(s.to_bytes(2, "little") for s in data.tolist())
         self.assertTrue(we.feed(det, pcm))
 
     def test_detect_feeds_lead_pcm_tail_and_resets_twice(self) -> None:
@@ -173,8 +213,8 @@ class EvaluateTest(DatasetTestCase):
         out = io.StringIO()  # read_pcm печатает «! пропуск» — глушим шум.
         with contextlib.redirect_stdout(out):
             positives, negatives, payload = we.evaluate(
-                self.read_rows(), self.audio, det,
-                labels_path=self.base / "labels.csv")
+                self.read_rows(), self.audio, det, labels_path=self.base / "labels.csv"
+            )
         return det, positives, negatives, payload
 
     def test_counts_labels_by_kind(self) -> None:
@@ -208,8 +248,7 @@ class EvaluateTest(DatasetTestCase):
 
     def test_empty_labels_gives_none_rates(self) -> None:
         write_labels(self.base / "empty.csv", [])
-        positives, negatives, payload = we.evaluate([], self.audio,
-                                                    StubDetector())
+        positives, negatives, payload = we.evaluate([], self.audio, StubDetector())
         self.assertEqual(positives, [])
         self.assertEqual(negatives, [])
         self.assertIsNone(payload["frr"])
@@ -239,10 +278,12 @@ class ReportTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             we.group_report("по блокам", items, lambda i: i["block"])
         text = out.getvalue()
-        m_lines = [line for line in text.splitlines()
-                   if line.startswith("    M") and "1/2 (50%)" in line]
-        n_lines = [line for line in text.splitlines()
-                   if line.startswith("    N") and "2/2 (100%)" in line]
+        m_lines = [
+            line for line in text.splitlines() if line.startswith("    M") and "1/2 (50%)" in line
+        ]
+        n_lines = [
+            line for line in text.splitlines() if line.startswith("    N") and "2/2 (100%)" in line
+        ]
         self.assertTrue(m_lines, f"нет строки M: {text!r}")
         self.assertTrue(n_lines, f"нет строки N: {text!r}")
         self.assertLess(text.index("    M"), text.index("    N"))
@@ -255,22 +296,45 @@ class ReportTest(unittest.TestCase):
 
     def test_print_report_shows_frr_and_far(self) -> None:
         positives = [
-            {"file": "a.wav", "block": "M", "condition": "silence",
-             "distance": "60 см", "level": "normal", "hit": True},
-            {"file": "b.wav", "block": "M", "condition": "silence",
-             "distance": "60 см", "level": "normal", "hit": False},
+            {
+                "file": "a.wav",
+                "block": "M",
+                "condition": "silence",
+                "distance": "60 см",
+                "level": "normal",
+                "hit": True,
+            },
+            {
+                "file": "b.wav",
+                "block": "M",
+                "condition": "silence",
+                "distance": "60 см",
+                "level": "normal",
+                "hit": False,
+            },
         ]
         negatives = [
-            {"file": "c.wav", "block": "N", "condition": "tv",
-             "distance": "150 см", "level": "normal", "hit": True},
+            {
+                "file": "c.wav",
+                "block": "N",
+                "condition": "tv",
+                "distance": "150 см",
+                "level": "normal",
+                "hit": True,
+            },
         ]
-        payload = {"labels": "labels.csv", "positives": 2, "negatives": 1,
-                   "misses": ["b.wav"], "false_accepts": ["c.wav"],
-                   "frr": 0.5, "far": 1.0}
+        payload = {
+            "labels": "labels.csv",
+            "positives": 2,
+            "negatives": 1,
+            "misses": ["b.wav"],
+            "false_accepts": ["c.wav"],
+            "frr": 0.5,
+            "far": 1.0,
+        }
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            we.print_report(Path("x/labels.csv"), positives, negatives,
-                            payload)
+            we.print_report(Path("x/labels.csv"), positives, negatives, payload)
         text = out.getvalue()
         self.assertIn("FRR: 1/2 (50%)", text)
         self.assertIn("FAR: 1/1 (100%)", text)

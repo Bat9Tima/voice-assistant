@@ -198,9 +198,7 @@ class TextTest(unittest.TestCase):
         self.assertEqual(canonicalize("громкость пять"), "громкость пять")
 
     def test_hotkey_space(self) -> None:
-        self.assertEqual(
-            to_pynput("ctrl+alt+space"), "<ctrl>+<alt>+<space>"
-        )
+        self.assertEqual(to_pynput("ctrl+alt+space"), "<ctrl>+<alt>+<space>")
 
     def test_hotkey_letter(self) -> None:
         self.assertEqual(to_pynput("ctrl+shift+k"), "<ctrl>+<shift>+k")

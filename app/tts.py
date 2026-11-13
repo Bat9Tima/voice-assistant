@@ -230,9 +230,7 @@ class TTSService:
         self.speed = float(section.get("speed", 1.0))
         self.workers = max(1, int(section.get("workers") or 3))
         self.cache_dir = Path(section.get("cache_dir") or (DATA_DIR / "tts-cache"))
-        self.bank = PhraseBank(
-            section.get("phrases_dir") or (ROOT / "assets" / "phrases")
-        )
+        self.bank = PhraseBank(section.get("phrases_dir") or (ROOT / "assets" / "phrases"))
         if self.enabled:
             try:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -309,9 +307,7 @@ class TTSService:
 
     # ------------------------------------------------------------------ synth
     def _cache_path(self, text: str) -> Path:
-        key = hashlib.sha256(
-            f"{self.model}|{self.voice}|{text}".encode()
-        ).hexdigest()[:32]
+        key = hashlib.sha256(f"{self.model}|{self.voice}|{text}".encode()).hexdigest()[:32]
         return self.cache_dir / f"{key}.wav"
 
     def _synth_cached(self, text: str) -> np.ndarray | None:

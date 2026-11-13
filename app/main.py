@@ -244,9 +244,7 @@ class Assistant:
             self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша и HTTP-команды.")
             self.mic = None  # type: ignore[assignment]
 
-        aliases = self.cfg.get("wake_aliases") or [
-            self.cfg.get("wake_word", "хей луна")
-        ]
+        aliases = self.cfg.get("wake_aliases") or [self.cfg.get("wake_word", "хей луна")]
         engine = str(self.cfg.get("wake_engine", "vosk")).lower()
         if engine == "openwakeword":
             try:
@@ -365,8 +363,7 @@ class Assistant:
         except Exception as exc:  # noqa: BLE001
             log.exception("Распознавание речи не загрузилось")
             self.notify(
-                f"Распознавание речи не загрузилось: {exc}. "
-                "Быстрые команды работают без него."
+                f"Распознавание речи не загрузилось: {exc}. Быстрые команды работают без него."
             )
 
     def _start_hotkey(self) -> None:
@@ -507,9 +504,7 @@ class Assistant:
             return
 
         log.info("STT: %r", text)
-        text = canonicalize(
-            strip_wake_word(text, self.cfg.get("wake_aliases") or [])
-        )
+        text = canonicalize(strip_wake_word(text, self.cfg.get("wake_aliases") or []))
         if not text:
             self.notify("Не разобрал команду")
             beep(320, 120)

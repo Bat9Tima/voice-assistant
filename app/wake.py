@@ -66,8 +66,7 @@ class WakeWordDetector:
         self.recognizer = self._new_recognizer()
 
     def _new_recognizer(self):
-        recognizer = vosk.KaldiRecognizer(
-            self.model, self.sample_rate, self.grammar)
+        recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate, self.grammar)
         recognizer.SetWords(True)
         return recognizer
 
@@ -114,9 +113,7 @@ class OpenWakeWordDetector:
             from openwakeword.model import Model
             from openwakeword.utils import download_models
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "openWakeWord не установлен: pip install openwakeword"
-            ) from exc
+            raise RuntimeError("openWakeWord не установлен: pip install openwakeword") from exc
 
         # openWakeWord качает общий feature extractor отдельно от пакета.
         features = [Path(item["model_path"]) for item in openwakeword.FEATURE_MODELS.values()]

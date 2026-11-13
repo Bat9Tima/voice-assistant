@@ -62,9 +62,7 @@ class CatalogIntegrityTest(unittest.TestCase):
     def test_every_intent_handler_has_spec(self) -> None:
         handlers = {
             name.removeprefix("_intent_")
-            for name, _ in inspect.getmembers(
-                ActionRouter, predicate=inspect.isfunction
-            )
+            for name, _ in inspect.getmembers(ActionRouter, predicate=inspect.isfunction)
             if name.startswith("_intent_")
         }
         intent_actions = {intent["action"] for intent in load_intents()}
@@ -78,9 +76,7 @@ class CatalogToolCoverageTest(unittest.TestCase):
         self.registry = build_default_registry(SITE_URLS, SITE_KEYS)
 
     def test_every_tool_has_spec(self) -> None:
-        self.assertEqual(
-            set(self.registry.names()), set(catalog_by_tool())
-        )
+        self.assertEqual(set(self.registry.names()), set(catalog_by_tool()))
 
     def test_every_spec_tool_exists(self) -> None:
         for action in ACTIONS:
@@ -93,9 +89,7 @@ class CatalogToolCoverageTest(unittest.TestCase):
 class CatalogCliCoverageTest(unittest.TestCase):
     def test_cli_commands_match_catalog(self) -> None:
         source = inspect.getsource(browser_cli.main)
-        pattern = re.compile(
-            r'action\s+(?:in\s+\{([^}]*)\}|==\s+"([^"]+)")'
-        )
+        pattern = re.compile(r'action\s+(?:in\s+\{([^}]*)\}|==\s+"([^"]+)")')
         commands: set[str] = set()
         for block, single in pattern.findall(source):
             commands.update(re.findall(r'"([^"]+)"', block))
@@ -111,16 +105,13 @@ class CatalogCliCoverageTest(unittest.TestCase):
 
 class CatalogReadmeCoverageTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.readme = normalize(
-            (ROOT / "README.md").read_text(encoding="utf-8-sig")
-        )
+        self.readme = normalize((ROOT / "README.md").read_text(encoding="utf-8-sig"))
 
     def test_readme_covers_every_documented_action(self) -> None:
         missing = [
             action.name
             for action in ACTIONS
-            if action.documented
-            and normalize(action.doc_example) not in self.readme
+            if action.documented and normalize(action.doc_example) not in self.readme
         ]
         self.assertEqual(missing, [])
 

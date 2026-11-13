@@ -128,9 +128,7 @@ class OpenCodeBrain:
         if not self.cfg.get("enabled", True):
             return ""
         if not self.cli:
-            raise OpenCodeError(
-                "OpenCode CLI не найден. Укажите путь в config.json → opencode.cli"
-            )
+            raise OpenCodeError("OpenCode CLI не найден. Укажите путь в config.json → opencode.cli")
         with self._lock:
             answer = self._run(text, self.session_id)
             if answer is None:

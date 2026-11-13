@@ -85,9 +85,7 @@ class FormatTest(unittest.TestCase):
 
     def test_positive_temperature_has_plus(self) -> None:
         report = make_report()
-        report = WeatherReport(
-            report.place, 5.0, 3.0, 0, 2.0, 50, report.daily
-        )
+        report = WeatherReport(report.place, 5.0, 3.0, 0, 2.0, 50, report.daily)
         self.assertIn("+5 °C", format_report(report))
 
     def test_unknown_code(self) -> None:
@@ -97,9 +95,7 @@ class FormatTest(unittest.TestCase):
 class GeocodeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.calls: list[tuple[str, dict]] = []
-        self.client = WeatherClient(
-            {"qa": {"weather": {"city": "Новосибирск", "timeout_sec": 1}}}
-        )
+        self.client = WeatherClient({"qa": {"weather": {"city": "Новосибирск", "timeout_sec": 1}}})
 
     def fake_http(self, url: str, params: dict, timeout: float) -> dict:
         self.calls.append((url, dict(params)))
@@ -139,9 +135,7 @@ class GeocodeTest(unittest.TestCase):
     def test_incomplete_forecast(self) -> None:
         with patch(
             "app.weather._http_json",
-            side_effect=lambda url, params, timeout: (
-                GEO if url == GEOCODE_URL else {"current": {}}
-            ),
+            side_effect=lambda url, params, timeout: GEO if url == GEOCODE_URL else {"current": {}},
         ):
             with self.assertRaises(WeatherError):
                 self.client.forecast("Новосибирске")

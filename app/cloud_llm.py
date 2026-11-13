@@ -66,9 +66,7 @@ class CloudLLM:
             for item in fallbacks
             if str(item).strip() and str(item).strip() != self.model
         ]
-        self.reasoning_effort = str(
-            section.get("reasoning_effort") or "minimal"
-        ).strip()
+        self.reasoning_effort = str(section.get("reasoning_effort") or "minimal").strip()
         self.max_completion_tokens = max(
             int(section.get("max_completion_tokens") or MIN_COMPLETION_TOKENS),
             MIN_COMPLETION_TOKENS,
@@ -126,11 +124,7 @@ class CloudLLM:
             )
             user = f"{history}\n\nУточняющий вопрос: {question}"
         else:
-            system = (
-                ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
-                + "\n"
-                + datetime_context()
-            )
+            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM) + "\n" + datetime_context()
             user = question
 
         limit = max(int(max_tokens or 0), self.max_completion_tokens)
@@ -138,9 +132,7 @@ class CloudLLM:
         timeout = self.timeout if timeout is None else float(timeout)
         preferred = model or (self.article_model if style == "article" else "")
         candidates = [preferred or self.model]
-        candidates.extend(
-            item for item in self.fallback_models if item not in candidates
-        )
+        candidates.extend(item for item in self.fallback_models if item not in candidates)
 
         errors: list[str] = []
         for candidate in candidates:
@@ -229,9 +221,7 @@ class CloudLLM:
         content = message.get("content")
         if isinstance(content, list):
             content = "".join(
-                str(part.get("text") or "")
-                for part in content
-                if isinstance(part, dict)
+                str(part.get("text") or "") for part in content if isinstance(part, dict)
             )
         if not isinstance(content, str) or not content.strip():
             raise LLMError("пустой ответ модели")

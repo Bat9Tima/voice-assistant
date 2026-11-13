@@ -89,9 +89,7 @@ class JsonExtractTest(unittest.TestCase):
 
 class PlanValidationTest(unittest.TestCase):
     def test_youtube(self) -> None:
-        plan = _build_plan(
-            {"action": "youtube", "query": "  lo-fi  ", "index": 2}
-        )
+        plan = _build_plan({"action": "youtube", "query": "  lo-fi  ", "index": 2})
         self.assertEqual(plan, LocalPlan("youtube", {"query": "lo-fi", "index": 2}))
 
     def test_index_is_clamped(self) -> None:
@@ -113,26 +111,20 @@ class PlanValidationTest(unittest.TestCase):
         self.assertIsNone(_build_plan({"action": "open_site"}))
 
     def test_unknown_site(self) -> None:
-        self.assertIsNone(
-            _build_plan({"action": "open_site", "site": "неизвестный сайт"})
-        )
+        self.assertIsNone(_build_plan({"action": "open_site", "site": "неизвестный сайт"}))
 
     def test_open_site_known(self) -> None:
         plan = _build_plan({"action": "open_site", "site": "ютуб"})
         self.assertEqual(plan, LocalPlan("open_site", {"site": "ютуб"}))
 
     def test_goto_rejects_unsafe_schemes(self) -> None:
-        self.assertIsNone(
-            _build_plan({"action": "goto", "url": "javascript:alert(1)"})
-        )
+        self.assertIsNone(_build_plan({"action": "goto", "url": "javascript:alert(1)"}))
         self.assertIsNone(_build_plan({"action": "goto", "url": "file:///etc/passwd"}))
         self.assertIsNone(_build_plan({"action": "goto", "url": "https://exa mple.com"}))
 
     def test_goto_accepts_https(self) -> None:
         plan = _build_plan({"action": "goto", "url": "https://example.com/page"})
-        self.assertEqual(
-            plan, LocalPlan("goto", {"url": "https://example.com/page"})
-        )
+        self.assertEqual(plan, LocalPlan("goto", {"url": "https://example.com/page"}))
 
     def test_volume_range(self) -> None:
         self.assertEqual(
@@ -147,14 +139,10 @@ class PlanValidationTest(unittest.TestCase):
             _build_plan({"action": "scroll", "direction": "up"}),
             LocalPlan("scroll", {"direction": "up"}),
         )
-        self.assertIsNone(
-            _build_plan({"action": "scroll", "direction": "sideways"})
-        )
+        self.assertIsNone(_build_plan({"action": "scroll", "direction": "sideways"}))
 
     def test_soundcloud_likes(self) -> None:
-        plan = _build_plan(
-            {"action": "soundcloud_likes", "query": "  отпусти меня  "}
-        )
+        plan = _build_plan({"action": "soundcloud_likes", "query": "  отпусти меня  "})
         self.assertEqual(
             plan,
             LocalPlan(
@@ -178,9 +166,7 @@ class PlanValidationTest(unittest.TestCase):
         )
 
     def test_soundcloud_likes_rejects_long_query(self) -> None:
-        self.assertIsNone(
-            _build_plan({"action": "soundcloud_likes", "query": "x" * 201})
-        )
+        self.assertIsNone(_build_plan({"action": "soundcloud_likes", "query": "x" * 201}))
 
     def test_stop(self) -> None:
         self.assertEqual(_build_plan({"action": "stop"}), LocalPlan("stop", {}))
@@ -196,9 +182,7 @@ class PlanValidationTest(unittest.TestCase):
             LocalPlan("seek", {"seconds": 30, "direction": "forward"}),
         )
         self.assertEqual(
-            _build_plan(
-                {"action": "seek", "seconds": "10", "direction": "backward"}
-            ),
+            _build_plan({"action": "seek", "seconds": "10", "direction": "backward"}),
             LocalPlan("seek", {"seconds": 10, "direction": "backward"}),
         )
         self.assertEqual(
@@ -212,9 +196,7 @@ class PlanValidationTest(unittest.TestCase):
     def test_seek_rejects_bad_values(self) -> None:
         self.assertIsNone(_build_plan({"action": "seek", "seconds": 0}))
         self.assertIsNone(_build_plan({"action": "seek", "seconds": 3601}))
-        self.assertIsNone(
-            _build_plan({"action": "seek", "direction": "sideways"})
-        )
+        self.assertIsNone(_build_plan({"action": "seek", "direction": "sideways"}))
 
     def test_play_with_site(self) -> None:
         self.assertEqual(
@@ -230,15 +212,17 @@ class LocalPlannerPlanTest(unittest.TestCase):
 
     def test_plan_parses_model_answer(self) -> None:
         planner = make_planner()
-        with patch.object(planner, "available", return_value=True), patch.object(
-            planner, "_chat", return_value='{"action": "pause"}'
+        with (
+            patch.object(planner, "available", return_value=True),
+            patch.object(planner, "_chat", return_value='{"action": "pause"}'),
         ):
             self.assertEqual(planner.plan("пауза"), LocalPlan("pause"))
 
     def test_invalid_json_returns_none(self) -> None:
         planner = make_planner()
-        with patch.object(planner, "available", return_value=True), patch.object(
-            planner, "_chat", return_value="не знаю"
+        with (
+            patch.object(planner, "available", return_value=True),
+            patch.object(planner, "_chat", return_value="не знаю"),
         ):
             self.assertIsNone(planner.plan("что-то"))
 
@@ -266,9 +250,9 @@ class LocalPlannerHttpTest(unittest.TestCase):
             self.assertFalse(planner.available())
 
     def test_chat_parses_openai_response(self) -> None:
-        body = json.dumps(
-            {"choices": [{"message": {"content": '{"action": "play"}'}}]}
-        ).encode("utf-8")
+        body = json.dumps({"choices": [{"message": {"content": '{"action": "play"}'}}]}).encode(
+            "utf-8"
+        )
         planner = make_planner()
         with patch(
             "app.local_planner.urllib.request.urlopen",
@@ -277,9 +261,9 @@ class LocalPlannerHttpTest(unittest.TestCase):
             self.assertEqual(planner._chat("включи"), '{"action": "play"}')
 
     def test_chat_sends_keep_alive(self) -> None:
-        body = json.dumps(
-            {"choices": [{"message": {"content": '{"action": "play"}'}}]}
-        ).encode("utf-8")
+        body = json.dumps({"choices": [{"message": {"content": '{"action": "play"}'}}]}).encode(
+            "utf-8"
+        )
         captured: dict = {}
 
         def fake_urlopen(request, timeout=None):
@@ -295,9 +279,9 @@ class LocalPlannerHttpTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["keep_alive"], "30m")
 
     def test_chat_omits_empty_keep_alive(self) -> None:
-        body = json.dumps(
-            {"choices": [{"message": {"content": '{"action": "play"}'}}]}
-        ).encode("utf-8")
+        body = json.dumps({"choices": [{"message": {"content": '{"action": "play"}'}}]}).encode(
+            "utf-8"
+        )
         captured: dict = {}
 
         def fake_urlopen(request, timeout=None):
@@ -314,9 +298,7 @@ class LocalPlannerHttpTest(unittest.TestCase):
         self.assertNotIn("keep_alive", captured["payload"])
 
     def test_complete_uses_custom_timeout(self) -> None:
-        body = json.dumps(
-            {"choices": [{"message": {"content": "Ответ"}}]}
-        ).encode("utf-8")
+        body = json.dumps({"choices": [{"message": {"content": "Ответ"}}]}).encode("utf-8")
         captured: dict = {}
 
         def fake_urlopen(request, timeout=None):
@@ -348,6 +330,7 @@ class LocalPlannerHttpTest(unittest.TestCase):
                 planner._chat("включи")
         self.assertIn("model is not loaded", str(ctx.exception))
 
+
 class ExecutePlanTest(unittest.TestCase):
     def setUp(self) -> None:
         self.browser = FakeBrowser()
@@ -355,9 +338,7 @@ class ExecutePlanTest(unittest.TestCase):
         self.router._volume = FakeVolume(0.5)
 
     def test_youtube(self) -> None:
-        result = self.router.execute_plan(
-            "youtube", {"query": "lo-fi", "index": 1}
-        )
+        result = self.router.execute_plan("youtube", {"query": "lo-fi", "index": 1})
         self.assertTrue(result.ok)
         self.assertEqual(self.browser.calls[-1][0], "youtube")
         self.assertEqual(self.browser.calls[-1][1]["query"], "lo-fi")
@@ -441,30 +422,22 @@ class ExecutePlanTest(unittest.TestCase):
         result = self.router.execute_plan("stop", {"site": "youtube"})
         self.assertTrue(result.ok)
         self.assertEqual(self.browser.calls[-1], ("stop", {"site": "youtube"}))
-        self.assertFalse(
-            self.router.execute_plan("stop", {"site": "vk"}).ok
-        )
+        self.assertFalse(self.router.execute_plan("stop", {"site": "vk"}).ok)
 
     def test_seek_forward(self) -> None:
-        result = self.router.execute_plan(
-            "seek", {"seconds": 30, "direction": "forward"}
-        )
+        result = self.router.execute_plan("seek", {"seconds": 30, "direction": "forward"})
         self.assertTrue(result.ok)
         self.assertEqual(self.browser.calls[-1], ("seek", {"seconds": 30}))
         self.assertEqual(result.message, "Перематываю вперед на 30 с")
 
     def test_seek_backward(self) -> None:
-        result = self.router.execute_plan(
-            "seek", {"seconds": 10, "direction": "backward"}
-        )
+        result = self.router.execute_plan("seek", {"seconds": 10, "direction": "backward"})
         self.assertTrue(result.ok)
         self.assertEqual(self.browser.calls[-1], ("seek", {"seconds": -10}))
         self.assertEqual(result.message, "Перематываю назад на 10 с")
 
     def test_seek_with_site(self) -> None:
-        result = self.router.execute_plan(
-            "seek", {"seconds": 15, "site": "soundcloud"}
-        )
+        result = self.router.execute_plan("seek", {"seconds": 15, "site": "soundcloud"})
         self.assertTrue(result.ok)
         self.assertEqual(
             self.browser.calls[-1],

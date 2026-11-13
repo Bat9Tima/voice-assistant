@@ -75,6 +75,7 @@ _YOUTUBE_SHORT_RE = re.compile(
     re.UNICODE,
 )
 
+
 def parse_volume_percent(text: str) -> int | None:
     """Разбирает громкость по шкале 0–10: «5» → 50%, «10» → 100%.
 
@@ -148,9 +149,13 @@ class ActionRouter:
         context_cfg = cfg.get("context") if isinstance(cfg, dict) else None
         ttl = float((context_cfg or {}).get("ttl_sec", 180))
         self.context = context or CommandContext(ttl)
-        self.intents = intents if intents is not None else IntentSet.load(
-            site_names=SITE_URLS,
-            volume_parser=parse_volume_percent,
+        self.intents = (
+            intents
+            if intents is not None
+            else IntentSet.load(
+                site_names=SITE_URLS,
+                volume_parser=parse_volume_percent,
+            )
         )
 
     # ------------------------------------------------------------------ public
@@ -209,9 +214,7 @@ class ActionRouter:
                     index=1,
                 )
             self._remember_media("open_site", site="soundcloud")
-            return self._simple(
-                "goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"]
-            )
+            return self._simple("goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"])
 
         short_youtube = bool(_YOUTUBE_SHORT_RE.fullmatch(t))
         if "ютуб" in t or "youtube" in t or "you tube" in t or short_youtube:
@@ -241,9 +244,7 @@ class ActionRouter:
         if match:
             query = match.group(1).strip()
             self._remember_youtube_search(query)
-            return self._simple(
-                "youtube", f"Включаю на YouTube: {query}", query=query, index=1
-            )
+            return self._simple("youtube", f"Включаю на YouTube: {query}", query=query, index=1)
 
         search = self._search_command(t)
         if search:
@@ -268,9 +269,7 @@ class ActionRouter:
         self.context.clear()
         return None
 
-    def execute_plan(
-        self, action: str, args: dict[str, Any] | None = None
-    ) -> CommandResult:
+    def execute_plan(self, action: str, args: dict[str, Any] | None = None) -> CommandResult:
         """Выполняет действие, выбранное локальной LLM.
 
         Аргументы уже проверены планировщиком; здесь только защита от прямых
@@ -290,9 +289,7 @@ class ActionRouter:
         if action == "goto":
             url = str(args.get("url") or "").strip()
             if not re.match(r"^https?://", url, re.IGNORECASE):
-                return CommandResult(
-                    True, False, "Поддерживаются только http(s)-адреса"
-                )
+                return CommandResult(True, False, "Поддерживаются только http(s)-адреса")
             return self._simple("goto", "Открываю сайт", url=url)
 
         if action in {"youtube", "soundcloud"}:
@@ -388,9 +385,7 @@ class ActionRouter:
                 return CommandResult(True, False, "Неверное время перемотки")
             direction = str(args.get("direction") or "forward").strip().lower()
             if direction not in {"forward", "backward"}:
-                return CommandResult(
-                    True, False, "Неверное направление перемотки"
-                )
+                return CommandResult(True, False, "Неверное направление перемотки")
             if direction == "backward":
                 seconds = -seconds
             site = str(args.get("site") or "").strip().lower()
@@ -415,9 +410,7 @@ class ActionRouter:
             if index < 1 or index > 99:
                 return CommandResult(True, False, "Неверный номер вкладки")
             self.context.remember("media", "switch_tab", site="browser")
-            return self._simple(
-                "tab", f"Переключаюсь на вкладку {index}", index=index
-            )
+            return self._simple("tab", f"Переключаюсь на вкладку {index}", index=index)
         if action == "back":
             return self._simple("back", "Назад")
         if action == "forward":
@@ -566,9 +559,7 @@ class ActionRouter:
         query = self._clean_google_query(str(match.slots["query"]))
         if not query:
             return None
-        self.context.remember(
-            "search", "google_search", site="google", query=query, index=1
-        )
+        self.context.remember("search", "google_search", site="google", query=query, index=1)
         self.context.remember("results", "google_search", index=1)
         return self._simple("google", f"Ищу: {query}", query=query)
 
@@ -576,20 +567,14 @@ class ActionRouter:
         query = self._youtube_query(str(match.slots["query"]))
         if not query:
             return None
-        self.context.remember(
-            "search", "youtube_search", site="youtube", query=query, index=1
-        )
+        self.context.remember("search", "youtube_search", site="youtube", query=query, index=1)
         self.context.remember("media", "youtube_search", site="youtube")
-        return self._simple(
-            "youtube", f"Включаю на YouTube: {query}", query=query, index=1
-        )
+        return self._simple("youtube", f"Включаю на YouTube: {query}", query=query, index=1)
 
     def _intent_open_result(self, match: IntentMatch) -> CommandResult:
         index = int(match.slots["index"])
         query = self._google_query_from_context()
-        self.context.remember(
-            "results", "search_result", index=index, query=query
-        )
+        self.context.remember("results", "search_result", index=index, query=query)
         return self._simple(
             "search_result",
             f"Открываю ссылку №{index}",
@@ -607,17 +592,11 @@ class ActionRouter:
         index = int(slots.get("index") or 1)
 
         if action == "youtube_search" and query:
-            self.context.remember(
-                "search", action, site="youtube", query=query, index=index
-            )
+            self.context.remember("search", action, site="youtube", query=query, index=index)
             self.context.remember("media", "youtube_search", site="youtube")
-            return self._simple(
-                "youtube", f"Включаю на YouTube: {query}", query=query, index=index
-            )
+            return self._simple("youtube", f"Включаю на YouTube: {query}", query=query, index=index)
         if action == "soundcloud_search" and query:
-            self.context.remember(
-                "search", action, site="soundcloud", query=query, index=index
-            )
+            self.context.remember("search", action, site="soundcloud", query=query, index=index)
             self.context.remember("media", "soundcloud_search", site="soundcloud")
             return self._simple(
                 "soundcloud",
@@ -647,15 +626,11 @@ class ActionRouter:
                 play=True,
             )
         if action == "google_search" and query:
-            self.context.remember(
-                "search", action, site="google", query=query, index=1
-            )
+            self.context.remember("search", action, site="google", query=query, index=1)
             self.context.remember("results", "google_search", index=1)
             return self._simple("google", f"Ищу: {query}", query=query)
         if action == "search_result":
-            self.context.remember(
-                "results", "search_result", index=index, query=query
-            )
+            self.context.remember("results", "search_result", index=index, query=query)
             return self._simple(
                 "search_result",
                 f"Открываю ссылку №{index}",
@@ -674,9 +649,7 @@ class ActionRouter:
         index = int(slots.get("index") or 1) + 1
 
         if action == "youtube_search" and query:
-            self.context.remember(
-                "search", action, site="youtube", query=query, index=index
-            )
+            self.context.remember("search", action, site="youtube", query=query, index=index)
             self.context.remember("media", "youtube_search", site="youtube")
             return self._simple(
                 "youtube",
@@ -685,9 +658,7 @@ class ActionRouter:
                 index=index,
             )
         if action == "soundcloud_search" and query:
-            self.context.remember(
-                "search", action, site="soundcloud", query=query, index=index
-            )
+            self.context.remember("search", action, site="soundcloud", query=query, index=index)
             self.context.remember("media", "soundcloud_search", site="soundcloud")
             return self._simple(
                 "soundcloud",
@@ -719,9 +690,7 @@ class ActionRouter:
             if results is not None:
                 index = int(results.slots.get("index") or 1) + 1
                 query = str(results.slots.get("query") or "") or query
-            self.context.remember(
-                "results", "search_result", index=index, query=query
-            )
+            self.context.remember("results", "search_result", index=index, query=query)
             return self._simple(
                 "search_result",
                 f"Открываю ссылку №{index}",
@@ -754,9 +723,7 @@ class ActionRouter:
     def _intent_system_volume_down(self, match: IntentMatch) -> CommandResult:
         return self._system_volume_change(-1, match.slots.get("amount"))
 
-    def _system_volume_change(
-        self, sign: int, amount: int | None
-    ) -> CommandResult:
+    def _system_volume_change(self, sign: int, amount: int | None) -> CommandResult:
         self._remember_system_volume()
         step = amount / 100 if amount is not None and amount > 0 else VOLUME_STEP
         return self._change_volume(sign * step)
@@ -786,9 +753,7 @@ class ActionRouter:
     def _intent_soundcloud_volume_down(self, match: IntentMatch) -> CommandResult:
         return self._soundcloud_volume_change("down", match.slots.get("amount"))
 
-    def _soundcloud_volume_change(
-        self, mode: str, amount: int | None
-    ) -> CommandResult:
+    def _soundcloud_volume_change(self, mode: str, amount: int | None) -> CommandResult:
         step = int(amount) if amount is not None else round(VOLUME_STEP * 100)
         self._remember_soundcloud_volume()
         return self._simple(
@@ -800,22 +765,16 @@ class ActionRouter:
 
     def _intent_soundcloud_volume_mute(self, match: IntentMatch) -> CommandResult:
         self._remember_soundcloud_volume()
-        return self._simple(
-            "soundcloud_volume", "Выключаю звук SoundCloud", mode="mute"
-        )
+        return self._simple("soundcloud_volume", "Выключаю звук SoundCloud", mode="mute")
 
     def _intent_soundcloud_volume_unmute(self, match: IntentMatch) -> CommandResult:
         self._remember_soundcloud_volume()
-        return self._simple(
-            "soundcloud_volume", "Включаю звук SoundCloud", mode="unmute"
-        )
+        return self._simple("soundcloud_volume", "Включаю звук SoundCloud", mode="unmute")
 
     # ---------------------------------------------------------- SoundCloud
     def _intent_soundcloud_open(self, match: IntentMatch) -> CommandResult:
         self._remember_media("open_site", site="soundcloud")
-        return self._simple(
-            "goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"]
-        )
+        return self._simple("goto", "Открываю SoundCloud", url=SITE_URLS["саундклауд"])
 
     def _intent_soundcloud_search(self, match: IntentMatch) -> CommandResult | None:
         query = self._soundcloud_query(str(match.slots["query"]))
@@ -829,9 +788,7 @@ class ActionRouter:
             index=1,
         )
         self._remember_media("soundcloud_search", site="soundcloud")
-        return self._simple(
-            "soundcloud", f"Включаю на SoundCloud: {query}", query=query, index=1
-        )
+        return self._simple("soundcloud", f"Включаю на SoundCloud: {query}", query=query, index=1)
 
     def _intent_soundcloud_likes_open(self, match: IntentMatch) -> CommandResult:
         return self._soundcloud_likes(match, play=False)
@@ -839,9 +796,7 @@ class ActionRouter:
     def _intent_soundcloud_likes_play(self, match: IntentMatch) -> CommandResult:
         return self._soundcloud_likes(match, play=True)
 
-    def _soundcloud_likes(
-        self, match: IntentMatch, play: bool
-    ) -> CommandResult:
+    def _soundcloud_likes(self, match: IntentMatch, play: bool) -> CommandResult:
         query = self._likes_query(str(match.slots.get("query") or ""))
         if play:
             random_choice = not query
@@ -873,9 +828,7 @@ class ActionRouter:
             random=True,
         )
         self._remember_media("soundcloud_likes", site="soundcloud")
-        return self._simple(
-            "soundcloud_likes", "Открываю лайкнутые треки SoundCloud", play=False
-        )
+        return self._simple("soundcloud_likes", "Открываю лайкнутые треки SoundCloud", play=False)
 
     def _intent_soundcloud_pause(self, match: IntentMatch) -> CommandResult:
         self._remember_media("pause", site="soundcloud")
@@ -999,8 +952,7 @@ class ActionRouter:
         if not tabs:
             return CommandResult(True, True, "Вкладок нет")
         message = "; ".join(
-            f"{tab['index']}. {(tab.get('title') or tab.get('url', ''))[:40]}"
-            for tab in tabs
+            f"{tab['index']}. {(tab.get('title') or tab.get('url', ''))[:40]}" for tab in tabs
         )
         return CommandResult(True, True, f"Вкладки: {message}")
 
@@ -1031,15 +983,42 @@ class ActionRouter:
     def _youtube_query(t: str) -> str:
         query = t
         for phrase in (
-            "на ютубе", "в ютубе", "ютубе", "on youtube", "on you tube",
-            "youtube", "you tube", "ютуб",
+            "на ютубе",
+            "в ютубе",
+            "ютубе",
+            "on youtube",
+            "on you tube",
+            "youtube",
+            "you tube",
+            "ютуб",
         ):
             query = re.sub(rf"(?<!\w){re.escape(phrase)}(?!\w)", " ", query)
         for word in (
-            "включи", "поставь", "запусти", "найди", "покажи", "открой",
-            "мне", "пожалуйста", "видео", "клип", "песню", "трек", "ролик",
-            "play", "find", "search", "open", "show", "look", "for", "me",
-            "video", "clip", "song", "track",
+            "включи",
+            "поставь",
+            "запусти",
+            "найди",
+            "покажи",
+            "открой",
+            "мне",
+            "пожалуйста",
+            "видео",
+            "клип",
+            "песню",
+            "трек",
+            "ролик",
+            "play",
+            "find",
+            "search",
+            "open",
+            "show",
+            "look",
+            "for",
+            "me",
+            "video",
+            "clip",
+            "song",
+            "track",
         ):
             query = re.sub(rf"(?<!\w){word}(?!\w)", " ", query)
         return re.sub(r"\s+", " ", query).strip(" ,.-")
@@ -1084,20 +1063,62 @@ class ActionRouter:
         query = re.sub(r"^(?:на|в|у|для)(?:\s+|$)", "", query)
         query = re.sub(r"(?:^|\s+)(?:на|в|у|для)$", "", query)
         for word in (
-            "включи", "поставь", "запусти", "играй", "слушай",
-            "открой", "покажи", "зайди", "перейди",
-            "мне", "мои", "мой", "пожалуйста",
-            "лайкнутые", "лайкнутый", "лайкнутых", "лайкнутое",
-            "лайки", "лайков", "лайкам", "лайке",
-            "избранное", "избранные", "избранных", "избранный",
-            "любимые", "любимых", "любимый",
-            "треки", "трек", "треках", "треков", "трекам",
-            "песни", "песню", "песня", "песнях", "песен", "песням",
-            "музыку", "музыка", "музыке",
-            "случайный", "случайную", "случайное",
-            "рандомный", "рандомную", "рандомное",
-            "любой", "любую", "любое", "первый", "первую",
-            "попавшийся", "попавшуюся", "из",
+            "включи",
+            "поставь",
+            "запусти",
+            "играй",
+            "слушай",
+            "открой",
+            "покажи",
+            "зайди",
+            "перейди",
+            "мне",
+            "мои",
+            "мой",
+            "пожалуйста",
+            "лайкнутые",
+            "лайкнутый",
+            "лайкнутых",
+            "лайкнутое",
+            "лайки",
+            "лайков",
+            "лайкам",
+            "лайке",
+            "избранное",
+            "избранные",
+            "избранных",
+            "избранный",
+            "любимые",
+            "любимых",
+            "любимый",
+            "треки",
+            "трек",
+            "треках",
+            "треков",
+            "трекам",
+            "песни",
+            "песню",
+            "песня",
+            "песнях",
+            "песен",
+            "песням",
+            "музыку",
+            "музыка",
+            "музыке",
+            "случайный",
+            "случайную",
+            "случайное",
+            "рандомный",
+            "рандомную",
+            "рандомное",
+            "любой",
+            "любую",
+            "любое",
+            "первый",
+            "первую",
+            "попавшийся",
+            "попавшуюся",
+            "из",
         ):
             query = re.sub(rf"(?<!\w){re.escape(word)}(?!\w)", " ", query)
         query = re.sub(r"^(?:и|а)\s+", "", query.strip())
@@ -1107,10 +1128,29 @@ class ActionRouter:
     def _soundcloud_query(t: str) -> str:
         query = _SOUNDCLOUD_RE.sub(" ", t)
         for word in (
-            "включи", "поставь", "запусти", "найди", "покажи", "открой",
-            "мне", "пожалуйста", "трек", "песню", "музыку", "послушать",
-            "play", "find", "search", "listen", "open", "for", "me",
-            "song", "track", "video", "clip",
+            "включи",
+            "поставь",
+            "запусти",
+            "найди",
+            "покажи",
+            "открой",
+            "мне",
+            "пожалуйста",
+            "трек",
+            "песню",
+            "музыку",
+            "послушать",
+            "play",
+            "find",
+            "search",
+            "listen",
+            "open",
+            "for",
+            "me",
+            "song",
+            "track",
+            "video",
+            "clip",
         ):
             query = re.sub(rf"(?<!\w){word}(?!\w)", " ", query)
         query = re.sub(r"^\s*(?:на|в|у|для|on|in)\s+", " ", query)
@@ -1134,9 +1174,7 @@ class ActionRouter:
             self._remember_google_search(query)
             return self._simple("google", f"Ищу: {query}", query=query)
 
-        match = re.match(
-            r"^(?:search(?:\s+for)?|find|look\s+up|google)\s+(.+)$", t
-        )
+        match = re.match(r"^(?:search(?:\s+for)?|find|look\s+up|google)\s+(.+)$", t)
         if match:
             query = re.sub(r"^(?:(?:me|for)\s+)+", "", match.group(1).strip())
             query = re.sub(r"\s+(?:on|in)\s+(?:google|the\s+web)$", "", query)
@@ -1236,12 +1274,8 @@ class ActionRouter:
         self.context.remember("media", action, site=site)
 
     def _remember_google_search(self, query: str) -> None:
-        self.context.remember(
-            "search", "google_search", site="google", query=query, index=1
-        )
-        self.context.remember(
-            "results", "google_search", query=query, index=1
-        )
+        self.context.remember("search", "google_search", site="google", query=query, index=1)
+        self.context.remember("results", "google_search", query=query, index=1)
 
     def _google_query_from_context(self) -> str:
         for kind in ("results", "search"):
@@ -1254,9 +1288,7 @@ class ActionRouter:
         return ""
 
     def _remember_youtube_search(self, query: str) -> None:
-        self.context.remember(
-            "search", "youtube_search", site="youtube", query=query, index=1
-        )
+        self.context.remember("search", "youtube_search", site="youtube", query=query, index=1)
         self.context.remember("media", "youtube_search", site="youtube")
 
     def _remember_system_volume(self) -> None:

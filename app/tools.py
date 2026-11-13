@@ -61,9 +61,7 @@ class Tool:
     def prompt_line(self) -> str:
         if not self.params:
             return f"- {self.name} — {self.description}"
-        args = ", ".join(
-            f'"{param.name}": {param.prompt_hint()}' for param in self.params
-        )
+        args = ", ".join(f'"{param.name}": {param.prompt_hint()}' for param in self.params)
         return f"- {self.name}: {{{args}}} — {self.description}"
 
 
@@ -90,9 +88,7 @@ class ToolRegistry:
     def prompt_lines(self) -> list[str]:
         return [tool.prompt_line() for tool in self._tools.values()]
 
-    def validate(
-        self, action: str, raw: Mapping[str, Any]
-    ) -> dict[str, Any] | None:
+    def validate(self, action: str, raw: Mapping[str, Any]) -> dict[str, Any] | None:
         tool = self._tools.get(action)
         if tool is None:
             return None

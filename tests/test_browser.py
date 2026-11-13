@@ -48,9 +48,7 @@ class SoundCloudLikesMatchTest(unittest.TestCase):
 
     def test_does_not_match_unrelated(self) -> None:
         items = [item(0, "Liza Evans - Ревную")]
-        self.assertIsNone(
-            BrowserController._find_soundcloud_like(items, "зима холода")
-        )
+        self.assertIsNone(BrowserController._find_soundcloud_like(items, "зима холода"))
 
     def test_filter_queries_include_prefix_fallback(self) -> None:
         queries = BrowserController._soundcloud_filter_queries("скучна")
@@ -165,9 +163,7 @@ class MediaTargetTest(unittest.TestCase):
 
     def test_explicit_site_wins_over_current(self) -> None:
         self.assertIs(self.controller._media_target("youtube"), self.youtube)
-        self.assertIs(
-            self.controller._media_target("soundcloud"), self.soundcloud
-        )
+        self.assertIs(self.controller._media_target("soundcloud"), self.soundcloud)
 
     def test_falls_back_to_soundcloud_then_media(self) -> None:
         self.controller._page_has_media = lambda page: False

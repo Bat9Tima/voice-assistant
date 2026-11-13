@@ -16,9 +16,7 @@ from app.tools import Tool, ToolParam, ToolRegistry, build_default_registry
 
 class ToolParamTest(unittest.TestCase):
     def test_hint_for_enum_is_sorted(self) -> None:
-        param = ToolParam(
-            "direction", "string", enum=frozenset({"up", "down"})
-        )
+        param = ToolParam("direction", "string", enum=frozenset({"up", "down"}))
         self.assertEqual(param.prompt_hint(), '"down|up"')
 
     def test_hint_for_integer_range(self) -> None:
@@ -116,9 +114,7 @@ class ToolRegistryTest(unittest.TestCase):
 
     def test_extra_arguments_are_dropped(self) -> None:
         self.assertEqual(
-            self.registry.validate(
-                "search", {"query": "кот", "evil": "rm -rf"}
-            ),
+            self.registry.validate("search", {"query": "кот", "evil": "rm -rf"}),
             {"query": "кот", "limit": 5, "safe": True},
         )
 
@@ -129,9 +125,7 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
     def test_string_max_length(self) -> None:
-        self.assertIsNone(
-            self.registry.validate("search", {"query": "x" * 11})
-        )
+        self.assertIsNone(self.registry.validate("search", {"query": "x" * 11}))
 
     def test_integer_from_string(self) -> None:
         self.assertEqual(
@@ -140,35 +134,23 @@ class ToolRegistryTest(unittest.TestCase):
         )
 
     def test_integer_rejects_garbage(self) -> None:
-        self.assertIsNone(
-            self.registry.validate("search", {"query": "кот", "limit": "много"})
-        )
+        self.assertIsNone(self.registry.validate("search", {"query": "кот", "limit": "много"}))
 
     def test_integer_rejects_bool(self) -> None:
-        self.assertIsNone(
-            self.registry.validate("search", {"query": "кот", "limit": True})
-        )
+        self.assertIsNone(self.registry.validate("search", {"query": "кот", "limit": True}))
 
     def test_integer_below_minimum(self) -> None:
-        self.assertIsNone(
-            self.registry.validate("search", {"query": "кот", "limit": 0})
-        )
+        self.assertIsNone(self.registry.validate("search", {"query": "кот", "limit": 0}))
 
     def test_boolean_parsing(self) -> None:
         for value in (False, "false", "нет", 0, "no"):
             with self.subTest(value=value):
-                result = self.registry.validate(
-                    "search", {"query": "кот", "safe": value}
-                )
+                result = self.registry.validate("search", {"query": "кот", "safe": value})
                 self.assertIsNotNone(result)
                 self.assertFalse(result["safe"])
 
     def test_boolean_rejects_unknown_text(self) -> None:
-        self.assertIsNone(
-            self.registry.validate(
-                "search", {"query": "кот", "safe": "может быть"}
-            )
-        )
+        self.assertIsNone(self.registry.validate("search", {"query": "кот", "safe": "может быть"}))
 
     def test_enum_and_lower(self) -> None:
         registry = ToolRegistry(
@@ -214,9 +196,7 @@ class ToolRegistryTest(unittest.TestCase):
             ]
         )
         self.assertEqual(registry.validate("youtube", {"index": 0}), {"index": 1})
-        self.assertEqual(
-            registry.validate("youtube", {"index": 100}), {"index": 20}
-        )
+        self.assertEqual(registry.validate("youtube", {"index": 100}), {"index": 20})
 
     def test_custom_validator(self) -> None:
         def validate_url(args: dict) -> dict | None:
@@ -237,9 +217,7 @@ class ToolRegistryTest(unittest.TestCase):
             registry.validate("goto", {"url": "https://example.com"}),
             {"url": "https://example.com"},
         )
-        self.assertIsNone(
-            registry.validate("goto", {"url": "javascript:alert(1)"})
-        )
+        self.assertIsNone(registry.validate("goto", {"url": "javascript:alert(1)"}))
 
 
 class DefaultRegistryTest(unittest.TestCase):
@@ -281,21 +259,15 @@ class DefaultRegistryTest(unittest.TestCase):
             self.registry.validate("open_site", {"site": "ЮТУБ"}),
             {"site": "ютуб"},
         )
-        self.assertIsNone(
-            self.registry.validate("open_site", {"site": "неизвестный сайт"})
-        )
+        self.assertIsNone(self.registry.validate("open_site", {"site": "неизвестный сайт"}))
 
     def test_goto(self) -> None:
         self.assertEqual(
             self.registry.validate("goto", {"url": "https://example.com"}),
             {"url": "https://example.com"},
         )
-        self.assertIsNone(
-            self.registry.validate("goto", {"url": "javascript:alert(1)"})
-        )
-        self.assertIsNone(
-            self.registry.validate("goto", {"url": "https://exa mple.com"})
-        )
+        self.assertIsNone(self.registry.validate("goto", {"url": "javascript:alert(1)"}))
+        self.assertIsNone(self.registry.validate("goto", {"url": "https://exa mple.com"}))
 
     def test_soundcloud_likes_defaults(self) -> None:
         self.assertEqual(
@@ -322,9 +294,7 @@ class DefaultRegistryTest(unittest.TestCase):
                 {"site": "soundcloud"},
                 name,
             )
-            self.assertIsNone(
-                self.registry.validate(name, {"site": "vk"}), name
-            )
+            self.assertIsNone(self.registry.validate(name, {"site": "vk"}), name)
 
     def test_seek_defaults(self) -> None:
         self.assertEqual(
@@ -332,15 +302,11 @@ class DefaultRegistryTest(unittest.TestCase):
             {"seconds": 10, "direction": "forward"},
         )
         self.assertEqual(
-            self.registry.validate(
-                "seek", {"seconds": 30, "direction": "backward"}
-            ),
+            self.registry.validate("seek", {"seconds": 30, "direction": "backward"}),
             {"seconds": 30, "direction": "backward"},
         )
         self.assertEqual(
-            self.registry.validate(
-                "seek", {"seconds": "7", "site": "YouTube"}
-            ),
+            self.registry.validate("seek", {"seconds": "7", "site": "YouTube"}),
             {"seconds": 7, "direction": "forward", "site": "youtube"},
         )
 
@@ -348,14 +314,10 @@ class DefaultRegistryTest(unittest.TestCase):
         self.assertIsNone(self.registry.validate("seek", {"seconds": 0}))
         self.assertIsNone(self.registry.validate("seek", {"seconds": 3601}))
         self.assertIsNone(self.registry.validate("seek", {"seconds": "много"}))
-        self.assertIsNone(
-            self.registry.validate("seek", {"direction": "sideways"})
-        )
+        self.assertIsNone(self.registry.validate("seek", {"direction": "sideways"}))
 
     def test_volume_range(self) -> None:
-        self.assertEqual(
-            self.registry.validate("volume", {"level": 30}), {"level": 30}
-        )
+        self.assertEqual(self.registry.validate("volume", {"level": 30}), {"level": 30})
         self.assertIsNone(self.registry.validate("volume", {"level": 101}))
         self.assertIsNone(self.registry.validate("volume", {"level": -1}))
 
@@ -370,9 +332,7 @@ class DefaultRegistryTest(unittest.TestCase):
             {"query": "lo-fi", "index": 1},
         )
         self.assertEqual(
-            self.registry.validate(
-                "youtube", {"query": "lo-fi", "index": 100}
-            ),
+            self.registry.validate("youtube", {"query": "lo-fi", "index": 100}),
             {"query": "lo-fi", "index": 20},
         )
 
@@ -397,9 +357,7 @@ class PromptFromRegistryTest(unittest.TestCase):
 
     def test_custom_registry_changes_prompt_and_plan(self) -> None:
         registry = ToolRegistry([Tool("ping", "проверка.")])
-        llm = LocalPlanner(
-            {"local_planner": {"enabled": True, "model": "test"}}, registry=registry
-        )
+        llm = LocalPlanner({"local_planner": {"enabled": True, "model": "test"}}, registry=registry)
         self.assertIn("- ping", llm.system_prompt)
         self.assertNotIn("- youtube", llm.system_prompt)
         self.assertEqual(

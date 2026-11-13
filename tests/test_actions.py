@@ -593,13 +593,14 @@ class SoundCloudNoiseFallbackTest(unittest.TestCase):
             self.calls.append((action, args))
             if action == "tabs":
                 tabs = [
-                    {"index": i + 1, "url": url, "title": ""}
-                    for i, url in enumerate(self.urls)
+                    {"index": i + 1, "url": url, "title": ""} for i, url in enumerate(self.urls)
                 ]
                 return {"ok": True, "data": {"tabs": tabs}}
             return {"ok": True, "data": {}}
 
-    def make_router(self, urls: list[str]) -> tuple[ActionRouter, SoundCloudNoiseFallbackTest.TabsBrowser]:
+    def make_router(
+        self, urls: list[str]
+    ) -> tuple[ActionRouter, SoundCloudNoiseFallbackTest.TabsBrowser]:
         browser = self.TabsBrowser(urls)
         return ActionRouter({}, browser), browser
 
@@ -670,9 +671,7 @@ class SoundCloudNoiseFallbackTest(unittest.TestCase):
         result = router.handle("громкость пять")
         self.assertIsNotNone(result)
         self.assertEqual(router._volume.level, 0.5)
-        self.assertFalse(
-            any(action == "soundcloud_volume" for action, _ in browser.calls)
-        )
+        self.assertFalse(any(action == "soundcloud_volume" for action, _ in browser.calls))
 
 
 class EnglishSearchTest(unittest.TestCase):
