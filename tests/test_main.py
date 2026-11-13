@@ -9,7 +9,7 @@ from unittest.mock import patch
 from app.actions import CommandResult
 from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
-from app.qa import QAAnswer
+from app.qa import QAAnswer, Route
 
 
 class FakeRouter:
@@ -73,18 +73,21 @@ class FakeTray:
 
 
 class FakeQA:
-    def __init__(self, answer: QAAnswer | None = None) -> None:
+    def __init__(self, answer: QAAnswer | None = None, kind: str = "general") -> None:
         self.result = answer or QAAnswer(
             True, "вопрос", "Короткий ответ", "Полный ответ", "general"
         )
-        self.handled: list[str] = []
+        self.kind = kind
+        self.routed: list[str] = []
+        self.answered: list[str] = []
         self.shown: list[QAAnswer] = []
 
-    def handles(self, text: str) -> bool:
-        self.handled.append(text)
-        return True
+    def route(self, text: str) -> Route:
+        self.routed.append(text)
+        return Route(self.kind)
 
-    def answer(self, text: str) -> QAAnswer:
+    def answer(self, text: str, *, route: Route | None = None) -> QAAnswer:
+        self.answered.append(text)
         return self.result
 
     def show(self, answer: QAAnswer) -> bool:
@@ -217,7 +220,8 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         message = assistant.run_text("что такое фотосинтез")
         self.assertEqual(message, "Короткий ответ")
         self.assertEqual(assistant.planner.seen, [])
-        self.assertEqual(assistant.qa.handled, ["что такое фотосинтез"])
+        self.assertEqual(assistant.qa.routed, ["что такое фотосинтез"])
+        self.assertEqual(assistant.qa.answered, ["что такое фотосинтез"])
         self.assertEqual(len(assistant.qa.shown), 1)
 
     def test_qa_error_beeps_without_tab(self) -> None:
@@ -234,7 +238,8 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant.qa = FakeQA()
         message = assistant.run_text("открой ютуб")
         self.assertEqual(message, "Открываю YouTube")
-        self.assertEqual(assistant.qa.handled, [])
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.qa.shown, [])
 
     def test_datetime_answer_skips_ack_phrase(self) -> None:
         assistant = self.make()
@@ -245,7 +250,8 @@ class AgentTriggerRoutingTest(unittest.TestCase):
                 "Сейчас 20 часов 47 минут.",
                 "Сейчас 20 часов 47 минут.",
                 "time",
-            )
+            ),
+            kind="datetime",
         )
         assistant.tts = FakeTTS(enabled=True)
         message = assistant.run_text("который час")

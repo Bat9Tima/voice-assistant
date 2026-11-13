@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from app.datetime_answer import (
     answer_datetime,
     datetime_context,
     is_datetime_question,
+    parse_datetime_question,
 )
 
 NOW = datetime(2026, 11, 13, 20, 47, tzinfo=UTC)
@@ -47,6 +48,9 @@ class DatetimeQuestionTest(unittest.TestCase):
             "сегодня какое число",
             "завтра какой день недели",
             "какое сегодняшнее число",
+            "какое нынче число",
+            "какой нынче день",
+            "какое нынешнее число",
         ):
             with self.subTest(text=text):
                 self.assertTrue(is_datetime_question(text))
@@ -77,6 +81,24 @@ class DatetimeQuestionTest(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertFalse(is_datetime_question(text))
+
+    def test_unrelated_day_and_year_phrases(self) -> None:
+        for text in (
+            "какой день выбрать",
+            "какой день недели лучше для встречи",
+            "какой год выбрать",
+            "сколько дней до зарплаты",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(is_datetime_question(text))
+
+    def test_parse_returns_structured_request(self) -> None:
+        request = parse_datetime_question("какое завтра число")
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertEqual(request.kind, "date")
+        self.assertEqual(request.shift, 1)
+        self.assertIsNone(parse_datetime_question("что такое фотосинтез"))
 
 
 class DatetimeAnswerTest(unittest.TestCase):
@@ -141,6 +163,44 @@ class DatetimeAnswerTest(unittest.TestCase):
         self.assertEqual(
             answer_datetime("какой сейчас год", now=NOW),
             "Сейчас 2026 год.",
+        )
+
+    def test_year_rollover(self) -> None:
+        current = datetime(2026, 12, 31, 23, 50, tzinfo=UTC)
+        self.assertEqual(
+            answer_datetime("какое завтра число", now=current),
+            "Завтра 1 января 2027 года, пятница.",
+        )
+
+    def test_leap_day(self) -> None:
+        before = datetime(2028, 2, 28, 22, 0, tzinfo=UTC)
+        self.assertEqual(
+            answer_datetime("какое завтра число", now=before),
+            "Завтра 29 февраля 2028 года, вторник.",
+        )
+        on_leap_day = datetime(2028, 2, 29, 22, 0, tzinfo=UTC)
+        self.assertEqual(
+            answer_datetime("какое завтра число", now=on_leap_day),
+            "Завтра 1 марта 2028 года, среда.",
+        )
+
+    def test_midnight_and_last_minute(self) -> None:
+        midnight = datetime(2026, 11, 13, 0, 0, tzinfo=UTC)
+        self.assertEqual(
+            answer_datetime("который час", now=midnight),
+            "Сейчас ноль часов ровно.",
+        )
+        late = datetime(2026, 11, 13, 23, 59, tzinfo=UTC)
+        self.assertEqual(
+            answer_datetime("сколько времени", now=late),
+            "Сейчас 23 часа 59 минут.",
+        )
+
+    def test_other_offset_keeps_the_date(self) -> None:
+        current = datetime(2026, 11, 13, 0, 10, tzinfo=timezone(timedelta(hours=10)))
+        self.assertEqual(
+            answer_datetime("какое сегодня число", now=current),
+            "Сегодня 13 ноября 2026 года, пятница.",
         )
 
     def test_context_for_model(self) -> None:
