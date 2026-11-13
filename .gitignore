@@ -9,6 +9,12 @@ __pycache__/
 # Сгенерированные отчёты инструментов
 tools/*_results.json
 
+# Покрытие: генерируется scripts\coverage.cmd
+.coverage
+.coverage.*
+coverage.xml
+coverage_html/
+
 # Тяжёлые локальные данные: не коммитим
 VoiceAssistantTools/
 VoiceDataset_backups/
