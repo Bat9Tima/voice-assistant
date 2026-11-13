@@ -10,7 +10,13 @@ from typing import Any
 
 from .cloud_llm import CloudLLM, LLMError
 from .search import SearchError, SearchResult, TavilySearch
-from .weather import WeatherClient, WeatherError, format_report
+from .weather import (
+    WeatherClient,
+    WeatherError,
+    format_current,
+    format_day,
+    format_report,
+)
 
 log = logging.getLogger(__name__)
 
@@ -823,6 +829,65 @@ GENERIC_NEWS_TITLE_RE = re.compile(
     r"новости за|смотреть онлайн)"
 )
 
+# Уточнения к прошлому ответу. Без контекста такие фразы бессмысленны:
+# «а завтра?» после погоды, «а почему?» после объяснения.
+WEATHER_DAY_PARTS = (
+    ("на послезавтра", "day_after"),
+    ("послезавтра", "day_after"),
+    ("на завтра", "tomorrow"),
+    ("завтра", "tomorrow"),
+    ("сегодня", "today"),
+    ("на сегодня", "today"),
+    ("сейчас", "current"),
+    ("теперь", "current"),
+)
+
+WEATHER_FOLLOWUP_RE = re.compile(
+    r"^(?:"
+    r"(?:завтра|послезавтра|сегодня|сейчас|теперь|на\s+завтра|на\s+послезавтра)"
+    r"(?:\s+в\s+.+)?"
+    r"|в\s+.+"
+    r"|какая\s+погода|какой\s+прогноз|что\s+с\s+погодой"
+    r"|там"
+    r")$"
+)
+
+GENERAL_FOLLOWUP_RE = re.compile(
+    r"^(?:"
+    r"(?:почему|зачем|как|когда|где|куда|откуда|сколько)"
+    r"(?:\s+(?:это|так|там|же|всё|все))?"
+    r"(?:\s+(?:важно|нужно|работает|происходит|будет|было|можно|стоит|"
+    r"значит|получается|так|сделать|произошло|случилось|называется))?"
+    r"|(?:подробнее|поподробнее|детальнее|детально|развернуто|развёрнуто|"
+    r"кратко|коротко|короче|сжато|вкратце)"
+    r"|(?:что|чего)\s+(?:там|ещё|еще|дальше)"
+    r"|(?:и\s+)?что\s+(?:это|он|она|они)\s+(?:значит|означает)"
+    r"|что\s+(?:это|это\s+такое)"
+    r"|кто\s+(?:это|он|она|они)"
+    r"|(?:расскажи|объясни|уточни)\s+(?:подробнее|почему|как|что)"
+    r")$"
+)
+
+CITY_FOLLOWUP_RE = re.compile(
+    r"(?:^|\s)(?:в|во)\s+([А-ЯЁа-яё][А-ЯЁа-яё\- ]{1,40})$",
+    re.IGNORECASE,
+)
+
+
+def _followup_core(text: str) -> str:
+    """Убирает вводное «а/и/но» и знаки, чтобы сравнить с шаблоном."""
+    core = _normalized(text).strip(" ?!.,;:—-")
+    core = re.sub(r"^(?:а|и|но)\s+", "", core)
+    return core.strip(" ?!.,;:—-")
+
+
+def _city_from_followup(text: str) -> str | None:
+    match = CITY_FOLLOWUP_RE.search(text.strip(" ?!.,;:—-"))
+    if not match:
+        return None
+    city = TRAILING_TIME.sub("", match.group(1)).strip()
+    return city if _looks_like_city(city) else None
+
 
 def _select_news_item(
     text: str, items: list[NewsItem]
@@ -923,6 +988,28 @@ class QAAnswer:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class FollowUp:
+    """Разобранное уточнение к прошлому ответу."""
+
+    kind: str  # weather или general
+    style: str = "normal"
+    city: str = ""
+    weather_part: str = "full"
+
+
+@dataclass
+class DialogTurn:
+    """Последняя успешная пара «вопрос — ответ» для уточнений."""
+
+    question: str
+    answer: str
+    kind: str
+    city: str = ""
+    root: str = ""
+    at: float = 0.0
+
+
 class QAService:
     """Вопросы: погода через Open-Meteo, свежее через Tavily, остальное — LLM."""
 
@@ -944,8 +1031,13 @@ class QAService:
         self.temperature = float(answer_cfg.get("temperature") or 0.2)
         self.timeout = float(answer_cfg.get("timeout_sec") or 45)
         self.news_ttl = float(answer_cfg.get("news_ttl_sec") or 900)
+        self.context_ttl = max(
+            0.0, float(answer_cfg.get("context_ttl_sec") or 180)
+        )
         self.last_news: list[NewsItem] = []
         self._news_at = 0.0
+        self._last_turn: DialogTurn | None = None
+        self._last_weather_city = ""
 
     # ------------------------------------------------------------------ public
     def handles(self, text: str) -> bool:
@@ -956,6 +1048,7 @@ class QAService:
             or is_question(text)
             or needs_search(text)
             or self._is_news_followup(text)
+            or self._followup(text) is not None
         )
 
     def kind_of(self, text: str) -> str:
@@ -964,6 +1057,9 @@ class QAService:
             return "weather"
         if is_news_question(text) or self._is_news_followup(text):
             return "news"
+        followup = self._followup(text)
+        if followup is not None and followup.kind == "weather":
+            return "weather"
         return "wait"
 
     def answer(self, text: str) -> QAAnswer:
@@ -974,8 +1070,21 @@ class QAService:
         style = answer_style(text)
 
         if self._is_news_followup(text):
-            return self._answer_news_detail(text, style=style)
+            answer = self._answer_news_detail(text, style=style)
+            self._remember(text, answer)
+            return answer
 
+        followup = self._followup(text)
+        if followup is not None:
+            answer = self._answer_followup(text, followup)
+            self._remember(text, answer, followup=followup)
+            return answer
+
+        answer = self._answer_question(text, style=style)
+        self._remember(text, answer)
+        return answer
+
+    def _answer_question(self, text: str, *, style: str) -> QAAnswer:
         if is_weather_question(text):
             return self._answer_weather(text)
 
@@ -1129,6 +1238,114 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             return True
         return not _topic_tokens(text)
 
+    def _followup(self, text: str) -> FollowUp | None:
+        turn = self._last_turn
+        if turn is None:
+            return None
+        if time.monotonic() - turn.at > self.context_ttl:
+            self._last_turn = None
+            return None
+        style = answer_style(text)
+        if turn.kind == "weather":
+            weather = self._weather_followup(text, turn, style=style)
+            if weather is not None:
+                return weather
+        if turn.kind in {"general", "search"}:
+            return self._general_followup(text, style=style)
+        return None
+
+    def _weather_followup(
+        self, text: str, turn: DialogTurn, *, style: str
+    ) -> FollowUp | None:
+        core = _followup_core(text)
+        part = "full"
+        for marker, name in WEATHER_DAY_PARTS:
+            if re.search(rf"(?:^|\s){re.escape(marker)}(?:$|\s)", core):
+                part = name
+                break
+        city = _city_from_followup(text) or ""
+        if part == "full" and not city:
+            if not WEATHER_FOLLOWUP_RE.match(core):
+                return None
+        return FollowUp(
+            "weather",
+            style=style,
+            city=city or turn.city or self._last_weather_city,
+            weather_part=part,
+        )
+
+    def _general_followup(self, text: str, *, style: str) -> FollowUp | None:
+        core = _followup_core(text)
+        if not GENERAL_FOLLOWUP_RE.match(core):
+            return None
+        return FollowUp("general", style=style)
+
+    def _answer_followup(self, text: str, followup: FollowUp) -> QAAnswer:
+        if followup.kind == "weather":
+            return self._answer_weather(
+                text,
+                city=followup.city or None,
+                part=followup.weather_part,
+            )
+        if self._llm_available():
+            return self._answer_general(
+                text,
+                style=followup.style,
+                history=self._history_text(),
+            )
+        if self.search.available():
+            return self._answer_search(
+                self._followup_question(text),
+                news=False,
+                style=followup.style,
+            )
+        return self._error(
+            text,
+            "Не могу ответить",
+            "Модель недоступна, ключ поиска не задан.",
+            error="нет доступных источников ответа",
+        )
+
+    def _followup_question(self, text: str) -> str:
+        turn = self._last_turn
+        if turn is None:
+            return text
+        return f"{turn.question} {without_style(text) or text}".strip()
+
+    def _history_text(self) -> str:
+        turn = self._last_turn
+        if turn is None:
+            return ""
+        lines = [
+            f"Предыдущий вопрос: {turn.question}",
+            f"Предыдущий ответ: {_clip(turn.answer, 1200)}",
+        ]
+        if turn.root and turn.root != turn.question:
+            lines.append(f"Тема разговора: {turn.root}")
+        return "\n".join(lines)
+
+    def _remember(
+        self,
+        text: str,
+        answer: QAAnswer,
+        *,
+        followup: FollowUp | None = None,
+    ) -> None:
+        if not answer.ok or self.context_ttl <= 0:
+            return
+        question = without_style(text) or text
+        root = ""
+        if followup is not None and self._last_turn is not None:
+            root = self._last_turn.root or self._last_turn.question
+        self._last_turn = DialogTurn(
+            question=question,
+            answer=_clip(answer.full, 1200),
+            kind=answer.kind,
+            city=self._last_weather_city if answer.kind == "weather" else "",
+            root=root,
+            at=time.monotonic(),
+        )
+
     def _news_sources(self) -> list[QASource]:
         return [
             QASource(item.title, item.url, item.snippet) for item in self.last_news
@@ -1249,8 +1466,14 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             sources,
         )
 
-    def _answer_weather(self, text: str) -> QAAnswer:
-        city = extract_city(text)
+    def _answer_weather(
+        self,
+        text: str,
+        *,
+        city: str | None = None,
+        part: str = "full",
+    ) -> QAAnswer:
+        city = (city or "").strip() or extract_city(text)
         try:
             report = self.weather.forecast(city)
         except WeatherError as exc:
@@ -1261,7 +1484,14 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 kind="weather",
                 error=str(exc),
             )
-        full = format_report(report)
+        self._last_weather_city = report.place.name
+        if part == "current":
+            full = format_current(report)
+        elif part in {"today", "tomorrow", "day_after"}:
+            index = {"today": 0, "tomorrow": 1, "day_after": 2}[part]
+            full = format_day(report, index)
+        else:
+            full = format_report(report)
         source = QASource(
             "Open-Meteo",
             "https://open-meteo.com/",
@@ -1276,7 +1506,13 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             [source],
         )
 
-    def _answer_general(self, text: str, *, style: str = "normal") -> QAAnswer:
+    def _answer_general(
+        self,
+        text: str,
+        *,
+        style: str = "normal",
+        history: str = "",
+    ) -> QAAnswer:
         if self.llm is None:
             return self._error(text, "Модель недоступна", "Модель недоступна.")
         style = style if style in {"short", "detailed"} else "normal"
@@ -1292,6 +1528,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 max_tokens=max_tokens,
                 temperature=self.temperature,
                 timeout=self.timeout,
+                history=history,
             )
         except LLMError as exc:
             return self._error(

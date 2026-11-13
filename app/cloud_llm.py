@@ -15,7 +15,13 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .prompts import ANSWER_PROMPTS, ANSWER_SYSTEM, RAG_PROMPTS, RAG_SYSTEM
+from .prompts import (
+    ANSWER_PROMPTS,
+    ANSWER_SYSTEM,
+    FOLLOWUP_SUFFIX,
+    RAG_PROMPTS,
+    RAG_SYSTEM,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,8 +91,13 @@ class CloudLLM:
         temperature: float | None = None,
         timeout: float | None = None,
         model: str | None = None,
+        history: str = "",
     ) -> str:
-        """Отвечает на вопрос: по источникам (RAG) или из своих знаний."""
+        """Отвечает на вопрос: по источникам (RAG) или из своих знаний.
+
+        ``history`` — предыдущая пара «вопрос — ответ» для уточняющих
+        вопросов вроде «а почему?» или «а подробнее?».
+        """
         question = (question or "").strip()
         if not question:
             raise LLMError("пустой вопрос")
@@ -99,9 +110,15 @@ class CloudLLM:
 
         style = (style or "normal").strip().lower()
         context = (context or "").strip()
+        history = (history or "").strip()
         if context:
             system = RAG_PROMPTS.get(style, RAG_SYSTEM)
             user = f"Вопрос: {question}\n\nИсточники:\n{context}"
+            if history:
+                user = f"{history}\n\n{user}"
+        elif history:
+            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM) + FOLLOWUP_SUFFIX
+            user = f"{history}\n\nУточняющий вопрос: {question}"
         else:
             system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
             user = question

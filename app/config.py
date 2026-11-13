@@ -156,6 +156,7 @@ DEFAULTS: dict[str, Any] = {
             "max_tokens": 400,
             "temperature": 0.2,
             "timeout_sec": 45,
+            "context_ttl_sec": 180,
         },
     },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются

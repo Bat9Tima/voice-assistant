@@ -7,6 +7,7 @@ from app.qa import (
     QAAnswer,
     QAService,
     QASource,
+    _city_from_followup,
     _clean_answer,
     answer_style,
     extract_city,
@@ -120,6 +121,22 @@ def make_report() -> WeatherReport:
         wind=4.0,
         humidity=80,
         daily=(DailyForecast("2026-11-11", -6.0, -1.0, 71),),
+    )
+
+
+def make_three_day_report(place: str = "Москва") -> WeatherReport:
+    return WeatherReport(
+        place=GeoPlace(place, "Россия", 55.75, 37.61),
+        temperature=2.0,
+        feels_like=-1.0,
+        code=3,
+        wind=0.8,
+        humidity=89,
+        daily=(
+            DailyForecast("2026-11-13", 0.0, 2.0, 77),
+            DailyForecast("2026-11-14", 1.0, 4.0, 63),
+            DailyForecast("2026-11-15", 2.0, 4.0, 61),
+        ),
     )
 
 
@@ -330,6 +347,11 @@ class CityExtractionTest(unittest.TestCase):
     def test_time_and_city(self) -> None:
         self.assertEqual(extract_city("погода на завтра в Москве"), "Москве")
         self.assertEqual(extract_city("погода в Москве сегодня"), "Москве")
+
+    def test_city_followup_strips_day_word(self) -> None:
+        self.assertEqual(_city_from_followup("а в Москве завтра?"), "Москве")
+        self.assertEqual(_city_from_followup("а на завтра в Казани?"), "Казани")
+        self.assertIsNone(_city_from_followup("а завтра?"))
 
 
 class FirstSentenceTest(unittest.TestCase):
@@ -909,6 +931,80 @@ class QAServiceRoutingTest(unittest.TestCase):
         answer = qa.answer("расскажи про фотосинтез")
         self.assertFalse(answer.ok)
         self.assertIn("Не могу ответить", answer.short)
+
+
+class QAServiceFollowUpTest(unittest.TestCase):
+    def test_general_followup_passes_previous_turn(self) -> None:
+        llm = FakeLLM("Фотосинтез важен, потому что даёт кислород.")
+        qa = make_service(llm=llm)
+
+        qa.answer("что такое фотосинтез")
+        answer = qa.answer("а почему это важно?")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "general")
+        self.assertEqual(len(llm.calls), 2)
+        history = llm.kwargs[1]["history"]
+        self.assertIn("что такое фотосинтез", history.lower())
+        self.assertIn("Фотосинтез важен", history)
+
+    def test_chained_followup_keeps_original_topic(self) -> None:
+        llm = FakeLLM("Фотосинтез важен, потому что даёт кислород.")
+        qa = make_service(llm=llm)
+
+        qa.answer("что такое фотосинтез")
+        qa.answer("а почему это важно?")
+        qa.answer("а подробнее?")
+
+        history = llm.kwargs[2]["history"]
+        self.assertIn("Тема разговора: что такое фотосинтез", history)
+        self.assertIn("а почему это важно?", history.lower())
+
+    def test_followup_is_detected_by_handles_and_kind(self) -> None:
+        qa = make_service(llm=FakeLLM("Ответ."))
+        qa.answer("что такое фотосинтез")
+
+        self.assertTrue(qa.handles("а почему это важно?"))
+        self.assertTrue(qa.handles("а подробнее?"))
+        self.assertEqual(qa.kind_of("а почему это важно?"), "wait")
+
+    def test_followup_expires(self) -> None:
+        qa = make_service(llm=FakeLLM("Ответ."))
+        qa.answer("что такое фотосинтез")
+        turn = qa._last_turn
+        self.assertIsNotNone(turn)
+        turn.at -= qa.context_ttl + 1
+
+        self.assertIsNone(qa._followup("а почему это важно?"))
+        self.assertIsNone(qa._last_turn)
+
+    def test_weather_followup_reuses_city_and_day(self) -> None:
+        weather = FakeWeather(make_three_day_report())
+        qa = make_service()
+        qa.weather = weather
+
+        qa.answer("какая погода в Москве")
+        answer = qa.answer("а завтра?")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "weather")
+        self.assertEqual(qa.kind_of("а завтра?"), "weather")
+        self.assertEqual(weather.cities, ["Москве", "Москва"])
+        self.assertIn("Москва, завтра", answer.full)
+        self.assertIn("от +1 °C до +4 °C", answer.full)
+        self.assertNotIn("Послезавтра", answer.full)
+
+    def test_weather_followup_uses_named_city(self) -> None:
+        weather = FakeWeather(make_three_day_report())
+        qa = make_service()
+        qa.weather = weather
+
+        qa.answer("какая погода в Москве")
+        answer = qa.answer("а в Казани?")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "weather")
+        self.assertEqual(weather.cities, ["Москве", "Казани"])
 
 
 class QARenderTest(unittest.TestCase):

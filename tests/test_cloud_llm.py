@@ -111,6 +111,30 @@ class CloudLLMAnswerTest(unittest.TestCase):
         self.assertIn("Источники:", user)
         self.assertIn("[1] Источник", user)
 
+    def test_answer_with_history_uses_followup_prompt(self) -> None:
+        llm = make_llm()
+        history = (
+            "Предыдущий вопрос: что такое фотосинтез\n"
+            "Предыдущий ответ: Процесс, при котором растения выделяют кислород."
+        )
+        with patch.object(llm, "_complete", return_value="Ответ") as complete:
+            llm.answer("а почему это важно?", history=history)
+        _, system, user = complete.call_args.args
+        self.assertIn("продолжение разговора", system)
+        self.assertIn("новые детали", system)
+        self.assertIn(history, user)
+        self.assertIn("Уточняющий вопрос: а почему это важно?", user)
+
+    def test_answer_with_context_and_history_keeps_rag_prompt(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "_complete", return_value="Ответ [1]") as complete:
+            llm.answer("а подробнее?", "[1] Источник", history="Прошлый ответ")
+        _, system, user = complete.call_args.args
+        self.assertIn("по источникам", system)
+        self.assertNotIn("продолжение разговора", system)
+        self.assertIn("Прошлый ответ", user)
+        self.assertIn("Вопрос: а подробнее?", user)
+
     def test_answer_short_uses_short_prompt(self) -> None:
         llm = make_llm()
         with patch.object(llm, "_complete", return_value="Ответ") as complete:

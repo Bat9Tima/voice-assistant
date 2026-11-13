@@ -160,13 +160,29 @@ def _day_label(index: int) -> str:
     return "Далее"
 
 
-def format_report(report: WeatherReport) -> str:
-    parts = [
+def format_current(report: WeatherReport) -> str:
+    return (
         f"{report.place.name}: сейчас {_temp(report.temperature)}, "
         f"ощущается как {_temp(report.feels_like)}, "
         f"{describe_code(report.code)}, ветер {_wind(report.wind)}, "
         f"влажность {report.humidity}%."
-    ]
+    )
+
+
+def format_day(report: WeatherReport, index: int) -> str:
+    """Один день прогноза: «Москва, завтра: от … до …, дождь»."""
+    if not 0 <= index < len(report.daily):
+        return format_report(report)
+    day = report.daily[index]
+    return (
+        f"{report.place.name}, {_day_label(index).lower()}: "
+        f"от {_temp(day.minimum)} до {_temp(day.maximum)}, "
+        f"{describe_code(day.code)}."
+    )
+
+
+def format_report(report: WeatherReport) -> str:
+    parts = [format_current(report)]
     for index, day in enumerate(report.daily[:3]):
         parts.append(
             f"{_day_label(index)}: от {_temp(day.minimum)} до {_temp(day.maximum)}, "
