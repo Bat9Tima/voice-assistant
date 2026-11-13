@@ -18,9 +18,8 @@ from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
-from .datetime_answer import is_datetime_question
 from .duck import AppVolumeDucker
-from .qa import QAService
+from .qa import QAService, Route
 from .server import ControlServer
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -610,16 +609,17 @@ class Assistant:
         self._command_queue.put(text)
         log.info("Текстовая команда из API: %s", text)
 
-    def _ack(self, text: str) -> None:
+    def _ack(self, text: str, route: Route | None = None) -> None:
         """Короткая фраза-подводка, чтобы ответ начинался сразу."""
         if not self.tts.enabled:
             return
         if split_agent_trigger(text, self.agent_triggers)[0]:
             category = "agent"
-        elif self.qa is not None and self.qa.handles(text):
-            if is_datetime_question(text):
+        elif route is not None and route.handled:
+            if route.kind == "datetime":
+                # Ответ мгновенный: подводка только добавит паузу.
                 return
-            category = self.qa.kind_of(text)
+            category = route.ack
         else:
             category = "ack"
         self.tts.phrase(category)
@@ -633,7 +633,10 @@ class Assistant:
         text = canonicalize(normalize(text))
         self.set_state("thinking")
         try:
-            self._ack(text)
+            qa = getattr(self, "qa", None)
+            # Разбираем фразу один раз: и для подводки, и для ответа.
+            route = qa.route(text) if qa is not None else None
+            self._ack(text, route)
             started = time.monotonic()
 
             triggered, request = split_agent_trigger(text, self.agent_triggers)
@@ -665,9 +668,8 @@ class Assistant:
                     self.tts.phrase("error")
                 return message
 
-            qa = getattr(self, "qa", None)
-            if qa is not None and qa.handles(text):
-                answer = qa.answer(text)
+            if qa is not None and route is not None and route.handled:
+                answer = qa.answer(text, route=route)
                 message = answer.short or answer.error or "Не смог ответить"
                 self.notify(message[:250])
                 if answer.ok:

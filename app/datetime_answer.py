@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 
 MONTHS = (
     "января",
@@ -80,6 +81,10 @@ _DATE_WORDS = {
     "на",
     "недели",
     "неделю",
+    "нынешнее",
+    "нынешний",
+    "нынешняя",
+    "нынче",
     "сегодня",
     "сегодняшнее",
     "сегодняшний",
@@ -113,8 +118,10 @@ _YEAR_WORDS = {
 
 
 @dataclass(frozen=True)
-class _Request:
-    kind: str  # time, date или year
+class DateTimeRequest:
+    """Разобранный вопрос о дате, времени или годе."""
+
+    kind: Literal["time", "date", "year"]
     shift: int = 0
 
 
@@ -138,28 +145,29 @@ def _shift(tokens: list[str]) -> int:
     return 0
 
 
-def _parse(text: str) -> _Request | None:
+def parse_datetime_question(text: str) -> DateTimeRequest | None:
+    """Разбирает вопрос о дате/времени. ``None`` — это не такой вопрос."""
     normalized = _normalized(text)
     if not normalized:
         return None
     if _TIME_RE.match(normalized):
-        return _Request("time")
+        return DateTimeRequest("time")
 
     tokens = normalized.split()
     token_set = set(tokens)
 
     if token_set & {"год", "году"} and token_set & _QUESTION_WORDS and token_set <= _YEAR_WORDS:
-        return _Request("year")
+        return DateTimeRequest("year")
 
     has_date_target = bool(token_set & {"число", "дата", "день", "дня"})
     if has_date_target and token_set & _QUESTION_WORDS and token_set <= _DATE_WORDS:
-        return _Request("date", _shift(tokens))
+        return DateTimeRequest("date", _shift(tokens))
     return None
 
 
 def is_datetime_question(text: str) -> bool:
     """Прямой вопрос о текущей дате, дне недели, годе или времени."""
-    return _parse(text) is not None
+    return parse_datetime_question(text) is not None
 
 
 def _plural(value: int, one: str, few: str, many: str) -> str:
@@ -191,10 +199,9 @@ def _date_text(current: datetime, shift: int) -> str:
     return f"{prefix} {target.day} {month} {target.year} года, {weekday}."
 
 
-def _answer(text: str, current: datetime) -> str | None:
-    request = _parse(text)
-    if request is None:
-        return None
+def answer_request(request: DateTimeRequest, now: datetime | None = None) -> str:
+    """Готовый ответ по уже разобранному вопросу."""
+    current = now or datetime.now().astimezone()
     if request.kind == "time":
         return _time_text(current)
     if request.kind == "year":
@@ -204,8 +211,10 @@ def _answer(text: str, current: datetime) -> str | None:
 
 def answer_datetime(text: str, now: datetime | None = None) -> str | None:
     """Русский ответ для озвучки или ``None``, если это не про дату/время."""
-    current = now or datetime.now().astimezone()
-    return _answer(text, current)
+    request = parse_datetime_question(text)
+    if request is None:
+        return None
+    return answer_request(request, now)
 
 
 def datetime_context(now: datetime | None = None) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from app.cloud_llm import LLMError
 from app.qa import (
@@ -413,18 +414,18 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa = make_service(enabled=False)
         self.assertFalse(qa.handles("какая погода"))
 
-    def test_kind_of_for_phrase_choice(self) -> None:
+    def test_route_ack_for_phrase_choice(self) -> None:
         qa = make_service()
-        self.assertEqual(qa.kind_of("какая погода завтра"), "weather")
-        self.assertEqual(qa.kind_of("новости"), "news")
-        self.assertEqual(qa.kind_of("расскажи про 1 новость подробнее"), "news")
-        self.assertEqual(qa.kind_of("что такое фотосинтез"), "wait")
+        self.assertEqual(qa.route("какая погода завтра").ack, "weather")
+        self.assertEqual(qa.route("новости").ack, "news")
+        self.assertEqual(qa.route("расскажи про 1 новость подробнее").ack, "news")
+        self.assertEqual(qa.route("что такое фотосинтез").ack, "wait")
 
     def test_datetime_kind_is_not_weather_followup(self) -> None:
         qa = make_service()
         qa.weather = FakeWeather(make_report())
         qa.answer("какая погода завтра")
-        self.assertEqual(qa.kind_of("какое завтра число"), "wait")
+        self.assertEqual(qa.route("какое завтра число").ack, "wait")
 
     def test_handles_datetime_questions(self) -> None:
         qa = make_service()
@@ -433,6 +434,42 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertTrue(qa.handles("какое сегодня число"))
         self.assertTrue(qa.handles("какой день недели"))
         self.assertTrue(qa.handles("какой сейчас год"))
+
+    def test_route_classifies_phrases(self) -> None:
+        qa = make_service()
+        cases = {
+            "который час": "datetime",
+            "какое завтра число": "datetime",
+            "какая погода": "weather",
+            "новости": "news",
+            "курс доллара": "search",
+            "что такое фотосинтез": "general",
+            "открой ютуб": "none",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(qa.route(text).kind, expected)
+
+    def test_disabled_service_routes_nothing(self) -> None:
+        qa = make_service(enabled=False)
+        self.assertEqual(qa.route("какая погода").kind, "none")
+
+    def test_ack_categories(self) -> None:
+        qa = make_service()
+        self.assertEqual(qa.route("какая погода").ack, "weather")
+        self.assertEqual(qa.route("новости").ack, "news")
+        self.assertEqual(qa.route("что такое фотосинтез").ack, "wait")
+
+    def test_answer_does_not_reparse_when_route_passed(self) -> None:
+        qa = make_service()
+        route = qa.route("какое завтра число")
+        with patch(
+            "app.qa.parse_datetime_question",
+            side_effect=AssertionError("фраза разобрана повторно"),
+        ):
+            answer = qa.answer("какое завтра число", route=route)
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "time")
 
     def test_datetime_answer_is_local(self) -> None:
         llm = FakeLLM()
@@ -986,7 +1023,7 @@ class QAServiceFollowUpTest(unittest.TestCase):
 
         self.assertTrue(qa.handles("а почему это важно?"))
         self.assertTrue(qa.handles("а подробнее?"))
-        self.assertEqual(qa.kind_of("а почему это важно?"), "wait")
+        self.assertEqual(qa.route("а почему это важно?").ack, "wait")
 
     def test_followup_expires(self) -> None:
         qa = make_service(llm=FakeLLM("Ответ."))
@@ -1008,7 +1045,7 @@ class QAServiceFollowUpTest(unittest.TestCase):
 
         self.assertTrue(answer.ok)
         self.assertEqual(answer.kind, "weather")
-        self.assertEqual(qa.kind_of("а завтра?"), "weather")
+        self.assertEqual(qa.route("а завтра?").ack, "weather")
         self.assertEqual(weather.cities, ["Москве", "Москва"])
         self.assertIn("Москва, завтра", answer.full)
         self.assertIn("от +1 °C до +4 °C", answer.full)

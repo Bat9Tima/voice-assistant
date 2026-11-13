@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from .cloud_llm import CloudLLM, LLMError
-from .datetime_answer import answer_datetime, is_datetime_question
+from .datetime_answer import DateTimeRequest, answer_request, parse_datetime_question
 from .search import SearchError, SearchResult, TavilySearch
 from .weather import (
     WeatherClient,
@@ -1184,6 +1184,29 @@ class DialogTurn:
     at: float = 0.0
 
 
+_ACK_CATEGORY = {"weather": "weather", "news": "news", "news_detail": "news"}
+
+
+@dataclass(frozen=True)
+class Route:
+    """Кто отвечает на фразу. Считается один раз на команду."""
+
+    kind: str  # none, datetime, weather, news, news_detail, followup, search, general
+    datetime_request: DateTimeRequest | None = None
+    followup: FollowUp | None = None
+
+    @property
+    def handled(self) -> bool:
+        return self.kind != "none"
+
+    @property
+    def ack(self) -> str:
+        """Категория фразы-подводки для озвучки."""
+        if self.kind == "followup" and self.followup is not None:
+            return "weather" if self.followup.kind == "weather" else "wait"
+        return _ACK_CATEGORY.get(self.kind, "wait")
+
+
 class QAService:
     """Вопросы: погода через Open-Meteo, свежее через Tavily, остальное — LLM."""
 
@@ -1213,72 +1236,73 @@ class QAService:
         self._last_weather_city = ""
 
     # ------------------------------------------------------------------ public
-    def handles(self, text: str) -> bool:
+    def route(self, text: str) -> Route:
+        """Разбирает фразу один раз: кто и как на неё ответит."""
         if not self.enabled:
-            return False
-        return (
-            is_datetime_question(text)
-            or is_weather_question(text)
-            or is_question(text)
-            or needs_search(text)
-            or self._is_news_followup(text)
-            or self._followup(text) is not None
-        )
-
-    def kind_of(self, text: str) -> str:
-        """Категория фразы-подводки: weather, news или wait."""
-        if is_datetime_question(text):
-            return "wait"
-        if is_weather_question(text):
-            return "weather"
-        if is_news_question(text) or self._is_news_followup(text):
-            return "news"
+            return Route("none")
+        request = parse_datetime_question(text)
+        if request is not None:
+            return Route("datetime", datetime_request=request)
+        if self._is_news_followup(text):
+            return Route("news_detail")
         followup = self._followup(text)
-        if followup is not None and followup.kind == "weather":
-            return "weather"
-        return "wait"
+        if followup is not None:
+            return Route("followup", followup=followup)
+        if is_weather_question(text):
+            return Route("weather")
+        if is_news_question(text):
+            return Route("news")
+        if needs_search(text):
+            return Route("search")
+        if is_question(text):
+            return Route("general")
+        return Route("none")
 
-    def answer(self, text: str) -> QAAnswer:
+    def handles(self, text: str) -> bool:
+        return self.route(text).handled
+
+    def answer(self, text: str, *, route: Route | None = None) -> QAAnswer:
         text = (text or "").strip()
         if not text:
             return self._error(text, "Пустой вопрос", "пустой вопрос")
 
-        if is_datetime_question(text):
-            local = answer_datetime(text)
-            if local is not None:
+        decision = route or self.route(text)
+
+        if decision.kind == "datetime":
+            request = decision.datetime_request or parse_datetime_question(text)
+            if request is not None:
+                local = answer_request(request)
                 return QAAnswer(True, text, local, local, "time")
 
         style = answer_style(text)
 
-        if self._is_news_followup(text):
+        if decision.kind == "news_detail":
             answer = self._answer_news_detail(text, style=style)
-            self._remember(text, answer)
+        elif decision.kind == "followup" and decision.followup is not None:
+            answer = self._answer_followup(text, decision.followup)
+            self._remember(text, answer, followup=decision.followup)
             return answer
+        elif decision.kind == "weather":
+            answer = self._answer_weather(text)
+        elif decision.kind in {"search", "news"}:
+            answer = self._answer_search_question(text, style=style, news=decision.kind == "news")
+        else:
+            answer = self._answer_general_question(text, style=style)
 
-        followup = self._followup(text)
-        if followup is not None:
-            answer = self._answer_followup(text, followup)
-            self._remember(text, answer, followup=followup)
-            return answer
-
-        answer = self._answer_question(text, style=style)
         self._remember(text, answer)
         return answer
 
-    def _answer_question(self, text: str, *, style: str) -> QAAnswer:
-        if is_weather_question(text):
-            return self._answer_weather(text)
+    def _answer_search_question(self, text: str, *, style: str, news: bool) -> QAAnswer:
+        if not self.search.available():
+            return self._error(
+                text,
+                "Нужен ключ Tavily",
+                "Для свежих данных добавьте qa.search.api_key в config.json.",
+                error="нет ключа Tavily",
+            )
+        return self._answer_search(text, news=news, style=style)
 
-        if needs_search(text):
-            if not self.search.available():
-                return self._error(
-                    text,
-                    "Нужен ключ Tavily",
-                    "Для свежих данных добавьте qa.search.api_key в config.json.",
-                    error="нет ключа Tavily",
-                )
-            return self._answer_search(text, news=is_news_question(text), style=style)
-
+    def _answer_general_question(self, text: str, *, style: str) -> QAAnswer:
         if self._llm_available():
             return self._answer_general(text, style=style)
 
@@ -1297,7 +1321,6 @@ class QAService:
             "weather": "Погода",
             "search": "Поиск в интернете",
             "general": "Модель",
-            "time": "Дата и время",
         }.get(answer.kind, "Ответ")
         body = "".join(
             f"<p>{html.escape(line.strip())}</p>"
@@ -1364,6 +1387,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 </html>"""
 
     def show(self, answer: QAAnswer) -> bool:
+        # Дату и время не открываем во вкладке: ответ короткий и уже озвучен.
         if self.browser is None or not answer.ok or answer.kind == "time":
             return False
         try:
