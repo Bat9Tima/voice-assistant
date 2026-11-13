@@ -157,6 +157,7 @@ DEFAULTS: dict[str, Any] = {
             "temperature": 0.2,
             "timeout_sec": 45,
             "context_ttl_sec": 180,
+            "search_fallback": True,
         },
     },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются

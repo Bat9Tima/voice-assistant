@@ -551,6 +551,34 @@ REFUSAL_RE = re.compile(
     r"не могу найти|не располагаю|неизвестно)\b"
 )
 
+# Ответы, после которых имеет смысл один раз сходить в поиск.
+# Модель может сформулировать отказ по-разному, поэтому маркеров несколько.
+UNCERTAIN_RE = re.compile(
+    r"(?i)(?:"
+    r"\bне знаю\b|"
+    r"\bне знает\b|"
+    r"\bне уверен(?:а|ы)?\b|"
+    r"\bне могу (?:ответить|сказать|подтвердить|вспомнить|найти)\b|"
+    r"\bне удалось (?:найти|установить|выяснить)\b|"
+    r"\bне располагаю\b|"
+    r"\bне имею (?:точных )?(?:сведений|данных|информации)\b|"
+    r"\bне обладаю (?:такой )?информацией\b|"
+    r"\bнет точных (?:сведений|данных|цифр)\b|"
+    r"\bнет (?:никакой )?информации\b|"
+    r"\bне хватает (?:информации|данных|сведений)\b|"
+    r"\bзатрудняюсь (?:ответить|сказать)\b|"
+    r"\bмне (?:это )?неизвестно\b|"
+    r"\bстоит поискать\b|"
+    r"\bпоищи(?:те)? в интернете\b|"
+    r"\bлучше (?:уточнить|проверить|посмотреть) в интернете\b"
+    r")"
+)
+
+
+def _uncertain_answer(text: str) -> bool:
+    """Модель прямо признала, что не знает ответа."""
+    return bool(UNCERTAIN_RE.search(text or ""))
+
 
 def _usable_answer(text: str) -> bool:
     """Отсекает ответы без ссылок, ответы из одних ссылок и отказы модели."""
@@ -1034,6 +1062,7 @@ class QAService:
         self.context_ttl = max(
             0.0, float(answer_cfg.get("context_ttl_sec") or 180)
         )
+        self.search_fallback = bool(answer_cfg.get("search_fallback", True))
         self.last_news: list[NewsItem] = []
         self._news_at = 0.0
         self._last_turn: DialogTurn | None = None
@@ -1292,6 +1321,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 text,
                 style=followup.style,
                 history=self._history_text(),
+                followup_query=self._followup_question(text),
             )
         if self.search.available():
             return self._answer_search(
@@ -1512,6 +1542,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         *,
         style: str = "normal",
         history: str = "",
+        followup_query: str = "",
     ) -> QAAnswer:
         if self.llm is None:
             return self._error(text, "Модель недоступна", "Модель недоступна.")
@@ -1522,7 +1553,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         elif style == "detailed":
             max_tokens = max(max_tokens, 600)
         try:
-            answer = self.llm.answer(
+            raw = self.llm.answer(
                 without_style(text) or text,
                 style=style,
                 max_tokens=max_tokens,
@@ -1537,15 +1568,54 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 f"Модель: {exc}",
                 error=str(exc),
             )
-        answer = _clean_answer(answer)
+        uncertain = _uncertain_answer(raw)
+        answer = _clean_answer(raw)
+        if uncertain:
+            found = self._search_fallback(
+                text,
+                style=style,
+                query=followup_query or without_style(text) or text,
+                history=history,
+            )
+            if found is not None:
+                return found
+            message = "Не знаю, стоит поискать в интернете."
+            return QAAnswer(True, text, message, message, "general")
         if not answer:
             return self._error(text, "Пустой ответ модели", "Модель вернула пустой ответ.")
         return QAAnswer(True, text, first_sentence(answer), answer, "general")
 
+    def _search_fallback(
+        self,
+        text: str,
+        *,
+        style: str,
+        query: str,
+        history: str = "",
+    ) -> QAAnswer | None:
+        """Один дополнительный поиск, если модель признала, что не знает."""
+        if not self.search_fallback or not self.search.available():
+            return None
+        log.info("Q&A: модель не уверена, ищу в интернете: %s", query)
+        found = self._answer_search(
+            text,
+            news=False,
+            style=style,
+            query=query,
+            history=history,
+        )
+        return found if found.ok else None
+
     def _answer_search(
-        self, text: str, *, news: bool, style: str = "normal"
+        self,
+        text: str,
+        *,
+        news: bool,
+        style: str = "normal",
+        query: str | None = None,
+        history: str = "",
     ) -> QAAnswer:
-        query = search_query(text, news=news)
+        search_text = search_query(query or text, news=news)
         if news and style == "short":
             effective = "news_short"
             source_limit, snippet_limit = 7, 500
@@ -1571,7 +1641,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             source_limit, snippet_limit = 4, 500
             max_tokens = self.max_tokens
         try:
-            results = self.search.search(query, news=news)
+            results = self.search.search(search_text, news=news)
         except SearchError as exc:
             return self._error(
                 text,
@@ -1624,6 +1694,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     max_tokens=max_tokens,
                     temperature=self.temperature,
                     timeout=llm_timeout,
+                    history=history,
                 )
             except LLMError as exc:
                 log.warning("Q&A: модель не ответила: %s", exc)

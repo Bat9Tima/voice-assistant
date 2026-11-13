@@ -85,8 +85,10 @@ class FakeLLM:
         text: str = "Ответ [1].",
         available: bool = True,
         error: Exception | None = None,
+        texts: list[str] | None = None,
     ) -> None:
         self.text = text
+        self.texts = list(texts or [])
         self.is_available = available
         self.error = error
         self.calls: list[tuple[str, str]] = []
@@ -100,6 +102,8 @@ class FakeLLM:
         self.kwargs.append(dict(kwargs))
         if self.error is not None:
             raise self.error
+        if self.texts:
+            return self.texts.pop(0)
         return self.text
 
 
@@ -1005,6 +1009,100 @@ class QAServiceFollowUpTest(unittest.TestCase):
         self.assertTrue(answer.ok)
         self.assertEqual(answer.kind, "weather")
         self.assertEqual(weather.cities, ["Москве", "Казани"])
+
+
+class QASearchFallbackTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.result = SearchResult(
+            "Fortuna 812 — Википедия",
+            "https://ru.wikipedia.org/wiki/Fortuna_812",
+            "FORTUNA 812 (Александр Салахутдинов) — российский рэпер "
+            "и продюсер из Санкт-Петербурга.",
+        )
+
+    def test_confident_answer_does_not_search(self) -> None:
+        qa = make_service(
+            llm=FakeLLM("Фотосинтез — это процесс получения энергии из света.")
+        )
+        qa.search = FakeSearch([self.result])
+
+        answer = qa.answer("что такое фотосинтез")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "general")
+        self.assertEqual(qa.search.calls, [])
+
+    def test_uncertain_answer_searches_once(self) -> None:
+        llm = FakeLLM(
+            texts=[
+                "Не знаю, стоит поискать в интернете.",
+                "[1] FORTUNA 812 — российский рэпер из Санкт-Петербурга.",
+            ]
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch([self.result])
+
+        answer = qa.answer("расскажи про фортуну 812")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "search")
+        self.assertIn("рэпер", answer.full)
+        self.assertEqual(qa.search.calls, [("расскажи про фортуну 812", False)])
+        self.assertEqual(len(llm.calls), 2)
+
+    def test_empty_search_keeps_honest_answer(self) -> None:
+        qa = make_service(llm=FakeLLM("Не знаю, стоит поискать в интернете."))
+        qa.search = FakeSearch([])
+
+        answer = qa.answer("расскажи про фортуну 812")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "general")
+        self.assertEqual(answer.full, "Не знаю, стоит поискать в интернете.")
+
+    def test_unavailable_search_keeps_honest_answer(self) -> None:
+        qa = make_service(llm=FakeLLM("Не знаю, стоит поискать в интернете."))
+        qa.search = FakeSearch([self.result], available=False)
+
+        answer = qa.answer("расскажи про фортуну 812")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "general")
+        self.assertEqual(qa.search.calls, [])
+
+    def test_disabled_fallback_does_not_search(self) -> None:
+        llm = FakeLLM("Не знаю, стоит поискать в интернете.")
+        qa = make_service(llm=llm)
+        qa.search_fallback = False
+        qa.search = FakeSearch([self.result])
+
+        answer = qa.answer("расскажи про фортуну 812")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "general")
+        self.assertEqual(qa.search.calls, [])
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_followup_search_uses_previous_question(self) -> None:
+        llm = FakeLLM(
+            texts=[
+                "Фотосинтез — это процесс, при котором растения получают энергию.",
+                "Не уверена, стоит поискать в интернете.",
+                "[1] Фотосинтез важен для кислорода.",
+            ]
+        )
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch([self.result])
+
+        qa.answer("что такое фотосинтез")
+        answer = qa.answer("а почему это важно?")
+
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "search")
+        self.assertEqual(
+            qa.search.calls,
+            [("что такое фотосинтез а почему это важно?", False)],
+        )
 
 
 class QARenderTest(unittest.TestCase):
