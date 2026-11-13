@@ -18,6 +18,7 @@ from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
+from .datetime_answer import is_datetime_question
 from .duck import AppVolumeDucker
 from .qa import QAService
 from .server import ControlServer
@@ -621,6 +622,8 @@ class Assistant:
         if split_agent_trigger(text, self.agent_triggers)[0]:
             category = "agent"
         elif self.qa is not None and self.qa.handles(text):
+            if is_datetime_question(text):
+                return
             category = self.qa.kind_of(text)
         else:
             category = "ack"

@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .datetime_answer import datetime_context
 from .prompts import (
     ANSWER_PROMPTS,
     ANSWER_SYSTEM,
@@ -117,10 +118,19 @@ class CloudLLM:
             if history:
                 user = f"{history}\n\n{user}"
         elif history:
-            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM) + FOLLOWUP_SUFFIX
+            system = (
+                ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
+                + FOLLOWUP_SUFFIX
+                + "\n"
+                + datetime_context()
+            )
             user = f"{history}\n\nУточняющий вопрос: {question}"
         else:
-            system = ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
+            system = (
+                ANSWER_PROMPTS.get(style, ANSWER_SYSTEM)
+                + "\n"
+                + datetime_context()
+            )
             user = question
 
         limit = max(int(max_tokens or 0), self.max_completion_tokens)

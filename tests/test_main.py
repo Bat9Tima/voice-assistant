@@ -248,6 +248,23 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         self.assertEqual(message, "Открываю YouTube")
         self.assertEqual(assistant.qa.handled, [])
 
+    def test_datetime_answer_skips_ack_phrase(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(
+            QAAnswer(
+                True,
+                "который час",
+                "Сейчас 20 часов 47 минут.",
+                "Сейчас 20 часов 47 минут.",
+                "time",
+            )
+        )
+        assistant.tts = FakeTTS(enabled=True)
+        message = assistant.run_text("который час")
+        self.assertEqual(message, "Сейчас 20 часов 47 минут.")
+        self.assertEqual(assistant.tts.phrases, [])
+        self.assertEqual(assistant.tts.said, ["Сейчас 20 часов 47 минут."])
+
 
 if __name__ == "__main__":
     unittest.main()

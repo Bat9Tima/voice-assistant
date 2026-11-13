@@ -101,6 +101,39 @@ class CloudLLMAnswerTest(unittest.TestCase):
         self.assertNotIn("источников", system)
         self.assertEqual(user, "что такое фотосинтез")
 
+    def test_answer_without_context_includes_datetime(self) -> None:
+        llm = make_llm()
+        now = "Сегодня 13 ноября 2026 года, пятница. Сейчас 20:47."
+        with (
+            patch("app.cloud_llm.datetime_context", return_value=now),
+            patch.object(llm, "_complete", return_value="Ответ") as complete,
+        ):
+            llm.answer("что такое фотосинтез")
+        _, system, _ = complete.call_args.args
+        self.assertIn(now, system)
+
+    def test_answer_with_history_includes_datetime(self) -> None:
+        llm = make_llm()
+        now = "Сегодня 13 ноября 2026 года, пятница. Сейчас 20:47."
+        with (
+            patch("app.cloud_llm.datetime_context", return_value=now),
+            patch.object(llm, "_complete", return_value="Ответ") as complete,
+        ):
+            llm.answer("а почему?", history="Прошлый ответ")
+        _, system, _ = complete.call_args.args
+        self.assertIn(now, system)
+
+    def test_answer_with_context_has_no_datetime(self) -> None:
+        llm = make_llm()
+        now = "Сегодня 13 ноября 2026 года, пятница. Сейчас 20:47."
+        with (
+            patch("app.cloud_llm.datetime_context", return_value=now),
+            patch.object(llm, "_complete", return_value="Ответ [1]") as complete,
+        ):
+            llm.answer("вопрос", "[1] Источник")
+        _, system, _ = complete.call_args.args
+        self.assertNotIn(now, system)
+
     def test_answer_with_context_uses_rag_prompt(self) -> None:
         llm = make_llm()
         with patch.object(llm, "_complete", return_value="Ответ [1]") as complete:

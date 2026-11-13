@@ -424,6 +424,33 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(qa.kind_of("расскажи про 1 новость подробнее"), "news")
         self.assertEqual(qa.kind_of("что такое фотосинтез"), "wait")
 
+    def test_datetime_kind_is_not_weather_followup(self) -> None:
+        qa = make_service()
+        qa.weather = FakeWeather(make_report())
+        qa.answer("какая погода завтра")
+        self.assertEqual(qa.kind_of("какое завтра число"), "wait")
+
+    def test_handles_datetime_questions(self) -> None:
+        qa = make_service()
+        self.assertTrue(qa.handles("который час"))
+        self.assertTrue(qa.handles("сколько сейчас времени"))
+        self.assertTrue(qa.handles("какое сегодня число"))
+        self.assertTrue(qa.handles("какой день недели"))
+        self.assertTrue(qa.handles("какой сейчас год"))
+
+    def test_datetime_answer_is_local(self) -> None:
+        llm = FakeLLM()
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(available=False)
+        answer = qa.answer("который час")
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "time")
+        self.assertTrue(answer.short.startswith("Сейчас "))
+        self.assertEqual(answer.full, answer.short)
+        self.assertEqual(llm.calls, [])
+        self.assertEqual(qa.search.calls, [])
+        self.assertIsNone(qa._last_turn)
+
     def test_weather_uses_default_city(self) -> None:
         weather = FakeWeather(make_report())
         qa = make_service()
@@ -1176,6 +1203,13 @@ class QARenderTest(unittest.TestCase):
         self.assertEqual(browser.calls[0][0], "render")
         self.assertFalse(qa.show(QAAnswer(False, "q", "s", "f", "error")))
         self.assertEqual(len(browser.calls), 1)
+
+    def test_show_skips_datetime_answers(self) -> None:
+        browser = FakeBrowser()
+        qa = make_service(browser=browser)
+        answer = QAAnswer(True, "который час", "Сейчас 20 часов.", "Сейчас 20 часов.", "time")
+        self.assertFalse(qa.show(answer))
+        self.assertEqual(browser.calls, [])
 
 
 if __name__ == "__main__":

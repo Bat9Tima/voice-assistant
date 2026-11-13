@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Any
 
 from .cloud_llm import CloudLLM, LLMError
+from .datetime_answer import answer_datetime, is_datetime_question
 from .search import SearchError, SearchResult, TavilySearch
 from .weather import (
     WeatherClient,
@@ -1243,7 +1244,8 @@ class QAService:
         if not self.enabled:
             return False
         return (
-            is_weather_question(text)
+            is_datetime_question(text)
+            or is_weather_question(text)
             or is_question(text)
             or needs_search(text)
             or self._is_news_followup(text)
@@ -1252,6 +1254,8 @@ class QAService:
 
     def kind_of(self, text: str) -> str:
         """Категория фразы-подводки: weather, news или wait."""
+        if is_datetime_question(text):
+            return "wait"
         if is_weather_question(text):
             return "weather"
         if is_news_question(text) or self._is_news_followup(text):
@@ -1265,6 +1269,11 @@ class QAService:
         text = (text or "").strip()
         if not text:
             return self._error(text, "Пустой вопрос", "пустой вопрос")
+
+        if is_datetime_question(text):
+            local = answer_datetime(text)
+            if local is not None:
+                return QAAnswer(True, text, local, local, "time")
 
         style = answer_style(text)
 
@@ -1317,6 +1326,7 @@ class QAService:
             "weather": "Погода",
             "search": "Поиск в интернете",
             "general": "Модель",
+            "time": "Дата и время",
         }.get(answer.kind, "Ответ")
         body = "".join(
             f"<p>{html.escape(line.strip())}</p>"
@@ -1383,7 +1393,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 </html>"""
 
     def show(self, answer: QAAnswer) -> bool:
-        if self.browser is None or not answer.ok:
+        if self.browser is None or not answer.ok or answer.kind == "time":
             return False
         try:
             self.browser.call("render", html=self.render_html(answer))
