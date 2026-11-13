@@ -1311,8 +1311,9 @@ class QAService:
 
         return self._error(
             text,
-            "Не могу ответить",
+            "Модель недоступна.",
             "Модель недоступна, ключ поиска не задан.",
+            kind="no_model",
             error="нет доступных источников ответа",
         )
 
@@ -1388,7 +1389,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
 
     def show(self, answer: QAAnswer) -> bool:
         # Дату и время не открываем во вкладке: ответ короткий и уже озвучен.
-        if self.browser is None or not answer.ok or answer.kind == "time":
+        # Пустую выдачу показывать нечего.
+        if self.browser is None or not answer.ok or answer.kind in {"time", "empty"}:
             return False
         try:
             self.browser.call("render", html=self.render_html(answer))
@@ -1502,8 +1504,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             )
         return self._error(
             text,
-            "Не могу ответить",
+            "Модель недоступна.",
             "Модель недоступна, ключ поиска не задан.",
+            kind="no_model",
             error="нет доступных источников ответа",
         )
 
@@ -1532,7 +1535,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         *,
         followup: FollowUp | None = None,
     ) -> None:
-        if not answer.ok or self.context_ttl <= 0:
+        if not answer.ok or answer.kind == "empty" or self.context_ttl <= 0:
             return
         question = without_style(text) or text
         root = ""
@@ -1666,7 +1669,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         except WeatherError as exc:
             return self._error(
                 text,
-                f"Не смог узнать погоду: {exc}",
+                "Не смог узнать погоду.",
                 f"Не смог узнать погоду: {exc}",
                 kind="weather",
                 error=str(exc),
@@ -1702,7 +1705,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         followup_query: str = "",
     ) -> QAAnswer:
         if self.llm is None:
-            return self._error(text, "Модель недоступна", "Модель недоступна.")
+            return self._error(text, "Модель недоступна.", "Модель недоступна.", kind="no_model")
         style = style if style in {"short", "detailed"} else "normal"
         max_tokens = self.max_tokens
         if style == "short":
@@ -1761,7 +1764,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             query=query,
             history=history,
         )
-        return found if found.ok else None
+        # Пустая выдача не лучше честного «не знаю» самой модели.
+        return found if found.ok and found.kind != "empty" else None
 
     def _answer_search(
         self,
@@ -1802,18 +1806,18 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         except SearchError as exc:
             return self._error(
                 text,
+                "Сервис не отвечает.",
                 f"Поиск не удался: {exc}",
-                f"Поиск не удался: {exc}",
-                kind="search",
+                kind="error",
                 error=str(exc),
             )
         if not results:
-            return self._error(
+            return QAAnswer(
+                True,
                 text,
-                "Ничего не нашёл",
-                "По запросу не нашлось результатов.",
-                kind="search",
-                error="пустая выдача",
+                "Ничего не нашлось.",
+                f"По запросу «{search_text}» ничего не нашлось.",
+                "empty",
             )
         if news:
             fresh = [

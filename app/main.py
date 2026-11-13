@@ -677,7 +677,11 @@ class Assistant:
                     self.tts.say(message)
                 else:
                     beep(320, 120)
-                    self.tts.phrase("error")
+                    if answer.kind == "no_model":
+                        # Причина понятна и без сети: озвучиваем её, а не общую фразу.
+                        self.tts.say(message)
+                    else:
+                        self.tts.phrase("error")
                 return message
 
             plan = None
