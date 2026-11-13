@@ -951,7 +951,20 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.search = FakeSearch(error=SearchError("boom"))
         answer = qa.answer("какие новости")
         self.assertFalse(answer.ok)
-        self.assertIn("Поиск не удался", answer.short)
+        self.assertEqual(answer.kind, "error")
+        self.assertEqual(answer.short, "Сервис не отвечает.")
+        self.assertIn("Поиск не удался: boom", answer.full)
+
+    def test_empty_search_is_not_an_error(self) -> None:
+        qa = make_service(llm=FakeLLM())
+        qa.search = FakeSearch(results=[])
+        answer = qa.answer("какие новости")
+        self.assertTrue(answer.ok)
+        self.assertEqual(answer.kind, "empty")
+        self.assertEqual(answer.short, "Ничего не нашлось.")
+        self.assertIn("ничего не нашлось", answer.full)
+        self.assertEqual(answer.sources, [])
+        self.assertIsNone(qa._last_turn)
 
     def test_general_answer(self) -> None:
         qa = make_service(llm=FakeLLM("Фотосинтез — это процесс."))
@@ -982,12 +995,13 @@ class QAServiceRoutingTest(unittest.TestCase):
         answer = qa.answer("расскажи про фотосинтез")
         self.assertFalse(answer.ok)
 
-    def test_no_backend(self) -> None:
+    def test_no_model_is_reported_separately(self) -> None:
         qa = make_service(llm=FakeLLM(available=False))
         qa.search = FakeSearch(available=False)
         answer = qa.answer("расскажи про фотосинтез")
         self.assertFalse(answer.ok)
-        self.assertIn("Не могу ответить", answer.short)
+        self.assertEqual(answer.kind, "no_model")
+        self.assertEqual(answer.short, "Модель недоступна.")
 
 
 class QAServiceFollowUpTest(unittest.TestCase):
@@ -1198,6 +1212,13 @@ class QARenderTest(unittest.TestCase):
         browser = FakeBrowser()
         qa = make_service(browser=browser)
         answer = QAAnswer(True, "который час", "Сейчас 20 часов.", "Сейчас 20 часов.", "time")
+        self.assertFalse(qa.show(answer))
+        self.assertEqual(browser.calls, [])
+
+    def test_show_skips_empty_answers(self) -> None:
+        browser = FakeBrowser()
+        qa = make_service(browser=browser)
+        answer = QAAnswer(True, "курс доллара", "Ничего не нашлось.", "Нет данных.", "empty")
         self.assertFalse(qa.show(answer))
         self.assertEqual(browser.calls, [])
 

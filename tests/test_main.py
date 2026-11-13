@@ -232,6 +232,27 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         self.assertEqual(message, "Нужен ключ")
         beep.assert_called_once_with(320, 120)
         self.assertEqual(assistant.qa.shown, [])
+        self.assertEqual(assistant.tts.phrases, ["error"])
+        self.assertEqual(assistant.tts.said, [])
+
+    def test_no_model_reason_is_spoken(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(
+            QAAnswer(
+                False,
+                "вопрос",
+                "Модель недоступна.",
+                "Модель недоступна.",
+                "no_model",
+            )
+        )
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("что такое фотосинтез")
+        self.assertEqual(message, "Модель недоступна.")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.tts.said, ["Модель недоступна."])
+        self.assertEqual(assistant.tts.phrases, [])
+        self.assertEqual(assistant.qa.shown, [])
 
     def test_router_command_does_not_use_qa(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
