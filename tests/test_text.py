@@ -102,6 +102,31 @@ class TextTest(unittest.TestCase):
         )
         self.assertEqual(strip_wake_word("пять хэллоуина стоп", aliases), "стоп")
 
+    def test_strips_latin_wake_word_from_deepgram(self) -> None:
+        # Deepgram в режиме ru транскрибирует «хей луна» латиницей:
+        # Helluna, Hallower, Helluva. Плюс редкое «Белуда» от GigaAM.
+        aliases = ["хей луна", "эй луна"]
+        self.assertEqual(
+            strip_wake_word("Helluna, закрой вкладку.", aliases),
+            "закрой вкладку",
+        )
+        self.assertEqual(
+            strip_wake_word("Hallower. Включи на SoundCloud Imagine Dragons Bones.", aliases),
+            "включи на soundcloud imagine dragons bones",
+        )
+        self.assertEqual(
+            strip_wake_word("Helluna. Стоп. Сейчас.", aliases),
+            "стоп сейчас",
+        )
+        self.assertEqual(strip_wake_word("Helluva, стоп", aliases), "стоп")
+        self.assertEqual(strip_wake_word("Белуда. Стоп.", aliases), "стоп")
+
+    def test_keeps_english_greeting_without_luna(self) -> None:
+        self.assertEqual(
+            strip_wake_word("hello включи музыку", ["хей луна", "эй луна"]),
+            "hello включи музыку",
+        )
+
     def test_keeps_command_with_wake_like_word(self) -> None:
         aliases = ["хей луна", "эй луна"]
         self.assertEqual(
