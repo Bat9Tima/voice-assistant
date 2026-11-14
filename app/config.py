@@ -88,6 +88,19 @@ DEFAULTS: dict[str, Any] = {
         "english_beam_size": 1,
         "english_crop_beam_size": 5,
         "english_locator": "vosk",
+        # Облачное batch-распознавание Deepgram через ProxyAPI. Ключ лучше
+        # держать в переменной окружения, а не в config.json.
+        "deepgram": {
+            "base_url": "https://api.proxyapi.ru/v1/audio/transcriptions",
+            "model": "deepgram/nova-3",
+            "language": "ru",
+            "fallback_language": "multi",
+            "language_hints": ["ru", "en"],
+            "api_key": "",
+            "api_key_env": "PROXYAPI_KEY",
+            "timeout_sec": 15,
+            "fallback": True,
+        },
     },
     "browser": {
         "chrome_path": r"C:\Program Files\Google\Chrome\Application\chrome.exe",

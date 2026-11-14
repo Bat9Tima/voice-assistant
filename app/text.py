@@ -568,20 +568,47 @@ _WAKE_NOISE_WORDS = {
 # широкого допуска в начале фразы: обычные команды («включи», «открой»)
 # под него не попадают.
 _WAKE_ONSETS = ("хей", "хэй", "хай", "хэ", "хе", "ха", "эй", "ей")
+# Deepgram в режиме ru часто транскрибирует wake-фразу латиницей:
+# «Helluna», «Hallower», «Helluva». Эти варианты не всегда проходят по
+# расстоянию Левенштейна, поэтому держим их отдельным списком.
+_LUNA_TARGETS = {"хейлуна", "эйлуна"}
+_LUNA_CYRILLIC_VARIANTS = {"белуда"}
+_LUNA_LATIN_VARIANTS = {
+    "helluna",
+    "heluna",
+    "hallower",
+    "helluva",
+    "heyluna",
+    "hayluna",
+    "haluna",
+    "aluna",
+    "eluna",
+}
 
 
 def _wake_distance_limit(window: str, target: str, base: int) -> int:
     """Насколько сильно услышанное может отличаться от алиаса.
 
     GigaAM слышит «хей луна» как «хэллоуин», «хэллона» или «хаймена».
-    Для похожего начала допускаем больше ошибок, но ограничиваем длину,
-    чтобы не принять за wake-фразу обычную команду.
+    Deepgram может выдать «Helluna» или «Hallower». Для похожего начала
+    допускаем больше ошибок, но ограничиваем длину, чтобы не принять за
+    wake-фразу обычную команду.
     """
     if not window.startswith(_WAKE_ONSETS):
         return base
     if not 5 <= len(window) <= len(target) + 2:
         return base
     return max(base, 5)
+
+
+def _wake_targets(targets: list[str]) -> list[str]:
+    """Дополняет алиасы вариантами, которые приходят от STT."""
+    result = list(targets)
+    result.extend(translit(target) for target in targets)
+    if _LUNA_TARGETS.intersection(targets):
+        result.extend(sorted(_LUNA_CYRILLIC_VARIANTS))
+        result.extend(sorted(_LUNA_LATIN_VARIANTS))
+    return list(dict.fromkeys(result))
 
 
 def _wake_prefix_size(text: str, aliases: list[str], max_distance: int = 2) -> int:
@@ -597,6 +624,7 @@ def _wake_prefix_size(text: str, aliases: list[str], max_distance: int = 2) -> i
     targets = [target for target in targets if target]
     if not targets:
         return 0
+    targets = _wake_targets(targets)
     best_size = 0
     best_distance: int | None = None
     for size in (1, 2, 3):
