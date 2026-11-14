@@ -485,6 +485,22 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(qa.search.calls, [])
         self.assertIsNone(qa.context.turn())
 
+    def test_date_arithmetic_is_local(self) -> None:
+        llm = FakeLLM()
+        qa = make_service(llm=llm)
+        route = qa.route("сколько дней до нового года")
+        self.assertEqual(route.kind, "datetime")
+        answer = qa.answer("сколько дней до нового года", route=route)
+        self.assertTrue(answer.ok)
+        self.assertTrue(answer.short.startswith("До нового года "))
+        self.assertEqual(answer.full, answer.short)
+        self.assertEqual(llm.calls, [])
+
+    def test_relative_date_does_not_hijack_weather(self) -> None:
+        qa = make_service()
+        self.assertEqual(qa.route("какая погода через 10 дней").kind, "weather")
+        self.assertEqual(qa.route("через 10 дней").kind, "datetime")
+
     def test_weather_uses_default_city(self) -> None:
         weather = FakeWeather(make_report())
         qa = make_service()
