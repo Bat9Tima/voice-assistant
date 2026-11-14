@@ -54,7 +54,17 @@
     "english_compute_type": "int8",
     "english_beam_size": 1,
     "english_crop_beam_size": 5,
-    "english_locator": "vosk"
+    "english_locator": "vosk",
+    "deepgram": {
+      "base_url": "https://api.proxyapi.ru/v1/audio/transcriptions",
+      "model": "deepgram/nova-3",
+      "language": "multi",
+      "language_hints": ["ru", "en"],
+      "api_key": "",
+      "api_key_env": "PROXYAPI_KEY",
+      "timeout_sec": 15,
+      "fallback": true
+    }
   },
 
   "browser": {

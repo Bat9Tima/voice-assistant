@@ -572,6 +572,42 @@ python tools/generate_phrases.py --only done --takes 6
 
 Учтите, что этот режим заметно нагружает CPU и увеличивает задержку.
 
+### Deepgram Nova-3 (batch)
+
+Вместо локального GigaAM можно включить облачное batch-распознавание
+Deepgram Nova-3 через ProxyAPI. Оно лучше сохраняет английские названия
+в смешанной речи, но требует сети и добавляет около 1–2 секунд задержки.
+
+```json
+"stt": {
+  "engine": "deepgram",
+  "deepgram": {
+    "model": "deepgram/nova-3",
+    "language": "multi",
+    "language_hints": ["ru", "en"],
+    "api_key_env": "PROXYAPI_KEY",
+    "fallback": true
+  }
+}
+```
+
+Ключ ProxyAPI задайте в переменной окружения, а не в `config.json`:
+
+```powershell
+setx PROXYAPI_KEY "sk-..."
+```
+
+`language: "multi"` обязателен: без него прокси возвращает пустой текст на
+русской речи. `language_hints` — только подсказка, язык определяется
+автоматически. При ошибке сети, таймауте или пустом ответе ассистент
+переходит на GigaAM (`fallback: true`), поэтому команды продолжают
+работать офлайн.
+
+Ограничения прокси: только pre-recorded `/v1/audio/transcriptions`, без
+WebSocket-стриминга; в ответе нет слов, таймкодов и языка фрагментов.
+Стоимость — 0,58 ₽ за минуту аудио. Для свободного разговора нужен
+отдельный streaming-контур.
+
 Сайт можно открыть по домену: «открой reddit.com», «открой soundcloud.com».
 
 Если название сайта неизвестно, команда «открой …» покажет выдачу Google.
@@ -630,7 +666,7 @@ python tools/generate_phrases.py --only done --takes 6
 | `audio.duck_level` | до какой громкости приглушать: `0.15` — 15% |
 | `audio.duck_processes` | какие процессы приглушать: `["chrome.exe"]` |
 | `audio.save_last_command` | сохранять последнюю команду в `state\last-command.wav` для разбора ошибок |
-| `stt.engine` | `gigaam` (по умолчанию) или `whisper` как единственный движок |
+| `stt.engine` | `gigaam` (по умолчанию), `whisper` или `deepgram` как единственный движок |
 | `stt.num_threads` | потоков CPU для GigaAM; 2–4 обычно быстрее, чем 8–12 (модель упирается в память) |
 | `stt.tail_padding_sec` | тишина в конце фразы, помогает модели «договорить» |
 | `stt.parallel_english` | включить английские слова в запросах (`false` по умолчанию) |
@@ -639,6 +675,14 @@ python tools/generate_phrases.py --only done --takes 6
 | `stt.english_crop_beam_size` | качество распознавания короткого английского фрагмента (5) |
 | `stt.english_locator` | `vosk` — быстрый поиск английских участков; `off` — без него |
 | `stt.model` | модель, если `engine` = `whisper` |
+| `stt.deepgram.base_url` | batch-эндпоинт Deepgram через ProxyAPI (`https://api.proxyapi.ru/v1/audio/transcriptions`) |
+| `stt.deepgram.model` | модель Deepgram (`deepgram/nova-3`) |
+| `stt.deepgram.language` | язык распознавания; `multi` обязателен для смеси RU/EN |
+| `stt.deepgram.language_hints` | подсказки языков (`["ru", "en"]`); не заменяют `multi` |
+| `stt.deepgram.api_key` | ключ ProxyAPI; пусто — берётся из переменной окружения |
+| `stt.deepgram.api_key_env` | имя переменной с ключом (`PROXYAPI_KEY`) |
+| `stt.deepgram.timeout_sec` | таймаут запроса к Deepgram (15) |
+| `stt.deepgram.fallback` | при ошибке или пустом ответе переходить на GigaAM (`true`) |
 | `browser.chrome_path` | путь к Chrome |
 | `browser.port` | CDP-порт (по умолчанию 9222) |
 | `opencode.agent` | имя агента (`voice`) |
