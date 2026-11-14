@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from app.cloud_llm import LLMError
+from app.dialog import DialogContext
 from app.qa import (
     QAAnswer,
     QAService,
@@ -143,7 +144,7 @@ def make_three_day_report(place: str = "Москва") -> WeatherReport:
     )
 
 
-def make_service(llm=None, browser=None, enabled: bool = True) -> QAService:
+def make_service(llm=None, browser=None, enabled: bool = True, context=None) -> QAService:
     cfg = {
         "qa": {
             "enabled": enabled,
@@ -151,7 +152,7 @@ def make_service(llm=None, browser=None, enabled: bool = True) -> QAService:
             "search": {"api_key": ""},
         }
     }
-    return QAService(cfg, llm, browser)
+    return QAService(cfg, llm, browser, context)
 
 
 class QuestionDetectionTest(unittest.TestCase):
@@ -482,7 +483,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(answer.full, answer.short)
         self.assertEqual(llm.calls, [])
         self.assertEqual(qa.search.calls, [])
-        self.assertIsNone(qa._last_turn)
+        self.assertIsNone(qa.context.turn())
 
     def test_weather_uses_default_city(self) -> None:
         weather = FakeWeather(make_report())
@@ -637,8 +638,8 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("новости кратко")
         self.assertTrue(answer.ok)
-        self.assertEqual([item.index for item in qa.last_news], [1, 2])
-        self.assertEqual(qa.last_news[0].url, "https://example.com/export")
+        self.assertEqual([item.index for item in qa.context.news()], [1, 2])
+        self.assertEqual(qa.context.news()[0].url, "https://example.com/export")
         self.assertIn("[2] За ночь", answer.full)
 
     def test_news_digest_skips_stale_items(self) -> None:
@@ -655,10 +656,10 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("новости кратко")
         self.assertEqual(
-            [item.fact for item in qa.last_news],
+            [item.fact for item in qa.context.news()],
             ["За ночь над Россией сбили 71 беспилотник."],
         )
-        self.assertEqual(qa.last_news[0].index, 1)
+        self.assertEqual(qa.context.news()[0].index, 1)
         self.assertNotIn("2020", answer.full)
         self.assertIn("[1] За ночь", answer.full)
 
@@ -680,7 +681,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         )
         answer = qa.answer("новости кратко")
         self.assertEqual(
-            [item.fact for item in qa.last_news],
+            [item.fact for item in qa.context.news()],
             ["За ночь над Россией сбили 71 беспилотник."],
         )
         self.assertNotIn("РИА Новости", answer.full)
@@ -701,7 +702,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         context = llm.calls[-1][1]
         self.assertNotIn("Выпуск за 10 ноября 2026", context)
         self.assertIn("Экспорт легковых автомобилей", context)
-        self.assertEqual(qa.last_news[0].title, "Экспорт вырос на 62%.")
+        self.assertEqual(qa.context.news()[0].title, "Экспорт вырос на 62%.")
 
     def test_news_followup_by_number_uses_article(self) -> None:
         llm = FakeLLM(
@@ -964,7 +965,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertEqual(answer.short, "Ничего не нашлось.")
         self.assertIn("ничего не нашлось", answer.full)
         self.assertEqual(answer.sources, [])
-        self.assertIsNone(qa._last_turn)
+        self.assertIsNone(qa.context.turn())
 
     def test_general_answer(self) -> None:
         qa = make_service(llm=FakeLLM("Фотосинтез — это процесс."))
@@ -1002,6 +1003,38 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertFalse(answer.ok)
         self.assertEqual(answer.kind, "no_model")
         self.assertEqual(answer.short, "Модель недоступна.")
+
+
+class QAServiceContextTest(unittest.TestCase):
+    def test_ttls_come_from_config(self) -> None:
+        qa = QAService({"qa": {"answer": {"context_ttl_sec": 12, "news_ttl_sec": 34}}})
+        self.assertEqual(qa.context.turn_ttl, 12)
+        self.assertEqual(qa.context.news_ttl, 34)
+
+    def test_negative_context_ttl_is_clamped_to_zero(self) -> None:
+        qa = QAService({"qa": {"answer": {"context_ttl_sec": -5}}})
+        self.assertEqual(qa.context.turn_ttl, 0)
+
+    def test_injected_context_is_used(self) -> None:
+        context = DialogContext(turn_ttl_sec=60)
+        qa = make_service(llm=FakeLLM("Ответ."), context=context)
+
+        qa.answer("что такое фотосинтез")
+
+        turn = context.turn()
+        self.assertIsNotNone(turn)
+        self.assertEqual(turn.question, "что такое фотосинтез")
+
+    def test_weather_city_is_kept_only_after_success(self) -> None:
+        qa = make_service()
+        qa.weather = FakeWeather(make_report())
+
+        qa.answer("какая погода")
+        self.assertEqual(qa.context.weather_city, "Новосибирск")
+
+        qa.weather = FakeWeather(error=WeatherError("offline"))
+        qa.answer("какая погода")
+        self.assertEqual(qa.context.weather_city, "Новосибирск")
 
 
 class QAServiceFollowUpTest(unittest.TestCase):
@@ -1042,12 +1075,12 @@ class QAServiceFollowUpTest(unittest.TestCase):
     def test_followup_expires(self) -> None:
         qa = make_service(llm=FakeLLM("Ответ."))
         qa.answer("что такое фотосинтез")
-        turn = qa._last_turn
+        turn = qa.context.turn()
         self.assertIsNotNone(turn)
-        turn.at -= qa.context_ttl + 1
+        turn.at -= qa.context.turn_ttl + 1
 
         self.assertIsNone(qa._followup("а почему это важно?"))
-        self.assertIsNone(qa._last_turn)
+        self.assertIsNone(qa.context.turn())
 
     def test_weather_followup_reuses_city_and_day(self) -> None:
         weather = FakeWeather(make_three_day_report())

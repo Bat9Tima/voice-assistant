@@ -506,7 +506,7 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertTrue(search.calls[0][1])
         self.assertEqual(assistant.tts.phrases, ["news"])
         self.assertEqual(len(browser.calls), 1)
-        self.assertTrue(assistant.qa.last_news)
+        self.assertTrue(assistant.qa.context.news())
 
     def test_empty_search_is_not_an_error(self) -> None:
         browser = FakeBrowser()
@@ -593,7 +593,7 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(search.calls, [])
         self.assertEqual(weather.cities, [])
         self.assertEqual(browser.calls, [])
-        self.assertIsNone(assistant.qa._last_turn)
+        self.assertIsNone(assistant.qa.context.turn())
 
     def test_browser_command_bypasses_qa(self) -> None:
         router = FakeRouter(CommandResult(True, True, "Открываю YouTube"))
