@@ -616,6 +616,7 @@ class QAServiceRoutingTest(unittest.TestCase):
         qa.answer("новости кратко")
         self.assertEqual(llm.kwargs[0]["style"], "news_short")
         self.assertEqual(llm.kwargs[0]["max_tokens"], 800)
+        self.assertLessEqual(llm.kwargs[0]["timeout"], 30)
         self.assertEqual(
             qa.search.calls,
             [("главные новости России сегодня", True)],
@@ -758,6 +759,7 @@ class QAServiceRoutingTest(unittest.TestCase):
             ["Экспорт легковых автомобилей вырос на 62%."],
         )
         self.assertEqual(llm.kwargs[-1]["style"], "article")
+        self.assertLessEqual(llm.kwargs[-1]["timeout"], 30)
         self.assertIn("Поставки легковых автомобилей", llm.calls[-1][1])
         self.assertIn("Подробности", answer.full)
 

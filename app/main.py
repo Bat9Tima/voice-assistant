@@ -673,8 +673,17 @@ class Assistant:
                 message = answer.short or answer.error or "Не смог ответить"
                 self.notify(message[:250])
                 if answer.ok:
-                    qa.show(answer)
+                    # Вкладка с полным текстом не должна задерживать звук:
+                    # Playwright открывает её, пока TTS уже говорит.
+                    render = threading.Thread(
+                        target=qa.show,
+                        args=(answer,),
+                        name="qa-render",
+                        daemon=True,
+                    )
+                    render.start()
                     self.tts.say(message)
+                    render.join(timeout=2)
                 else:
                     beep(320, 120)
                     if answer.kind == "no_model":

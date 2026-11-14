@@ -28,6 +28,10 @@ from .weather import (
 
 log = logging.getLogger(__name__)
 
+# Новостная сводка генерируется дольше обычного ответа, но 90 секунд —
+# это не ожидание, а зависание. 30 секунд хватает с запасом.
+NEWS_LLM_TIMEOUT_SEC = 30.0
+
 QUESTION_STARTS = {
     "что",
     "кто",
@@ -1571,7 +1575,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     style="article",
                     max_tokens=max_tokens,
                     temperature=self.temperature,
-                    timeout=max(self.timeout, 90),
+                    timeout=min(self.timeout, NEWS_LLM_TIMEOUT_SEC),
                 )
             except LLMError as exc:
                 log.warning("Q&A: модель не ответила по статье: %s", exc)
@@ -1793,7 +1797,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                     continue
                 blocks.append(f"[{index}] {_context_title(result)}\n{result.url}\n{snippet}")
             context = "\n\n".join(blocks)
-            llm_timeout = max(self.timeout, 90) if news else self.timeout
+            llm_timeout = min(self.timeout, NEWS_LLM_TIMEOUT_SEC) if news else self.timeout
             try:
                 answer = self.llm.answer(
                     without_style(text) or text,

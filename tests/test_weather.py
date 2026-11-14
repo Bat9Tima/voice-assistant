@@ -10,6 +10,7 @@ from app.weather import (
     WeatherClient,
     WeatherError,
     WeatherReport,
+    _looks_inflected,
     city_candidates,
     describe_code,
     format_report,
@@ -73,6 +74,12 @@ class CityCandidatesTest(unittest.TestCase):
 
     def test_empty(self) -> None:
         self.assertEqual(city_candidates("  "), ())
+
+    def test_detects_inflected_forms(self) -> None:
+        self.assertTrue(_looks_inflected("Новосибирске"))
+        self.assertTrue(_looks_inflected("Москве"))
+        self.assertFalse(_looks_inflected("Новосибирск"))
+        self.assertFalse(_looks_inflected("Москва"))
 
 
 class FormatTest(unittest.TestCase):
