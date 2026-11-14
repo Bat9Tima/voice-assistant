@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
+import os
 import re
 import threading
+import urllib.error
+import urllib.request
+import uuid
+import wave
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +106,11 @@ _SPAN_PADDING_SEC = 0.25
 # Если GigaAM уверена в русском тексте, английским считается только фрагмент,
 # который почти не перекрывается русскими словами (то есть попал в «дыру»).
 _SPAN_MAX_RU_OVERLAP = 0.2
+
+# Deepgram через ProxyAPI: только batch /v1/audio/transcriptions.
+# WebSocket /v1/listen публично не документирован, поэтому стриминга здесь нет.
+DEFAULT_DEEPGRAM_URL = "https://api.proxyapi.ru/v1/audio/transcriptions"
+DEFAULT_DEEPGRAM_MODEL = "deepgram/nova-3"
 
 
 @dataclass(frozen=True)
@@ -948,16 +960,180 @@ class ParallelTranscriber:
         return self.transcribe_details(pcm).text
 
 
+class DeepgramError(RuntimeError):
+    """Ошибка облачного распознавания Deepgram."""
+
+
+class DeepgramTranscriber:
+    """Batch-распознавание Deepgram Nova-3 через ProxyAPI.
+
+    API отдаёт только готовый текст: без слов, таймкодов и языка отдельных
+    фрагментов. Для команд этого достаточно. Для выравнивания RU/EN нужен
+    стриминговый Deepgram напрямую, а не этот прокси.
+    """
+
+    def __init__(
+        self,
+        base_url: str = DEFAULT_DEEPGRAM_URL,
+        model: str = DEFAULT_DEEPGRAM_MODEL,
+        language: str = "ru",
+        fallback_language: str = "multi",
+        language_hints: Iterable[str] = ("ru", "en"),
+        api_key: str = "",
+        api_key_env: str = "PROXYAPI_KEY",
+        timeout: float = 15.0,
+        sample_rate: int = 16000,
+        fallback: Any = None,
+    ) -> None:
+        self.base_url = str(base_url)
+        self.model = str(model)
+        self.language = str(language).strip()
+        self.fallback_language = str(fallback_language).strip()
+        self.language_hints = [str(hint).strip() for hint in language_hints if str(hint).strip()]
+        self.api_key_env = str(api_key_env)
+        self.timeout = max(1.0, float(timeout))
+        self.sample_rate = int(sample_rate)
+        self.fallback = fallback
+        self._api_key = self._resolve_key(api_key)
+        if not self._api_key:
+            log.warning(
+                "Deepgram: ключ не задан. Укажите stt.deepgram.api_key или переменную %s",
+                self.api_key_env,
+            )
+
+    def _resolve_key(self, api_key: str) -> str:
+        values = (
+            api_key,
+            os.environ.get(self.api_key_env),
+            os.environ.get("DEEPGRAM_API_KEY"),
+        )
+        for value in values:
+            if value and value.strip():
+                return value.strip()
+        return ""
+
+    def load(self) -> None:
+        """Модель живёт в облаке: локальной загрузки нет."""
+
+    @property
+    def loaded(self) -> bool:
+        return bool(self._api_key) or self.fallback is not None
+
+    @property
+    def english_loaded(self) -> bool:
+        """Deepgram multi распознаёт английский без отдельного движка."""
+        return True
+
+    def _fallback(self, pcm: bytes, reason: str) -> Transcript:
+        if self.fallback is None:
+            raise DeepgramError(f"Deepgram: {reason}")
+        log.warning("Deepgram: %s. Перехожу на %s", reason, type(self.fallback).__name__)
+        return self.fallback.transcribe_details(pcm)
+
+    @staticmethod
+    def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(pcm)
+        return buffer.getvalue()
+
+    def _build_body(self, wav: bytes, language: str | None = None) -> tuple[str, bytes]:
+        language = self.language if language is None else language
+        boundary = f"----Luna{uuid.uuid4().hex}"
+        fields = [("model", self.model)]
+        if language:
+            fields.append(("language", language))
+        fields.extend(("language_hint", hint) for hint in self.language_hints)
+        chunks: list[bytes] = []
+        for name, value in fields:
+            chunks.append(f"--{boundary}\r\n".encode())
+            chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+            chunks.append(f"{value}\r\n".encode())
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(b'Content-Disposition: form-data; name="file"; filename="command.wav"\r\n')
+        chunks.append(b"Content-Type: audio/wav\r\n\r\n")
+        chunks.append(wav)
+        chunks.append(f"\r\n--{boundary}--\r\n".encode())
+        return boundary, b"".join(chunks)
+
+    def _request(self, wav: bytes, language: str | None = None) -> dict[str, Any]:
+        boundary, body = self._build_body(wav, language)
+        request = urllib.request.Request(
+            self.base_url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:300]
+            raise DeepgramError(f"HTTP {exc.code}: {detail}".strip()) from exc
+        except OSError as exc:
+            raise DeepgramError(str(exc)) from exc
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DeepgramError("ответ не является JSON") from exc
+        if not isinstance(payload, dict):
+            raise DeepgramError("неожиданный формат ответа")
+        return payload
+
+    @staticmethod
+    def _text(payload: dict[str, Any]) -> str:
+        # multi иногда слышит русскую «и» как украинскую «і». В русской
+        # команде такая буква ломает разбор, поэтому приводим её обратно.
+        text = " ".join(str(payload.get("text") or "").split())
+        return text.replace("і", "и").replace("І", "И")
+
+    def transcribe_details(self, pcm: bytes) -> Transcript:
+        if not pcm:
+            return Transcript(text="", language=self.language or None)
+        if not self._api_key:
+            return self._fallback(pcm, f"не задан ключ ({self.api_key_env})")
+        wav = self._wav_bytes(pcm, self.sample_rate)
+        try:
+            payload = self._request(wav)
+        except DeepgramError as exc:
+            return self._fallback(pcm, str(exc))
+        text = self._text(payload)
+        language = self.language
+        if not text and self.fallback_language and self.fallback_language != self.language:
+            # ru не умеет полностью английские фразы и возвращает пустой
+            # ответ. Повторяем в multi, который умеет code-switching.
+            try:
+                payload = self._request(wav, self.fallback_language)
+            except DeepgramError as exc:
+                return self._fallback(pcm, str(exc))
+            text = self._text(payload)
+            language = self.fallback_language
+        if not text:
+            return self._fallback(pcm, "пустой ответ")
+        # Прокси не отдаёт confidence, поэтому доверие к тексту не размечаем.
+        return Transcript(text=text, language=language or None, confidence=1.0)
+
+    def transcribe(self, pcm: bytes) -> str:
+        return self.transcribe_details(pcm).text
+
+
 Transcriber = WhisperTranscriber
 
 _GIGAAM_ALIASES = {"gigaam", "giga-am", "sherpa", "sherpa-onnx", "nemo"}
 _WHISPER_ALIASES = {"whisper", "faster-whisper", "faster_whisper"}
+_DEEPGRAM_ALIASES = {"deepgram", "nova", "nova-3", "nova3"}
 _DISABLED_ALIASES = {"", "none", "off", "disabled"}
 
 
 def create_transcriber(
     cfg: dict[str, Any],
-) -> GigaAMTranscriber | WhisperTranscriber | ParallelTranscriber:
+) -> GigaAMTranscriber | WhisperTranscriber | ParallelTranscriber | DeepgramTranscriber:
     """Создаёт движок распознавания по config.json → stt.engine."""
     stt = cfg.get("stt") or {}
     engine = str(stt.get("engine") or "gigaam").strip().lower()
@@ -973,8 +1149,36 @@ def create_transcriber(
             num_threads=int(stt.get("num_threads") or 4),
         )
 
+    if engine in _DEEPGRAM_ALIASES:
+        section = stt.get("deepgram") or {}
+        fallback = None
+        if bool(section.get("fallback", True)):
+            fallback = GigaAMTranscriber(
+                num_threads=int(stt.get("num_threads") or 4),
+                tail_padding_sec=float(stt.get("tail_padding_sec", 0.4)),
+            )
+        hints = section.get("language_hints")
+        if hints is None:
+            hints = ("ru", "en")
+        elif isinstance(hints, str):
+            hints = [part.strip() for part in hints.split(",") if part.strip()]
+        return DeepgramTranscriber(
+            base_url=str(section.get("base_url") or DEFAULT_DEEPGRAM_URL),
+            model=str(section.get("model") or DEFAULT_DEEPGRAM_MODEL),
+            language=str(section.get("language") or "ru"),
+            fallback_language=str(section.get("fallback_language") or "multi"),
+            language_hints=hints,
+            api_key=str(section.get("api_key") or ""),
+            api_key_env=str(section.get("api_key_env") or "PROXYAPI_KEY"),
+            timeout=float(section.get("timeout_sec") or 15),
+            sample_rate=int((cfg.get("audio") or {}).get("sample_rate") or 16000),
+            fallback=fallback,
+        )
+
     if engine not in _GIGAAM_ALIASES:
-        raise ValueError(f"Неизвестный stt.engine: {engine!r}. Допустимо: gigaam, whisper")
+        raise ValueError(
+            f"Неизвестный stt.engine: {engine!r}. Допустимо: gigaam, whisper, deepgram"
+        )
 
     russian = GigaAMTranscriber(
         num_threads=int(stt.get("num_threads") or 4),
