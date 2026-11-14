@@ -3,13 +3,20 @@ from __future__ import annotations
 import html
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from .cloud_llm import CloudLLM, LLMError
 from .datetime_answer import DateTimeRequest, answer_request, parse_datetime_question
+from .dialog import (
+    DEFAULT_NEWS_TTL_SEC,
+    DEFAULT_TURN_TTL_SEC,
+    DialogContext,
+    DialogTurn,
+    NewsItem,
+    clip_text,
+)
 from .search import SearchError, SearchResult, TavilySearch
 from .weather import (
     WeatherClient,
@@ -762,13 +769,6 @@ def _usable_answer(text: str) -> bool:
     return len(stripped) >= 5
 
 
-def _clip(text: str, limit: int = 900) -> str:
-    text = " ".join((text or "").split())
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1].rstrip() + "…"
-
-
 JUNK_LINES = {
     "видео",
     "фото",
@@ -905,7 +905,7 @@ def _clean_snippet(text: str, limit: int = 400, title: str = "", sentences: int 
     parts = _snippet_parts(text, limit=max(1, sentences))
     if not parts:
         return ""
-    return _clip(". ".join(parts), limit)
+    return clip_text(". ".join(parts), limit)
 
 
 def _snippets_text(results: list[SearchResult], limit: int = 3, sentences: int = 3) -> str:
@@ -944,15 +944,6 @@ def _context_title(result: SearchResult) -> str:
 
 @dataclass(frozen=True)
 class QASource:
-    title: str
-    url: str
-    snippet: str = ""
-
-
-@dataclass(frozen=True)
-class NewsItem:
-    index: int
-    fact: str
     title: str
     url: str
     snippet: str = ""
@@ -1172,18 +1163,6 @@ class FollowUp:
     weather_part: str = "full"
 
 
-@dataclass
-class DialogTurn:
-    """Последняя успешная пара «вопрос — ответ» для уточнений."""
-
-    question: str
-    answer: str
-    kind: str
-    city: str = ""
-    root: str = ""
-    at: float = 0.0
-
-
 _ACK_CATEGORY = {"weather": "weather", "news": "news", "news_detail": "news"}
 
 
@@ -1215,6 +1194,7 @@ class QAService:
         cfg: dict[str, Any],
         llm: CloudLLM | None = None,
         browser: Any = None,
+        context: DialogContext | None = None,
     ) -> None:
         self.cfg = cfg or {}
         section = self.cfg.get("qa") or {}
@@ -1227,13 +1207,14 @@ class QAService:
         self.max_tokens = int(answer_cfg.get("max_tokens") or 400)
         self.temperature = float(answer_cfg.get("temperature") or 0.2)
         self.timeout = float(answer_cfg.get("timeout_sec") or 45)
-        self.news_ttl = float(answer_cfg.get("news_ttl_sec") or 900)
-        self.context_ttl = max(0.0, float(answer_cfg.get("context_ttl_sec") or 180))
         self.search_fallback = bool(answer_cfg.get("search_fallback", True))
-        self.last_news: list[NewsItem] = []
-        self._news_at = 0.0
-        self._last_turn: DialogTurn | None = None
-        self._last_weather_city = ""
+        self.context = context or DialogContext(
+            turn_ttl_sec=max(
+                0.0,
+                float(answer_cfg.get("context_ttl_sec") or DEFAULT_TURN_TTL_SEC),
+            ),
+            news_ttl_sec=float(answer_cfg.get("news_ttl_sec") or DEFAULT_NEWS_TTL_SEC),
+        )
 
     # ------------------------------------------------------------------ public
     def route(self, text: str) -> Route:
@@ -1419,17 +1400,9 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
     ) -> QAAnswer:
         return QAAnswer(False, question, short, full, kind, error=error or full)
 
-    def _last_news_valid(self) -> bool:
-        return bool(self.last_news) and (time.monotonic() - self._news_at <= self.news_ttl)
-
-    def _remember_news(self, items: list[NewsItem]) -> None:
-        if not items:
-            return
-        self.last_news = list(items)
-        self._news_at = time.monotonic()
-
     def _is_news_followup(self, text: str) -> bool:
-        if not self._last_news_valid():
+        items = self.context.news()
+        if not items:
             return False
         lowered = _normalized(text)
         if not NEWS_DETAIL_RE.search(lowered):
@@ -1438,16 +1411,13 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             return True
         if NEWS_REQUEST_RE.search(lowered):
             return False
-        if max((_news_score(text, item) for item in self.last_news), default=0) > 0:
+        if max((_news_score(text, item) for item in items), default=0) > 0:
             return True
         return not _topic_tokens(text)
 
     def _followup(self, text: str) -> FollowUp | None:
-        turn = self._last_turn
+        turn = self.context.turn()
         if turn is None:
-            return None
-        if time.monotonic() - turn.at > self.context_ttl:
-            self._last_turn = None
             return None
         style = answer_style(text)
         if turn.kind == "weather":
@@ -1472,7 +1442,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         return FollowUp(
             "weather",
             style=style,
-            city=city or turn.city or self._last_weather_city,
+            city=city or turn.city or self.context.weather_city,
             weather_part=part,
         )
 
@@ -1493,7 +1463,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
             return self._answer_general(
                 text,
                 style=followup.style,
-                history=self._history_text(),
+                history=self.context.history(),
                 followup_query=self._followup_question(text),
             )
         if self.search.available():
@@ -1511,22 +1481,10 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         )
 
     def _followup_question(self, text: str) -> str:
-        turn = self._last_turn
+        turn = self.context.turn()
         if turn is None:
             return text
         return f"{turn.question} {without_style(text) or text}".strip()
-
-    def _history_text(self) -> str:
-        turn = self._last_turn
-        if turn is None:
-            return ""
-        lines = [
-            f"Предыдущий вопрос: {turn.question}",
-            f"Предыдущий ответ: {_clip(turn.answer, 1200)}",
-        ]
-        if turn.root and turn.root != turn.question:
-            lines.append(f"Тема разговора: {turn.root}")
-        return "\n".join(lines)
 
     def _remember(
         self,
@@ -1535,26 +1493,22 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         *,
         followup: FollowUp | None = None,
     ) -> None:
-        if not answer.ok or answer.kind == "empty" or self.context_ttl <= 0:
+        if not answer.ok or answer.kind == "empty":
             return
-        question = without_style(text) or text
-        root = ""
-        if followup is not None and self._last_turn is not None:
-            root = self._last_turn.root or self._last_turn.question
-        self._last_turn = DialogTurn(
-            question=question,
-            answer=_clip(answer.full, 1200),
-            kind=answer.kind,
-            city=self._last_weather_city if answer.kind == "weather" else "",
-            root=root,
-            at=time.monotonic(),
+        self.context.remember_turn(
+            without_style(text) or text,
+            answer.full,
+            answer.kind,
+            city=self.context.weather_city if answer.kind == "weather" else "",
+            followup=followup is not None,
         )
 
     def _news_sources(self) -> list[QASource]:
-        return [QASource(item.title, item.url, item.snippet) for item in self.last_news]
+        return [QASource(item.title, item.url, item.snippet) for item in self.context.news()]
 
     def _news_clarification(self, text: str, message: str) -> QAAnswer:
-        lines = "\n".join(f"[{item.index}] {item.fact}" for item in self.last_news)
+        items = self.context.news()
+        lines = "\n".join(f"[{item.index}] {item.fact}" for item in items)
         return QAAnswer(
             True,
             text,
@@ -1565,7 +1519,8 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         )
 
     def _answer_news_detail(self, text: str, *, style: str = "normal") -> QAAnswer:
-        item, ambiguous = _select_news_item(text, self.last_news)
+        items = self.context.news()
+        item, ambiguous = _select_news_item(text, items)
         if item is None:
             message = (
                 "Под несколько новостей подходит, уточните номер."
@@ -1674,7 +1629,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 kind="weather",
                 error=str(exc),
             )
-        self._last_weather_city = report.place.name
+        self.context.weather_city = report.place.name
         if part == "current":
             full = format_current(report)
         elif part in {"today", "tomorrow", "day_after"}:
@@ -1856,7 +1811,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         if answer and _usable_answer(answer):
             if news:
                 answer, news_sources, items = _prepare_news_digest(answer, results[:source_limit])
-                self._remember_news(items or _news_items_from_results(results, source_limit))
+                self.context.remember_news(items or _news_items_from_results(results, source_limit))
                 sources = news_sources or sources
             return QAAnswer(
                 True,
@@ -1881,7 +1836,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
         else:
             fallback_limit, fallback_sentences = 4, 3
         if news:
-            self._remember_news(_news_items_from_results(results, fallback_limit))
+            self.context.remember_news(_news_items_from_results(results, fallback_limit))
         full = note + _snippets_text(results, limit=fallback_limit, sentences=fallback_sentences)
         short = (
             first_sentence(_clean_snippet(results[0].content, title=results[0].title))
