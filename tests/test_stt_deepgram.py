@@ -45,7 +45,7 @@ class DeepgramTranscriberTest(unittest.TestCase):
             result = transcribe.transcribe_details(PCM)
 
         self.assertEqual(result.text, "Привет, Luna")
-        self.assertEqual(result.language, "multi")
+        self.assertEqual(result.language, "ru")
         wav = request.call_args.args[0]
         self.assertTrue(wav.startswith(b"RIFF"))
         with wave.open(io.BytesIO(wav), "rb") as stream:
@@ -61,7 +61,7 @@ class DeepgramTranscriberTest(unittest.TestCase):
 
         self.assertIn(f"--{boundary}", text)
         self.assertIn('name="model"\r\n\r\ndeepgram/nova-3', text)
-        self.assertIn('name="language"\r\n\r\nmulti', text)
+        self.assertIn('name="language"\r\n\r\nru', text)
         self.assertEqual(text.count('name="language_hint"'), 2)
         self.assertIn('name="file"; filename="command.wav"', text)
         self.assertIn("RIFFdata", text)
@@ -70,11 +70,12 @@ class DeepgramTranscriberTest(unittest.TestCase):
         fallback = Mock()
         fallback.transcribe_details.return_value = Transcript(text="локально")
         transcribe = make(fallback=fallback)
-        with patch.object(transcribe, "_request", side_effect=DeepgramError("нет сети")):
+        with patch.object(transcribe, "_request", side_effect=DeepgramError("нет сети")) as request:
             result = transcribe.transcribe_details(PCM)
 
         self.assertEqual(result.text, "локально")
         fallback.transcribe_details.assert_called_once_with(PCM)
+        self.assertEqual(request.call_count, 1)
 
     def test_fallback_on_empty_response(self) -> None:
         fallback = Mock()
@@ -85,6 +86,25 @@ class DeepgramTranscriberTest(unittest.TestCase):
 
         self.assertEqual(result.text, "локально")
         fallback.transcribe_details.assert_called_once_with(PCM)
+
+    def test_ukrainian_i_is_normalized(self) -> None:
+        transcribe = make()
+        with patch.object(transcribe, "_request", return_value={"text": "Открой YouTube і включи"}):
+            result = transcribe.transcribe_details(PCM)
+
+        self.assertEqual(result.text, "Открой YouTube и включи")
+
+    def test_empty_primary_retries_multi(self) -> None:
+        transcribe = make()
+        with patch.object(
+            transcribe, "_request", side_effect=[{"text": ""}, {"text": "Open YouTube"}]
+        ) as request:
+            result = transcribe.transcribe_details(PCM)
+
+        self.assertEqual(result.text, "Open YouTube")
+        self.assertEqual(result.language, "multi")
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[1].args[1], "multi")
 
     @patch.dict("os.environ", {"PROXYAPI_KEY": "", "DEEPGRAM_API_KEY": ""})
     def test_missing_key_uses_fallback(self) -> None:
@@ -194,7 +214,6 @@ class CreateDeepgramTranscriberTest(unittest.TestCase):
                 "num_threads": 2,
                 "deepgram": {
                     "model": "deepgram/nova-3",
-                    "language": "multi",
                     "language_hints": ["ru", "en"],
                     "timeout_sec": 7,
                     "api_key": "config-key",
@@ -205,7 +224,8 @@ class CreateDeepgramTranscriberTest(unittest.TestCase):
 
         self.assertIsInstance(transcribe, DeepgramTranscriber)
         self.assertEqual(transcribe.model, "deepgram/nova-3")
-        self.assertEqual(transcribe.language, "multi")
+        self.assertEqual(transcribe.language, "ru")
+        self.assertEqual(transcribe.fallback_language, "multi")
         self.assertEqual(transcribe.language_hints, ["ru", "en"])
         self.assertEqual(transcribe.timeout, 7)
         self.assertEqual(transcribe.sample_rate, 8000)

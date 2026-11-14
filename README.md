@@ -583,7 +583,8 @@ Deepgram Nova-3 через ProxyAPI. Оно лучше сохраняет анг
   "engine": "deepgram",
   "deepgram": {
     "model": "deepgram/nova-3",
-    "language": "multi",
+    "language": "ru",
+    "fallback_language": "multi",
     "language_hints": ["ru", "en"],
     "api_key_env": "PROXYAPI_KEY",
     "fallback": true
@@ -597,11 +598,13 @@ Deepgram Nova-3 через ProxyAPI. Оно лучше сохраняет анг
 setx PROXYAPI_KEY "sk-..."
 ```
 
-`language: "multi"` обязателен: без него прокси возвращает пустой текст на
-русской речи. `language_hints` — только подсказка, язык определяется
-автоматически. При ошибке сети, таймауте или пустом ответе ассистент
-переходит на GigaAM (`fallback: true`), поэтому команды продолжают
-работать офлайн.
+Сначала используется `language: "ru"`: на русской речи он точнее, чем
+`multi`, и не уходит в украинские буквы. Если `ru` вернул пустой ответ
+(полностью английская фраза), выполняется повтор с `fallback_language:
+"multi"` — он умеет code-switching. `language_hints` — только подсказка
+для `multi`. При ошибке сети, таймауте или пустом ответе обоих языков
+ассистент переходит на GigaAM (`fallback: true`), поэтому команды
+продолжают работать офлайн.
 
 Ограничения прокси: только pre-recorded `/v1/audio/transcriptions`, без
 WebSocket-стриминга; в ответе нет слов, таймкодов и языка фрагментов.
@@ -677,8 +680,9 @@ WebSocket-стриминга; в ответе нет слов, таймкодо�
 | `stt.model` | модель, если `engine` = `whisper` |
 | `stt.deepgram.base_url` | batch-эндпоинт Deepgram через ProxyAPI (`https://api.proxyapi.ru/v1/audio/transcriptions`) |
 | `stt.deepgram.model` | модель Deepgram (`deepgram/nova-3`) |
-| `stt.deepgram.language` | язык распознавания; `multi` обязателен для смеси RU/EN |
-| `stt.deepgram.language_hints` | подсказки языков (`["ru", "en"]`); не заменяют `multi` |
+| `stt.deepgram.language` | основной язык распознавания (`ru`) |
+| `stt.deepgram.fallback_language` | повтор при пустом ответе основного языка (`multi` для английских фраз) |
+| `stt.deepgram.language_hints` | подсказки языков для `multi` (`["ru", "en"]`) |
 | `stt.deepgram.api_key` | ключ ProxyAPI; пусто — берётся из переменной окружения |
 | `stt.deepgram.api_key_env` | имя переменной с ключом (`PROXYAPI_KEY`) |
 | `stt.deepgram.timeout_sec` | таймаут запроса к Deepgram (15) |

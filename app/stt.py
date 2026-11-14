@@ -976,7 +976,8 @@ class DeepgramTranscriber:
         self,
         base_url: str = DEFAULT_DEEPGRAM_URL,
         model: str = DEFAULT_DEEPGRAM_MODEL,
-        language: str = "multi",
+        language: str = "ru",
+        fallback_language: str = "multi",
         language_hints: Iterable[str] = ("ru", "en"),
         api_key: str = "",
         api_key_env: str = "PROXYAPI_KEY",
@@ -987,6 +988,7 @@ class DeepgramTranscriber:
         self.base_url = str(base_url)
         self.model = str(model)
         self.language = str(language).strip()
+        self.fallback_language = str(fallback_language).strip()
         self.language_hints = [str(hint).strip() for hint in language_hints if str(hint).strip()]
         self.api_key_env = str(api_key_env)
         self.timeout = max(1.0, float(timeout))
@@ -1038,11 +1040,12 @@ class DeepgramTranscriber:
             wav.writeframes(pcm)
         return buffer.getvalue()
 
-    def _build_body(self, wav: bytes) -> tuple[str, bytes]:
+    def _build_body(self, wav: bytes, language: str | None = None) -> tuple[str, bytes]:
+        language = self.language if language is None else language
         boundary = f"----Luna{uuid.uuid4().hex}"
         fields = [("model", self.model)]
-        if self.language:
-            fields.append(("language", self.language))
+        if language:
+            fields.append(("language", language))
         fields.extend(("language_hint", hint) for hint in self.language_hints)
         chunks: list[bytes] = []
         for name, value in fields:
@@ -1056,8 +1059,8 @@ class DeepgramTranscriber:
         chunks.append(f"\r\n--{boundary}--\r\n".encode())
         return boundary, b"".join(chunks)
 
-    def _request(self, wav: bytes) -> dict[str, Any]:
-        boundary, body = self._build_body(wav)
+    def _request(self, wav: bytes, language: str | None = None) -> dict[str, Any]:
+        boundary, body = self._build_body(wav, language)
         request = urllib.request.Request(
             self.base_url,
             data=body,
@@ -1083,20 +1086,38 @@ class DeepgramTranscriber:
             raise DeepgramError("неожиданный формат ответа")
         return payload
 
+    @staticmethod
+    def _text(payload: dict[str, Any]) -> str:
+        # multi иногда слышит русскую «и» как украинскую «і». В русской
+        # команде такая буква ломает разбор, поэтому приводим её обратно.
+        text = " ".join(str(payload.get("text") or "").split())
+        return text.replace("і", "и").replace("І", "И")
+
     def transcribe_details(self, pcm: bytes) -> Transcript:
         if not pcm:
             return Transcript(text="", language=self.language or None)
         if not self._api_key:
             return self._fallback(pcm, f"не задан ключ ({self.api_key_env})")
+        wav = self._wav_bytes(pcm, self.sample_rate)
         try:
-            payload = self._request(self._wav_bytes(pcm, self.sample_rate))
+            payload = self._request(wav)
         except DeepgramError as exc:
             return self._fallback(pcm, str(exc))
-        text = " ".join(str(payload.get("text") or "").split())
+        text = self._text(payload)
+        language = self.language
+        if not text and self.fallback_language and self.fallback_language != self.language:
+            # ru не умеет полностью английские фразы и возвращает пустой
+            # ответ. Повторяем в multi, который умеет code-switching.
+            try:
+                payload = self._request(wav, self.fallback_language)
+            except DeepgramError as exc:
+                return self._fallback(pcm, str(exc))
+            text = self._text(payload)
+            language = self.fallback_language
         if not text:
             return self._fallback(pcm, "пустой ответ")
         # Прокси не отдаёт confidence, поэтому доверие к тексту не размечаем.
-        return Transcript(text=text, language=self.language or None, confidence=1.0)
+        return Transcript(text=text, language=language or None, confidence=1.0)
 
     def transcribe(self, pcm: bytes) -> str:
         return self.transcribe_details(pcm).text
@@ -1144,7 +1165,8 @@ def create_transcriber(
         return DeepgramTranscriber(
             base_url=str(section.get("base_url") or DEFAULT_DEEPGRAM_URL),
             model=str(section.get("model") or DEFAULT_DEEPGRAM_MODEL),
-            language=str(section.get("language") or "multi"),
+            language=str(section.get("language") or "ru"),
+            fallback_language=str(section.get("fallback_language") or "multi"),
             language_hints=hints,
             api_key=str(section.get("api_key") or ""),
             api_key_env=str(section.get("api_key_env") or "PROXYAPI_KEY"),

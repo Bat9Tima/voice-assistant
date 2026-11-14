@@ -58,7 +58,8 @@
     "deepgram": {
       "base_url": "https://api.proxyapi.ru/v1/audio/transcriptions",
       "model": "deepgram/nova-3",
-      "language": "multi",
+      "language": "ru",
+      "fallback_language": "multi",
       "language_hints": ["ru", "en"],
       "api_key": "",
       "api_key_env": "PROXYAPI_KEY",
