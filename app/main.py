@@ -259,12 +259,18 @@ class Assistant:
                 self.notify(f"openWakeWord не загрузился: {exc}. Использую Vosk.")
 
         if self.wake is None:
+            audio_cfg = self.cfg["audio"]
+            quiet_level = max(
+                float(audio_cfg.get("energy_threshold", 0.01)),
+                self._noise_floor * float(audio_cfg.get("noise_multiplier", 2.0)),
+            )
             try:
                 self.wake = WakeWordDetector(
                     VOSK_DIR,
                     aliases,
-                    sample_rate=int(self.cfg["audio"]["sample_rate"]),
+                    sample_rate=int(audio_cfg["sample_rate"]),
                     confusables=self.cfg.get("wake_confusables") or [],
+                    quiet_level=quiet_level,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("Детектор ключевого слова не загрузился")

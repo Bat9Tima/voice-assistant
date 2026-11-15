@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,6 +92,8 @@ class WakeWordDetector:
         sample_rate: int = 16000,
         confusables: list[str] | None = None,
         warm_up: bool = True,
+        quiet_level: float = 0.01,
+        quiet_window: int = 8,
     ) -> None:
         if not model_dir.exists():
             raise FileNotFoundError(
@@ -100,6 +104,12 @@ class WakeWordDetector:
             raise ValueError("В config.json не заданы wake_aliases")
 
         self.sample_rate = int(sample_rate)
+        # Уровень, ниже которого блок считается тишиной. Wake-фраза должна
+        # начинаться после паузы: иначе это обрывок чужой речи или телевизора,
+        # а грамматический декодер всё равно выдаст знакомые слова.
+        self.quiet_level = max(0.0, float(quiet_level))
+        self._quiet: deque[bool] = deque(maxlen=max(3, int(quiet_window)))
+        self._mute_until = 0.0
         # Алиас, на котором сработал последний feed: нужен вызывающей
         # стороне, чтобы отличить свою озвучку от команды пользователя.
         self.last_match: str | None = None
@@ -112,9 +122,10 @@ class WakeWordDetector:
         self.grammar = json.dumps([*vocabulary, "[unk]"], ensure_ascii=False)
         self.recognizer = self._new_recognizer()
         log.info(
-            "Детектор ключевого слова готов: %s (похожих слов: %d)",
+            "Детектор ключевого слова готов: %s (похожих слов: %d, порог паузы: %.4f)",
             ", ".join(self.aliases),
             len(extra),
+            self.quiet_level,
         )
         if warm_up:
             self._warm_up()
@@ -134,6 +145,11 @@ class WakeWordDetector:
     def feed(self, pcm: bytes) -> bool:
         if not pcm:
             return False
+        self._quiet.append(self._level(pcm) < self.quiet_level)
+
+        if time.monotonic() < self._mute_until:
+            return False
+
         self.last_match = None
         if self.recognizer.AcceptWaveform(pcm):
             raw = json.loads(self.recognizer.Result()).get("text", "")
@@ -145,16 +161,47 @@ class WakeWordDetector:
             return False
         for alias in self.aliases:
             if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+                if not self._after_pause():
+                    log.info(
+                        "Похоже на «%s», но перед фразой не было паузы — игнорирую",
+                        alias,
+                    )
+                    # Гасим повторы: на непрерывной чужой речи декодер будет
+                    # находить фразу в каждом блоке.
+                    self._mute_until = time.monotonic() + 2.0
+                    return False
                 self.last_match = alias
                 log.info("Ключевое слово: «%s» (услышано: «%s»)", alias, text)
                 return True
         return False
+
+    @staticmethod
+    def _level(pcm: bytes) -> float:
+        usable = len(pcm) - (len(pcm) % 2)
+        if usable <= 0:
+            return 0.0
+        samples = np.frombuffer(pcm[:usable], dtype="<i2").astype(np.float32) / 32768.0
+        return float(np.sqrt(np.mean(samples**2)))
+
+    def _after_pause(self) -> bool:
+        """Перед фразой должна быть пауза: два тихих блока подряд (0,5 с).
+
+        Один тихий блок — это зазор между словами в чужой речи, его мало.
+        В начале прослушивания истории ещё нет, поэтому первые блоки
+        пропускаем: иначе первая же фраза после запуска не сработает.
+        """
+        history = list(self._quiet)
+        if len(history) < 3:
+            return True
+        return any(left and right for left, right in zip(history, history[1:], strict=False))
 
     def reset(self) -> None:
         # Vosk Reset() оставляет часть состояния: после команды следующая
         # фраза может распознаться хуже. Новый recognizer стоит доли мс,
         # зато поток начинается с чистого листа.
         self.recognizer = self._new_recognizer()
+        self._quiet.clear()
+        self._mute_until = 0.0
 
 
 @dataclass(frozen=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections import deque
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -73,12 +74,24 @@ class ConditionPcmTest(unittest.TestCase):
         self.assertEqual(condition_pcm(b"\x01", 0.01, 0.08), b"")
 
 
+SILENCE = b"\x00\x00" * 1600
+LOUD = np.full(1600, int(0.3 * 32767), dtype="<i2").tobytes()
+
+
+def make_detector(text: str) -> WakeWordDetector:
+    detector = WakeWordDetector.__new__(WakeWordDetector)
+    detector.aliases = ["луна"]
+    detector.recognizer = FakeRecognizer(text)
+    detector.quiet_level = 0.01
+    detector._quiet = deque(maxlen=8)
+    detector._mute_until = 0.0
+    detector.last_match = None
+    return detector
+
+
 class WakeMatchTest(unittest.TestCase):
     def detector(self, text: str) -> WakeWordDetector:
-        detector = WakeWordDetector.__new__(WakeWordDetector)
-        detector.aliases = ["луна"]
-        detector.recognizer = FakeRecognizer(text)
-        return detector
+        return make_detector(text)
 
     def test_exact_word_triggers(self) -> None:
         self.assertTrue(self.detector("луна").feed(b"pcm"))
@@ -102,14 +115,76 @@ class WakeMatchTest(unittest.TestCase):
         self.assertEqual(detector.last_match, "луна")
 
 
+class WakePauseGateTest(unittest.TestCase):
+    def test_phrase_after_pause_triggers(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(SILENCE)
+            self.assertTrue(detector.feed(LOUD))
+
+    def test_phrase_inside_continuous_speech_is_ignored(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+
+    def test_cold_start_without_history_triggers(self) -> None:
+        self.assertTrue(make_detector("луна").feed(LOUD))
+
+    def test_ignored_match_mutes_repeats(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+            detector.feed(SILENCE)
+            detector.feed(SILENCE)
+            self.assertFalse(detector.feed(LOUD))
+
+    def test_mute_expires_after_two_seconds(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+
+        with patch("app.wake.time.monotonic", return_value=101.5):
+            detector.feed(SILENCE)
+            detector.feed(SILENCE)
+            self.assertFalse(detector.feed(LOUD))
+
+        with patch("app.wake.time.monotonic", return_value=102.5):
+            self.assertTrue(detector.feed(LOUD))
+
+    def test_after_pause_needs_two_quiet_blocks_in_a_row(self) -> None:
+        detector = WakeWordDetector.__new__(WakeWordDetector)
+        detector._quiet = deque([True, False, True], maxlen=8)
+        self.assertFalse(detector._after_pause())
+        detector._quiet.append(True)
+        self.assertTrue(detector._after_pause())
+        empty = WakeWordDetector.__new__(WakeWordDetector)
+        empty._quiet = deque(maxlen=8)
+        self.assertTrue(empty._after_pause())
+
+
 class WakeResetTest(unittest.TestCase):
     def test_reset_creates_fresh_recognizer(self) -> None:
         detector = WakeWordDetector.__new__(WakeWordDetector)
         detector.recognizer = object()
         created = object()
         detector._new_recognizer = lambda: created
+        detector._quiet = deque([True, False], maxlen=8)
+        detector._mute_until = 123.0
         detector.reset()
         self.assertIs(detector.recognizer, created)
+        self.assertEqual(list(detector._quiet), [])
+        self.assertEqual(detector._mute_until, 0.0)
 
 
 class WakeWarmupTest(unittest.TestCase):
