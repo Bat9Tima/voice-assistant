@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from app.dialog import DialogContext, DialogService, NewsItem, clip_text
 from app.profile import Profile
+from app.session import SessionMemory
 
 
 class FakeClock:
@@ -232,6 +233,82 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(service.no_speech_timeout, 3)
         self.assertEqual(service.silence_ms, 900)
         self.assertEqual(service.max_errors, 3)
+
+    def test_history_is_sent_to_model(self) -> None:
+        llm = FakeLLM("Первый ответ")
+        service = DialogService({"dialog": {}}, llm)
+        service.reply("привет")
+        llm.answer = "Второй ответ"
+        service.reply("как дела")
+        messages, _ = llm.calls[1]
+        self.assertEqual(
+            messages,
+            [
+                {"role": "user", "content": "привет"},
+                {"role": "assistant", "content": "Первый ответ"},
+                {"role": "user", "content": "как дела"},
+            ],
+        )
+
+    def test_failed_turn_is_not_saved(self) -> None:
+        llm = FakeLLM(RuntimeError("нет сети"))
+        service = DialogService({"dialog": {}}, llm)
+        with self.assertRaises(RuntimeError):
+            service.reply("привет")
+        self.assertEqual(service.sessions.history(), [])
+
+    def test_empty_model_answer_is_not_saved(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM("   "))
+        with self.assertRaises(ValueError):
+            service.reply("привет")
+        self.assertEqual(service.sessions.history(), [])
+
+    def test_start_and_stop_close_session(self) -> None:
+        saved: list = []
+        service = DialogService({"dialog": {}}, FakeLLM("Ответ"))
+        service.sessions.on_finish = saved.append
+        service.start()
+        service.reply("привет")
+        service.stop()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(
+            [message.role for message in saved[0].messages],
+            ["user", "assistant"],
+        )
+        self.assertIsNone(service.sessions.current)
+
+    def test_new_dialog_starts_with_clean_history(self) -> None:
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm)
+        service.start()
+        service.reply("старая тема")
+        service.stop()
+        service.start()
+        service.reply("новая тема")
+        self.assertEqual(
+            llm.calls[-1][0],
+            [{"role": "user", "content": "новая тема"}],
+        )
+
+    def test_history_limits_from_config(self) -> None:
+        service = DialogService(
+            {"dialog": {"history_messages": 1, "history_chars": 0}},
+            FakeLLM(),
+        )
+        self.assertEqual(service.history_messages, 1)
+        self.assertEqual(service.history_chars, 0)
+        self.assertEqual(service.sessions.max_messages, 1)
+        self.assertEqual(service.sessions.max_chars, 0)
+
+    def test_history_defaults(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+        self.assertEqual(service.history_messages, 12)
+        self.assertEqual(service.history_chars, 4000)
+
+    def test_custom_session_memory_is_used(self) -> None:
+        memory = SessionMemory()
+        service = DialogService({"dialog": {}}, FakeLLM(), sessions=memory)
+        self.assertIs(service.sessions, memory)
 
 
 class ProfileTest(unittest.TestCase):

@@ -176,8 +176,9 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     # Непрерывный разговор: вход и выход по фразам, без wake-слова на
-    # каждую реплику. История реплик пока не хранится; контекст берётся
-    # из текстового файла profile_path, который пишет пользователь.
+    # каждую реплику. История живёт в памяти на время разговора, в модель
+    # уходит только окно history_messages/history_chars. Постоянный
+    # контекст — текстовый файл profile_path, который пишет пользователь.
     "dialog": {
         "enabled": True,
         "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
@@ -196,6 +197,8 @@ DEFAULTS: dict[str, Any] = {
         "temperature": 0.5,
         "timeout_sec": 60,
         "max_errors": 2,
+        "history_messages": 12,
+        "history_chars": 4000,
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
     },

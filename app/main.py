@@ -830,6 +830,9 @@ class Assistant:
 
     def _start_dialog(self) -> str:
         """Включает непрерывный разговор и здоровается."""
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            dialog.start()
         self._dialog_active = True
         self._dialog_errors = 0
         self._dialog_last = time.monotonic()
@@ -845,6 +848,9 @@ class Assistant:
         """Выключает разговор. Причина: phrase, hotkey, idle, errors."""
         self._dialog_active = False
         self._dialog_errors = 0
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            dialog.stop()
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
@@ -1016,6 +1022,11 @@ class Assistant:
 
     def _cleanup(self) -> None:
         log.info("Завершаю работу")
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            # Программу закрыли посреди разговора: сессия всё равно должна
+            # закрыться, иначе следующий этап не получит её в on_finish.
+            dialog.stop()
         if self.mic is not None:
             self.mic.stop()
         if self._hotkey_listener is not None:

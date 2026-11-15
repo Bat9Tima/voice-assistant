@@ -128,6 +128,8 @@
     "temperature": 0.5,
     "timeout_sec": 60,
     "max_errors": 2,
+    "history_messages": 12,
+    "history_chars": 4000,
     "profile_path": "state/profile.txt",
     "profile_chars": 4000
   }
