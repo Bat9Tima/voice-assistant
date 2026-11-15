@@ -28,6 +28,11 @@ class AllowedErrorsTest(unittest.TestCase):
     def test_long_phrase_allows_one_error(self) -> None:
         self.assertEqual(allowed_errors("окей ассистент"), 1)
 
+    def test_default_wake_word_allows_one_error(self) -> None:
+        # Vosk слышит «хей луна» как «хэ луна»: одна опечатка обязательна.
+        self.assertEqual(allowed_errors("хей луна"), 1)
+        self.assertEqual(allowed_errors("эй луна"), 0)
+
     def test_long_single_word_allows_one_error(self) -> None:
         self.assertEqual(allowed_errors("ассистент"), 1)
 
@@ -138,6 +143,7 @@ class BargeInMatchTest(unittest.TestCase):
     def detector(self, text: str) -> BargeInDetector:
         detector = BargeInDetector.__new__(BargeInDetector)
         detector.aliases = ["хей луна", "эй луна"]
+        detector.aliases_folded = ["хеи луна", "еи луна"]
         detector.stop_words = ["стоп", "хватит"]
         detector.min_level = 0.01
         detector.recognizer = FakeRecognizer(text)
@@ -179,8 +185,25 @@ class BargeInMatchTest(unittest.TestCase):
             BargeInMatch("wake", "хей луна"),
         )
 
+    def test_wake_word_with_vosk_spelling(self) -> None:
+        # Vosk стабильно пишет «хей луна» как «хэ луна».
+        for text in ("хэ луна", "хэ луна новости ирака", "хэй луна"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.detector(text).feed(b"pcm"),
+                    BargeInMatch("wake", "хей луна"),
+                )
+
+    def test_wake_word_glued_by_vosk(self) -> None:
+        for text in ("хейлуна новости", "хэлуна новости ирака"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.detector(text).feed(b"pcm"),
+                    BargeInMatch("wake", "хей луна"),
+                )
+
     def test_other_speech_is_ignored(self) -> None:
-        for text in ("какая погода", "луна", "хей", "unk"):
+        for text in ("какая погода", "луна", "хей", "и луна", "unk"):
             with self.subTest(text=text):
                 self.assertIsNone(self.detector(text).feed(b"pcm"))
 
@@ -207,6 +230,7 @@ class BargeInGateTest(unittest.TestCase):
     def detector(self, recognizer: GateRecognizer) -> BargeInDetector:
         detector = BargeInDetector.__new__(BargeInDetector)
         detector.aliases = ["хей луна"]
+        detector.aliases_folded = ["хеи луна"]
         detector.stop_words = ["стоп"]
         detector.min_level = 0.01
         detector.recognizer = recognizer

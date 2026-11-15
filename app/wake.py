@@ -62,8 +62,22 @@ def allowed_errors(alias: str) -> int:
     «лупа», «руна». Поэтому такие фразы сравниваем точно.
     """
     if len(alias.split()) > 1:
-        return 1 if len(alias) >= 10 else 0
+        # «хей луна» Vosk стабильно слышит как «хэ луна». Более коротким
+        # фразам («эй луна») опечатку не прощаем: иначе «и луна» в ответе
+        # про космос превращается в ложный wake.
+        return 1 if len(alias) >= 8 else 0
     return 0 if len(alias) <= 6 else 1
+
+
+# Vosk путает «э»/«е» и «й»/«и»: «хей луна» стабильно превращается в
+# «хэ луна» или «хэлуна». Перед сравнением сводим эти буквы к одной форме,
+# иначе wake-фраза не ловится вообще.
+_WAKE_FOLD = str.maketrans({"э": "е", "й": "и"})
+
+
+def fold_wake_text(text: str) -> str:
+    """Приводит текст к форме, устойчивой к заменам «э/е» и «й/и»."""
+    return normalize(text).translate(_WAKE_FOLD)
 
 
 class WakeWordDetector:
@@ -163,6 +177,7 @@ class BargeInDetector:
         min_level: float = BARGE_MIN_LEVEL,
     ) -> None:
         self.aliases = [normalize(alias) for alias in aliases if normalize(alias)]
+        self.aliases_folded = [fold_wake_text(alias) for alias in self.aliases]
         words = stop_words or DEFAULT_STOP_WORDS
         self.stop_words = [normalize(word) for word in words if normalize(word)]
         if not self.aliases or not self.stop_words:
@@ -192,6 +207,10 @@ class BargeInDetector:
             return None
         if self.recognizer.AcceptWaveform(prepared):
             raw = json.loads(self.recognizer.Result()).get("text", "")
+            if raw:
+                # Финальные фразы пишем в лог: по ним видно, что именно
+                # услышал детектор, если перебивание не сработало.
+                log.info("Перебивание слышит: %r", raw)
         else:
             raw = json.loads(self.recognizer.PartialResult()).get("partial", "")
 
@@ -207,11 +226,24 @@ class BargeInDetector:
             if word in self.stop_words:
                 return BargeInMatch("stop", word)
 
-        for alias in self.aliases:
+        folded = fold_wake_text(text)
+        flat = folded.replace(" ", "")
+        # Сначала точное совпадение: «эй луна» не должно матчиться как
+        # «хей луна» с одной опечаткой и подменять собой название фразы.
+        for alias, folded_alias in zip(self.aliases, self.aliases_folded, strict=True):
+            if folded_alias in folded or folded_alias.replace(" ", "") in flat:
+                return BargeInMatch("wake", alias)
+
+        for alias, folded_alias in zip(self.aliases, self.aliases_folded, strict=True):
             # «хей луна открой ютуб» приходит одним транскриптом; фраза
             # может начинаться не с первого слова, если в буфере остался
-            # хвост озвучки.
-            if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+            # хвост озвучки. Склеенные варианты («хэлуна») тоже ловим.
+            if fuzzy_contains(
+                folded,
+                folded_alias,
+                max_distance=allowed_errors(folded_alias),
+                merged=True,
+            ):
                 return BargeInMatch("wake", alias)
         return None
 
