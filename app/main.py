@@ -650,16 +650,18 @@ class Assistant:
                 log.exception("Не удалось сохранить команду")
 
         self.set_state("thinking")
+        stt_started = time.monotonic()
         try:
             details = self.stt.transcribe_details(pcm)
             text = details.text
             russian = getattr(details, "russian", None)
             english = getattr(details, "english", None)
             log.info(
-                "STT RU: %r | EN: %r | источник: %s",
+                "STT RU: %r | EN: %r | источник: %s | %.2f с",
                 russian.text if russian is not None else text,
                 english.text if english is not None else "",
                 getattr(details, "source", "ru"),
+                time.monotonic() - stt_started,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка распознавания")
