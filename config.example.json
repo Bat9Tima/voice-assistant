@@ -131,6 +131,7 @@
     "history_messages": 12,
     "history_chars": 4000,
     "profile_path": "state/profile.txt",
-    "profile_chars": 4000
+    "profile_chars": 4000,
+    "db_path": "state/dialog.db"
   }
 }

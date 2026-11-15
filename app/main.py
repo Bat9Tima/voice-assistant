@@ -23,6 +23,7 @@ from .duck import AppVolumeDucker
 from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
+from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
 from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
@@ -34,7 +35,7 @@ from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordD
 log = logging.getLogger(__name__)
 
 # Внутри разговора эти фразы обслуживают быстрые сервисы, остальное уходит
-# в чат. Уточнения и общие вопросы — тоже чат: истории пока нет.
+# в чат с историей. Уточнения и общие вопросы — тоже чат.
 DIALOG_INTENT_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
 
 
@@ -126,6 +127,7 @@ class Assistant:
         self.qa = QAService(cfg, self.llm, self.browser)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
+        self.session_store: SessionStore | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
@@ -133,6 +135,10 @@ class Assistant:
                 limit=int(dialog_cfg.get("profile_chars") or 4000),
             )
             self.dialog = DialogService(cfg, self.llm, profile)
+            db_path = str(dialog_cfg.get("db_path") or "").strip()
+            if db_path:
+                self.session_store = SessionStore(db_path).attach(self.dialog.sessions)
+                log.info("Сессии диалога сохраняются в %s", db_path)
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0

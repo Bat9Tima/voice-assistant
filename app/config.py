@@ -179,6 +179,7 @@ DEFAULTS: dict[str, Any] = {
     # каждую реплику. История живёт в памяти на время разговора, в модель
     # уходит только окно history_messages/history_chars. Постоянный
     # контекст — текстовый файл profile_path, который пишет пользователь.
+    # Завершённые сессии пишутся в SQLite db_path.
     "dialog": {
         "enabled": True,
         "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
@@ -201,6 +202,7 @@ DEFAULTS: dict[str, Any] = {
         "history_chars": 4000,
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
+        "db_path": "state/dialog.db",
     },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
     # через ProxyAPI. Ключ и голос задаются в config.json.
@@ -248,12 +250,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])
 
     dialog_cfg = cfg.get("dialog") or {}
-    profile_path = str(dialog_cfg.get("profile_path") or "").strip()
-    if profile_path:
-        expanded = _expand_path(profile_path)
+    for key in ("profile_path", "db_path"):
+        value = str(dialog_cfg.get(key) or "").strip()
+        if not value:
+            continue
+        expanded = _expand_path(value)
         if not Path(expanded).is_absolute():
             expanded = str(ROOT / expanded)
-        dialog_cfg["profile_path"] = expanded
+        dialog_cfg[key] = expanded
 
     for directory in (MODELS_DIR, LOGS_DIR, STATE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
