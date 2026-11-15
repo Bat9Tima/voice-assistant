@@ -253,9 +253,7 @@ class ProfileTest(unittest.TestCase):
 
     def test_text_and_block(self) -> None:
         profile = self.make("Персона: спокойно.\n\nФакты:\n- любит кратко.\n")
-        self.assertEqual(
-            profile.text(), "Персона: спокойно.\n\nФакты:\n- любит кратко."
-        )
+        self.assertEqual(profile.text(), "Персона: спокойно.\n\nФакты:\n- любит кратко.")
         self.assertIn("Персона: спокойно.", profile.block())
         self.assertIn("Контекст от пользователя", profile.block())
 

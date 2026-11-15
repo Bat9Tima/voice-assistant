@@ -167,17 +167,11 @@ class DialogService:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
         self.profile = profile
-        self.entry_phrases = self._phrases(
-            section.get("entry_phrases"), DEFAULT_ENTRY_PHRASES
-        )
-        self.exit_phrases = self._phrases(
-            section.get("exit_phrases"), DEFAULT_EXIT_PHRASES
-        )
+        self.entry_phrases = self._phrases(section.get("entry_phrases"), DEFAULT_ENTRY_PHRASES)
+        self.exit_phrases = self._phrases(section.get("exit_phrases"), DEFAULT_EXIT_PHRASES)
         self.idle_timeout = max(1.0, float(section.get("idle_timeout_sec") or 60))
         self.max_utterance = max(1.0, float(section.get("max_utterance_sec") or 60))
-        self.no_speech_timeout = max(
-            1.0, float(section.get("no_speech_timeout_sec") or 10)
-        )
+        self.no_speech_timeout = max(1.0, float(section.get("no_speech_timeout_sec") or 10))
         self.silence_ms = max(200, int(section.get("silence_ms") or 1200))
         self.max_errors = max(1, int(section.get("max_errors") or 2))
         self.max_tokens = max(1, int(section.get("max_tokens") or 400))
@@ -187,9 +181,7 @@ class DialogService:
     @staticmethod
     def _phrases(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
         items = value if isinstance(value, (list, tuple)) and value else default
-        return tuple(
-            phrase for phrase in (normalize(str(item)) for item in items) if phrase
-        )
+        return tuple(phrase for phrase in (normalize(str(item)) for item in items) if phrase)
 
     def wants_entry(self, text: str) -> bool:
         return self._matches(text, self.entry_phrases)

@@ -536,9 +536,7 @@ class Assistant:
         if self._paused:
             self.notify("Ассистент на паузе")
             return
-        if self.state in {"listening", "thinking"} and not getattr(
-            self, "_dialog_active", False
-        ):
+        if self.state in {"listening", "thinking"} and not getattr(self, "_dialog_active", False):
             return
         self._force_listen.set()
 
@@ -728,9 +726,7 @@ class Assistant:
             dialog_cfg = self.cfg.get("dialog") or {}
             silence_limit = int(dialog_cfg.get("silence_ms", 1200))
             max_ms = float(dialog_cfg.get("max_utterance_sec", 60)) * 1000
-            no_speech_limit = (
-                float(dialog_cfg.get("no_speech_timeout_sec", 10)) * 1000
-            )
+            no_speech_limit = float(dialog_cfg.get("no_speech_timeout_sec", 10)) * 1000
         else:
             silence_limit = int(audio_cfg.get("silence_ms", 800))
             max_ms = float(audio_cfg.get("max_command_sec", 15)) * 1000
