@@ -175,6 +175,30 @@ DEFAULTS: dict[str, Any] = {
             "search_fallback": True,
         },
     },
+    # Непрерывный разговор: вход и выход по фразам, без wake-слова на
+    # каждую реплику. История реплик пока не хранится; контекст берётся
+    # из текстового файла profile_path, который пишет пользователь.
+    "dialog": {
+        "enabled": True,
+        "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
+        "exit_phrases": [
+            "хватит",
+            "закончим",
+            "закончим разговор",
+            "заверши разговор",
+            "до свидания",
+        ],
+        "idle_timeout_sec": 60,
+        "max_utterance_sec": 60,
+        "no_speech_timeout_sec": 10,
+        "silence_ms": 1200,
+        "max_tokens": 400,
+        "temperature": 0.5,
+        "timeout_sec": 60,
+        "max_errors": 2,
+        "profile_path": "state/profile.txt",
+        "profile_chars": 4000,
+    },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
     # через ProxyAPI. Ключ и голос задаются в config.json.
     "tts": {
@@ -219,6 +243,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
 
     cfg["browser"]["profile_dir"] = _expand_path(cfg["browser"]["profile_dir"])
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])
+
+    dialog_cfg = cfg.get("dialog") or {}
+    profile_path = str(dialog_cfg.get("profile_path") or "").strip()
+    if profile_path:
+        expanded = _expand_path(profile_path)
+        if not Path(expanded).is_absolute():
+            expanded = str(ROOT / expanded)
+        dialog_cfg["profile_path"] = expanded
 
     for directory in (MODELS_DIR, LOGS_DIR, STATE_DIR):
         directory.mkdir(parents=True, exist_ok=True)

@@ -114,5 +114,21 @@
     "temperature": 0.0,
     "max_tokens": 256,
     "keep_alive": "30m"
+  },
+
+  "dialog": {
+    "enabled": true,
+    "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
+    "exit_phrases": ["хватит", "закончим", "закончим разговор", "заверши разговор", "до свидания"],
+    "idle_timeout_sec": 60,
+    "max_utterance_sec": 60,
+    "no_speech_timeout_sec": 10,
+    "silence_ms": 1200,
+    "max_tokens": 400,
+    "temperature": 0.5,
+    "timeout_sec": 60,
+    "max_errors": 2,
+    "profile_path": "state/profile.txt",
+    "profile_chars": 4000
   }
 }

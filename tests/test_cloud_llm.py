@@ -287,6 +287,88 @@ class CloudLLMFallbackTest(unittest.TestCase):
         self.assertIn("модель не ответила", str(ctx.exception))
 
 
+class CloudLLMChatTest(unittest.TestCase):
+    def test_chat_builds_messages_with_system(self) -> None:
+        llm = make_llm()
+        captured: dict = {}
+
+        def fake_post(model, messages, **kwargs):
+            captured["model"] = model
+            captured["messages"] = messages
+            captured["kwargs"] = kwargs
+            return "Ответ"
+
+        with patch.object(llm, "_post", side_effect=fake_post):
+            result = llm.chat(
+                [{"role": "user", "content": "привет"}],
+                system="правила",
+                temperature=0.5,
+                timeout=10,
+            )
+        self.assertEqual(result, "Ответ")
+        self.assertEqual(captured["model"], "anthropic/claude-haiku-5-5")
+        self.assertEqual(
+            captured["messages"],
+            [
+                {"role": "system", "content": "правила"},
+                {"role": "user", "content": "привет"},
+            ],
+        )
+        self.assertEqual(captured["kwargs"]["temperature"], 0.5)
+        self.assertEqual(captured["kwargs"]["timeout"], 10)
+        self.assertEqual(captured["kwargs"]["max_tokens"], 2000)
+
+    def test_chat_skips_empty_and_unknown_messages(self) -> None:
+        llm = make_llm()
+        captured: dict = {}
+
+        def fake_post(model, messages, **kwargs):
+            captured["messages"] = messages
+            return "Ответ"
+
+        with patch.object(llm, "_post", side_effect=fake_post):
+            llm.chat(
+                [
+                    {"role": "tool", "content": "не в роль"},
+                    {"role": "user", "content": "  привет  "},
+                    {"role": "assistant", "content": "   "},
+                ]
+            )
+        self.assertEqual(captured["messages"], [{"role": "user", "content": "привет"}])
+
+    def test_chat_empty_messages(self) -> None:
+        with self.assertRaises(LLMError):
+            make_llm().chat([])
+
+    def test_chat_disabled(self) -> None:
+        with self.assertRaises(LLMError):
+            make_llm(enabled=False).chat([{"role": "user", "content": "привет"}])
+
+    def test_chat_missing_key(self) -> None:
+        with self.assertRaises(LLMError):
+            make_llm(api_key="").chat([{"role": "user", "content": "привет"}])
+
+    def test_chat_uses_fallback_model(self) -> None:
+        llm = make_llm()
+        calls: list[str] = []
+
+        def fake_post(model, messages, **kwargs):
+            calls.append(model)
+            if model == "anthropic/claude-haiku-5-5":
+                raise LLMError("пустой ответ модели")
+            return "Ответ запасной"
+
+        with patch.object(llm, "_post", side_effect=fake_post):
+            self.assertEqual(
+                llm.chat([{"role": "user", "content": "привет"}]),
+                "Ответ запасной",
+            )
+        self.assertEqual(
+            calls,
+            ["anthropic/claude-haiku-5-5", "xiaomi/mimo-v2.6-flash"],
+        )
+
+
 class CloudLLMHttpTest(unittest.TestCase):
     def test_payload_and_response(self) -> None:
         captured: dict = {}
