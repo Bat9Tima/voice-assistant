@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +13,7 @@ import numpy as np
 from app.tts import (
     PhraseBank,
     TTSService,
+    _SpeechJob,
     clean_for_speech,
     normalize_pcm,
     split_sentences,
@@ -165,13 +168,89 @@ class TTSServiceTest(unittest.TestCase):
                 patch.object(
                     service,
                     "_play",
-                    side_effect=lambda data: played.append(len(data)) or True,
+                    side_effect=lambda data, job=None: played.append(len(data)) or True,
                 ),
             ):
                 self.assertTrue(service.say(text))
                 self.assertTrue(service.say(text))
+                self.assertTrue(service.wait(5))
             self.assertEqual(request.call_count, 2)
             self.assertEqual(len(played), 4)
+
+    def test_say_does_not_block_on_synthesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            started = threading.Event()
+            release = threading.Event()
+
+            def slow_request(text: str) -> bytes:
+                started.set()
+                release.wait(timeout=5)
+                return make_pcm()
+
+            with (
+                patch.object(service, "_request", side_effect=slow_request),
+                patch.object(service, "_play", return_value=True),
+            ):
+                try:
+                    begin = time.monotonic()
+                    self.assertTrue(service.say("Привет."))
+                    elapsed = time.monotonic() - begin
+                    self.assertLess(elapsed, 1.0)
+                    self.assertTrue(started.wait(2))
+                finally:
+                    release.set()
+                self.assertTrue(service.wait(5))
+
+    def test_stop_interrupts_speech(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            playing = threading.Event()
+
+            def blocking_play(data, job=None) -> bool:
+                playing.set()
+                if job is None:
+                    return True
+                return not job.cancelled.wait(timeout=2)
+
+            with (
+                patch.object(service, "_request", return_value=make_pcm()),
+                patch.object(service, "_play", side_effect=blocking_play),
+            ):
+                self.assertTrue(service.say("Первое предложение здесь."))
+                self.assertTrue(playing.wait(2))
+                self.assertTrue(service.speaking)
+                service.stop()
+                self.assertTrue(service.wait(2))
+                self.assertFalse(service.speaking)
+
+    def test_stop_drops_queued_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[str] = []
+            release = threading.Event()
+
+            def blocking_play(data, job=None) -> bool:
+                played.append("play")
+                if len(played) == 1:
+                    release.wait(timeout=2)
+                return True
+
+            with (
+                patch.object(service, "_request", return_value=make_pcm()),
+                patch.object(service, "_play", side_effect=blocking_play),
+            ):
+                self.assertTrue(service.say("Первое предложение здесь."))
+                self.assertTrue(service.say("Второе предложение здесь."))
+                # Даём воркеру дойти до первого фрагмента и встать в _play.
+                for _ in range(100):
+                    if played:
+                        break
+                    time.sleep(0.01)
+                service.stop()
+                release.set()
+                self.assertTrue(service.wait(2))
+            self.assertEqual(played, ["play"])
 
     def test_cache_key_depends_on_voice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -187,8 +266,47 @@ class TTSServiceTest(unittest.TestCase):
                 patch.object(service, "_play", return_value=True),
             ):
                 service.say("слово " * 100)
+                self.assertTrue(service.wait(5))
             sent = request.call_args.args[0]
             self.assertLessEqual(len(sent), 41)
+
+    def test_cancelled_job_is_not_played(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            job = _SpeechJob(chunks=["текст"], generation=service._generation)
+            job.cancelled.set()
+            with patch("sounddevice.play") as play:
+                self.assertFalse(service._play(np.zeros(100, dtype=np.float32), job))
+            play.assert_not_called()
+
+    def test_playing_marks_service_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            job = _SpeechJob(chunks=["текст"], generation=service._generation)
+            seen: list[bool] = []
+
+            def fake_play(data, samplerate, blocking) -> None:
+                seen.append(service.speaking)
+
+            with patch("sounddevice.play", side_effect=fake_play):
+                self.assertTrue(service._play(np.zeros(100, dtype=np.float32), job))
+            self.assertEqual(seen, [True])
+            self.assertFalse(service.speaking)
+
+    def test_stop_during_playback_returns_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            job = _SpeechJob(chunks=["текст"], generation=service._generation)
+
+            def fake_play(data, samplerate, blocking) -> None:
+                service.stop()
+
+            with (
+                patch("sounddevice.play", side_effect=fake_play),
+                patch("sounddevice.stop") as stop,
+            ):
+                self.assertFalse(service._play(np.zeros(100, dtype=np.float32), job))
+            stop.assert_called_once()
 
 
 if __name__ == "__main__":

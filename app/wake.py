@@ -2,13 +2,57 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import vosk
 
 from .text import fuzzy_contains, normalize
 
 log = logging.getLogger(__name__)
+
+# Слова, которыми можно остановить озвучку. Держим их короткими и
+# однозначными: в свободном распознавании они редко встречаются в ответах.
+DEFAULT_STOP_WORDS = (
+    "стоп",
+    "хватит",
+    "тише",
+    "замолчи",
+    "перестань",
+    "отмена",
+    "остановись",
+    "помолчи",
+)
+
+# Блоки тише этого уровня считаем эхом озвучки или шумом и не отдаём Vosk:
+# иначе декодер цепляется за собственный голос ассистента.
+BARGE_MIN_LEVEL = 0.002
+# До этого уровня усиливаем тихую речь: Vosk плохо распознаёт шёпот.
+BARGE_TARGET_LEVEL = 0.08
+BARGE_MAX_GAIN = 8.0
+
+
+def condition_pcm(pcm: bytes, min_level: float, target_level: float) -> bytes:
+    """Готовит микрофонный блок к распознаванию перебивания.
+
+    Тихие блоки заменяются тишиной: иначе Vosk цепляется за эхо озвучки.
+    Тихая речь усиливается до ``target_level``, громкая остаётся как есть.
+    """
+    if not pcm:
+        return b""
+    usable = len(pcm) - (len(pcm) % 2)
+    if usable <= 0:
+        return b""
+    samples = np.frombuffer(pcm[:usable], dtype="<i2").astype(np.float32) / 32768.0
+    level = float(np.sqrt(np.mean(samples**2)))
+    if level < min_level:
+        return b"\x00" * usable
+    if level < target_level:
+        gain = min(BARGE_MAX_GAIN, target_level / max(level, 1e-6))
+        samples = np.clip(samples * gain, -1.0, 1.0)
+        return (samples * 32767).astype("<i2").tobytes()
+    return pcm[:usable]
 
 
 def allowed_errors(alias: str) -> int:
@@ -91,6 +135,87 @@ class WakeWordDetector:
         # Vosk Reset() оставляет часть состояния: после команды следующая
         # фраза может распознаться хуже. Новый recognizer стоит доли мс,
         # зато поток начинается с чистого листа.
+        self.recognizer = self._new_recognizer()
+
+
+@dataclass(frozen=True)
+class BargeInMatch:
+    """Что услышали во время озвучки: команду остановки или wake-фразу."""
+
+    action: str
+    phrase: str
+
+
+class BargeInDetector:
+    """Детектор перебивания на том же Vosk-модели, что и wake-слово.
+
+    Распознаём речь без грамматики: ограниченная грамматика из стоп-слов
+    слишком легко «слышит» их в собственной озвучке. Свободное распознавание
+    транскрибирует ответ нормальными словами, а «стоп» ищется в конце фразы.
+    """
+
+    def __init__(
+        self,
+        model: object,
+        aliases: list[str],
+        sample_rate: int = 16000,
+        stop_words: list[str] | tuple[str, ...] | None = None,
+        min_level: float = BARGE_MIN_LEVEL,
+    ) -> None:
+        self.aliases = [normalize(alias) for alias in aliases if normalize(alias)]
+        words = stop_words or DEFAULT_STOP_WORDS
+        self.stop_words = [normalize(word) for word in words if normalize(word)]
+        if not self.aliases or not self.stop_words:
+            raise ValueError("не заданы wake-алиасы или стоп-слова")
+
+        self.sample_rate = int(sample_rate)
+        self.min_level = max(0.0, float(min_level))
+        self.model = model
+        self.recognizer = self._new_recognizer()
+        log.info(
+            "Детектор перебивания готов: %s / стоп: %s (порог %.3f)",
+            ", ".join(self.aliases),
+            ", ".join(self.stop_words),
+            self.min_level,
+        )
+
+    def _new_recognizer(self):
+        recognizer = vosk.KaldiRecognizer(self.model, self.sample_rate)
+        recognizer.SetWords(True)
+        return recognizer
+
+    def feed(self, pcm: bytes) -> BargeInMatch | None:
+        if not pcm:
+            return None
+        prepared = condition_pcm(pcm, self.min_level, BARGE_TARGET_LEVEL)
+        if not prepared:
+            return None
+        if self.recognizer.AcceptWaveform(prepared):
+            raw = json.loads(self.recognizer.Result()).get("text", "")
+        else:
+            raw = json.loads(self.recognizer.PartialResult()).get("partial", "")
+
+        text = normalize(raw)
+        if not text:
+            return None
+        log.debug("Перебивание слышит: %r", text)
+
+        # «Стоп» ищем только в конце фразы: если слово стоит в середине,
+        # это скорее всего пересказ или собственная озвучка, а не команда.
+        # Запас в три слова нужен для «стоп пожалуйста» и «ну всё, стоп».
+        for word in text.split()[-3:]:
+            if word in self.stop_words:
+                return BargeInMatch("stop", word)
+
+        for alias in self.aliases:
+            # «хей луна открой ютуб» приходит одним транскриптом; фраза
+            # может начинаться не с первого слова, если в буфере остался
+            # хвост озвучки.
+            if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+                return BargeInMatch("wake", alias)
+        return None
+
+    def reset(self) -> None:
         self.recognizer = self._new_recognizer()
 
 
