@@ -78,9 +78,9 @@ SILENCE = b"\x00\x00" * 1600
 LOUD = np.full(1600, int(0.3 * 32767), dtype="<i2").tobytes()
 
 
-def make_detector(text: str) -> WakeWordDetector:
+def make_detector(text: str, aliases: list[str] | None = None) -> WakeWordDetector:
     detector = WakeWordDetector.__new__(WakeWordDetector)
-    detector.aliases = ["луна"]
+    detector.aliases = list(aliases or ["луна"])
     detector.recognizer = FakeRecognizer(text)
     detector.quiet_level = 0.01
     detector._quiet = deque(maxlen=8)
@@ -100,6 +100,11 @@ class WakeMatchTest(unittest.TestCase):
         for text in ("уна", "она", "лупа", "руна", "дума", "лунь"):
             with self.subTest(text=text):
                 self.assertFalse(self.detector(text).feed(b"pcm"))
+
+    def test_similar_phrase_does_not_match_full_alias(self) -> None:
+        detector = make_detector("хей хуйло", aliases=["хей луна"])
+
+        self.assertFalse(detector.feed(LOUD))
 
     def test_word_inside_command_triggers(self) -> None:
         self.assertTrue(self.detector("луна открой ютуб").feed(b"pcm"))
