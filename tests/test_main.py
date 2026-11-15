@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from collections import deque
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
+from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
 
 
@@ -58,12 +60,19 @@ class FakeTTS:
         self.enabled = enabled
         self.phrases: list[str] = []
         self.said: list[str] = []
+        self.speaking = False
+        self.current_text = ""
+        self.stops = 0
 
     def phrase(self, category: str, phrase_id: str | None = None) -> None:
         self.phrases.append(category)
 
     def say(self, text: str) -> None:
         self.said.append(text)
+
+    def stop(self) -> None:
+        self.stops += 1
+        self.speaking = False
 
 
 class FakeTray:
@@ -659,6 +668,110 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(message, "Не понял команду")
         self.assertEqual(assistant.tts.phrases, ["ack", "unknown"])
         beep.assert_called_once_with(320, 120)
+
+    def test_new_command_interrupts_previous_speech(self) -> None:
+        assistant = self.make()
+        assistant.tts.speaking = True
+
+        with patch("app.main.beep"):
+            assistant.run_text("сделай что-нибудь странное")
+
+        self.assertEqual(assistant.tts.stops, 1)
+
+
+class FakeMic:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+        self.flushed = 0
+
+    def read(self, timeout: float = 0.5) -> bytes | None:
+        return self.chunks.pop(0) if self.chunks else None
+
+    def flush(self) -> None:
+        self.flushed += 1
+
+
+class FakeBarge:
+    def __init__(self, match: Any) -> None:
+        self.match = match
+        self.resets = 0
+
+    def feed(self, pcm: bytes) -> Any:
+        return self.match
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+class FakeWake:
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+class BargeInHandlingTest(unittest.TestCase):
+    def make(self, match: Any, current_text: str = "") -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        assistant.mic = FakeMic([b"pcm"])
+        assistant.barge = FakeBarge(match)
+        assistant.wake = FakeWake()
+        assistant.tts = FakeTTS(enabled=True)
+        assistant.tts.current_text = current_text
+        assistant._preroll = deque([b"old", b"old2", b"new"], maxlen=12)
+        assistant._last_wake = 0.0
+        assistant.states = []
+        assistant.set_state = assistant.states.append
+        assistant.listen_calls = []
+        assistant._listen_and_execute = lambda pre_roll=None, chime=True: (
+            assistant.listen_calls.append((pre_roll, chime))
+        )
+        return assistant
+
+    def test_stop_word_interrupts_speech(self) -> None:
+        assistant = self.make(BargeInMatch("stop", "стоп"))
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 1)
+        self.assertEqual(assistant.barge.resets, 1)
+        self.assertEqual(assistant.wake.resets, 1)
+        self.assertEqual(list(assistant._preroll), [])
+        self.assertEqual(assistant.states, ["idle"])
+        self.assertEqual(assistant.listen_calls, [])
+
+    def test_own_stop_word_is_ignored(self) -> None:
+        assistant = self.make(
+            BargeInMatch("stop", "стоп"),
+            current_text="Можно сказать стоп, чтобы остановить.",
+        )
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 0)
+        self.assertEqual(assistant.barge.resets, 1)
+        self.assertEqual(assistant.listen_calls, [])
+
+    def test_wake_word_interrupts_and_listens_without_chime(self) -> None:
+        assistant = self.make(BargeInMatch("wake", "хей луна"))
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 1)
+        self.assertEqual(assistant.barge.resets, 1)
+        self.assertEqual(assistant.wake.resets, 1)
+        self.assertEqual(assistant.listen_calls, [([b"old", b"old2", b"new", b"pcm"], False)])
+        self.assertEqual(list(assistant._preroll), [])
+
+    def test_no_match_keeps_speaking(self) -> None:
+        assistant = self.make(None)
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 0)
+        self.assertEqual(assistant.listen_calls, [])
+        self.assertIn(b"pcm", assistant._preroll)
 
 
 if __name__ == "__main__":

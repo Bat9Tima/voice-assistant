@@ -2,8 +2,19 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import Mock, patch
 
-from app.wake import OpenWakeWordDetector, WakeWordDetector, allowed_errors
+import numpy as np
+
+from app.wake import (
+    DEFAULT_STOP_WORDS,
+    BargeInDetector,
+    BargeInMatch,
+    OpenWakeWordDetector,
+    WakeWordDetector,
+    allowed_errors,
+    condition_pcm,
+)
 
 
 class AllowedErrorsTest(unittest.TestCase):
@@ -33,6 +44,28 @@ class FakeRecognizer:
 
     def Reset(self) -> None:  # noqa: N802
         pass
+
+
+class ConditionPcmTest(unittest.TestCase):
+    def test_quiet_echo_becomes_silence(self) -> None:
+        pcm = np.full(400, int(0.003 * 32767), dtype="<i2").tobytes()
+        self.assertEqual(condition_pcm(pcm, 0.01, 0.08), b"\x00" * len(pcm))
+
+    def test_quiet_speech_is_amplified(self) -> None:
+        pcm = np.full(400, int(0.02 * 32767), dtype="<i2").tobytes()
+        prepared = condition_pcm(pcm, 0.01, 0.08)
+        samples = np.frombuffer(prepared, dtype="<i2").astype(np.float32) / 32768.0
+        level = float(np.sqrt(np.mean(samples**2)))
+        self.assertGreater(level, 0.02)
+        self.assertLessEqual(level, 0.09)
+
+    def test_loud_audio_is_unchanged(self) -> None:
+        pcm = np.full(400, int(0.2 * 32767), dtype="<i2").tobytes()
+        self.assertEqual(condition_pcm(pcm, 0.01, 0.08), pcm)
+
+    def test_empty_and_odd_bytes(self) -> None:
+        self.assertEqual(condition_pcm(b"", 0.01, 0.08), b"")
+        self.assertEqual(condition_pcm(b"\x01", 0.01, 0.08), b"")
 
 
 class WakeMatchTest(unittest.TestCase):
@@ -84,6 +117,110 @@ class WakeWarmupTest(unittest.TestCase):
         detector._warm_up()
         self.assertEqual(fed, [b"\x00\x00" * 16000])
         self.assertIs(detector.recognizer, created)
+
+
+class BargeInDetectorInitTest(unittest.TestCase):
+    def test_defaults_and_fresh_recognizer(self) -> None:
+        model = object()
+        with patch("app.wake.vosk.KaldiRecognizer", side_effect=[Mock(), Mock()]) as factory:
+            detector = BargeInDetector(model, ["Хей Луна"], min_level=0.005)
+            self.assertEqual(factory.call_args.args, (model, 16000))
+            self.assertEqual(detector.aliases, ["хей луна"])
+            self.assertEqual(tuple(detector.stop_words), DEFAULT_STOP_WORDS)
+            self.assertEqual(detector.min_level, 0.005)
+            first = detector.recognizer
+            detector.reset()
+        self.assertIsNot(detector.recognizer, first)
+        self.assertEqual(factory.call_count, 2)
+
+
+class BargeInMatchTest(unittest.TestCase):
+    def detector(self, text: str) -> BargeInDetector:
+        detector = BargeInDetector.__new__(BargeInDetector)
+        detector.aliases = ["хей луна", "эй луна"]
+        detector.stop_words = ["стоп", "хватит"]
+        detector.min_level = 0.01
+        detector.recognizer = FakeRecognizer(text)
+        return detector
+
+    def test_stop_word(self) -> None:
+        self.assertEqual(self.detector("стоп").feed(b"pcm"), BargeInMatch("stop", "стоп"))
+
+    def test_stop_word_at_end_of_phrase(self) -> None:
+        for text in ("ну всё стоп", "стоп пожалуйста", "хватит уже"):
+            with self.subTest(text=text):
+                match = self.detector(text).feed(b"pcm")
+                self.assertIsNotNone(match)
+                assert match is not None
+                self.assertEqual(match.action, "stop")
+
+    def test_stop_word_inside_sentence_is_ignored(self) -> None:
+        self.assertIsNone(self.detector("стоп это не команда").feed(b"pcm"))
+
+    def test_stop_word_is_not_confused_with_plain_speech(self) -> None:
+        text = "москва сейчас плюс три градуса цельсия пасмурно ветер три метра в секунду"
+        self.assertIsNone(self.detector(text).feed(b"pcm"))
+
+    def test_wake_word(self) -> None:
+        self.assertEqual(
+            self.detector("хей луна").feed(b"pcm"),
+            BargeInMatch("wake", "хей луна"),
+        )
+
+    def test_wake_word_with_command(self) -> None:
+        self.assertEqual(
+            self.detector("эй луна открой ютуб").feed(b"pcm"),
+            BargeInMatch("wake", "эй луна"),
+        )
+
+    def test_wake_word_after_echo_tail(self) -> None:
+        self.assertEqual(
+            self.detector("сейчас плюс три хей луна").feed(b"pcm"),
+            BargeInMatch("wake", "хей луна"),
+        )
+
+    def test_other_speech_is_ignored(self) -> None:
+        for text in ("какая погода", "луна", "хей", "unk"):
+            with self.subTest(text=text):
+                self.assertIsNone(self.detector(text).feed(b"pcm"))
+
+    def test_empty_audio_is_ignored(self) -> None:
+        self.assertIsNone(self.detector("стоп").feed(b""))
+
+
+class GateRecognizer:
+    def __init__(self) -> None:
+        self.level = 0.0
+
+    def AcceptWaveform(self, pcm: bytes) -> bool:  # noqa: N802
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+        self.level = float(np.sqrt(np.mean(samples**2)))
+        return False
+
+    def PartialResult(self) -> str:  # noqa: N802
+        if self.level <= 0.0:
+            return json.dumps({"partial": ""})
+        return json.dumps({"partial": "стоп"})
+
+
+class BargeInGateTest(unittest.TestCase):
+    def detector(self, recognizer: GateRecognizer) -> BargeInDetector:
+        detector = BargeInDetector.__new__(BargeInDetector)
+        detector.aliases = ["хей луна"]
+        detector.stop_words = ["стоп"]
+        detector.min_level = 0.01
+        detector.recognizer = recognizer
+        return detector
+
+    def test_quiet_echo_does_not_trigger(self) -> None:
+        detector = self.detector(GateRecognizer())
+        pcm = np.full(400, int(0.003 * 32767), dtype="<i2").tobytes()
+        self.assertIsNone(detector.feed(pcm))
+
+    def test_quiet_speech_triggers_after_amplification(self) -> None:
+        detector = self.detector(GateRecognizer())
+        pcm = np.full(400, int(0.02 * 32767), dtype="<i2").tobytes()
+        self.assertEqual(detector.feed(pcm), BargeInMatch("stop", "стоп"))
 
 
 class FakeOpenWakeWordModel:

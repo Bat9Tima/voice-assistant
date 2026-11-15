@@ -5,6 +5,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -102,6 +103,12 @@ def _clean_name(value: str) -> str:
 
 def _same_name(left: str, right: str) -> bool:
     return _clean_name(left) == _clean_name(right)
+
+
+def _looks_inflected(city: str) -> bool:
+    """Похоже ли слово на падежную форму, а не на именительный падеж."""
+    city = city.strip()
+    return len(city) >= 5 and city[-1].lower() in "еиую"
 
 
 def city_candidates(city: str) -> tuple[str, ...]:
@@ -218,6 +225,27 @@ class WeatherClient:
             return lookups[candidate]
 
         candidates = city_candidates(city)
+        if len(candidates) > 1 and _looks_inflected(city):
+            # «Новосибирске» и «Новосибирск» — два запроса. Последовательно
+            # это два сетевых ожидания подряд; шлём их параллельно.
+            pool = ThreadPoolExecutor(max_workers=2)
+            try:
+                first = pool.submit(self._lookup, candidates[0])
+                second = pool.submit(self._lookup, candidates[1])
+                places = first.result()
+                lookups[candidates[0]] = places
+                exact = next(
+                    (place for place in places if _same_name(place.name, candidates[0])),
+                    None,
+                )
+                if exact is not None:
+                    self._cache[key] = exact
+                    return exact
+                lookups[candidates[1]] = second.result()
+            finally:
+                # Не ждём медленный вариант, если точное совпадение уже нашлось.
+                pool.shutdown(wait=False, cancel_futures=True)
+
         for candidate in candidates:
             for place in lookup(candidate):
                 if _same_name(place.name, candidate):

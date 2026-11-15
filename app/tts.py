@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import queue
 import random
 import re
 import threading
@@ -18,6 +19,7 @@ import urllib.error
 import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +217,15 @@ class PhraseBank:
             return path
 
 
+@dataclass
+class _SpeechJob:
+    """Очередь озвучки: текст режется на фрагменты до постановки в очередь."""
+
+    chunks: list[str]
+    generation: int
+    cancelled: threading.Event = field(default_factory=threading.Event)
+
+
 class TTSService:
     def __init__(self, cfg: dict[str, Any]) -> None:
         section = (cfg or {}).get("tts") or {}
@@ -237,9 +248,16 @@ class TTSService:
             except Exception as exc:  # noqa: BLE001
                 log.warning("TTS: не удалось создать кэш %s: %s", self.cache_dir, exc)
 
-        self._speaking = threading.Event()
-        self._stop = threading.Event()
         self._play_lock = threading.Lock()
+        self._job_lock = threading.Lock()
+        self._jobs: queue.Queue[_SpeechJob | None] = queue.Queue()
+        self._worker: threading.Thread | None = None
+        self._current_job: _SpeechJob | None = None
+        self._pending = 0
+        self._generation = 0
+        self._active_jobs = 0
+        self._playing = 0
+        self._current_text = ""
 
     @property
     def available(self) -> bool:
@@ -247,7 +265,20 @@ class TTSService:
 
     @property
     def speaking(self) -> bool:
-        return self._speaking.is_set()
+        with self._job_lock:
+            return self._active_jobs > 0 or self._playing > 0
+
+    @property
+    def busy(self) -> bool:
+        """Есть ли что-то в очереди или в динамиках прямо сейчас."""
+        with self._job_lock:
+            return self._pending > 0 or self._active_jobs > 0 or self._playing > 0
+
+    @property
+    def current_text(self) -> str:
+        """Фрагмент, который звучит прямо сейчас: для защиты от самопрослушивания."""
+        with self._job_lock:
+            return self._current_text
 
     # ------------------------------------------------------------------ public
     def phrase(self, category: str, phrase_id: str | None = None) -> bool:
@@ -263,7 +294,11 @@ class TTSService:
         return self._play(data)
 
     def say(self, text: str) -> bool:
-        """Озвучивает произвольный текст: синтез по предложениям параллельно."""
+        """Ставит текст в очередь озвучки и сразу возвращает управление.
+
+        Синтез и проигрывание идут в отдельном потоке, поэтому главный цикл
+        продолжает слушать микрофон и может перебить ассистента.
+        """
         if not self.available or not self.speak_answers:
             return False
         clean = clean_for_speech(text)
@@ -275,35 +310,128 @@ class TTSService:
         if not chunks:
             return False
 
-        self._stop.clear()
-        played = False
-        pool = ThreadPoolExecutor(max_workers=self.workers)
-        try:
-            futures = [pool.submit(self._synth_cached, chunk) for chunk in chunks]
-            for future in futures:
-                if self._stop.is_set():
-                    break
-                try:
-                    data = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("TTS: фрагмент не синтезирован: %s", exc)
-                    continue
-                if data is None:
-                    continue
-                if self._play(data):
-                    played = True
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-        return played
+        self._ensure_worker()
+        with self._job_lock:
+            job = _SpeechJob(chunks=chunks, generation=self._generation)
+            self._pending += 1
+        self._jobs.put(job)
+        return True
 
     def stop(self) -> None:
-        self._stop.set()
+        """Обрывает текущую речь и выбрасывает всё, что ещё стоит в очереди."""
+        with self._job_lock:
+            self._generation += 1
+            if self._current_job is not None:
+                self._current_job.cancelled.set()
+            dropped = 0
+            while True:
+                try:
+                    job = self._jobs.get_nowait()
+                except queue.Empty:
+                    break
+                if job is None:
+                    # Служебный маркер завершения работы воркера.
+                    self._jobs.put(None)
+                    break
+                job.cancelled.set()
+                dropped += 1
+            self._pending = max(0, self._pending - dropped)
+            self._current_text = ""
         try:
             import sounddevice as sd
 
             sd.stop()
         except Exception:  # noqa: BLE001
             pass
+
+    def wait(self, timeout: float = 5.0) -> bool:
+        """Ждёт, пока очередь озвучки опустеет. Нужен тестам и сценариям выхода."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._job_lock:
+                pending = self._pending
+            if pending == 0 and not self.speaking:
+                return True
+            time.sleep(0.01)
+        return False
+
+    def shutdown(self) -> None:
+        self.stop()
+        self._jobs.put(None)
+        with self._job_lock:
+            worker = self._worker
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=2)
+
+    # ------------------------------------------------------------------ worker
+    def _ensure_worker(self) -> None:
+        with self._job_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._worker_loop,
+                name="tts-worker",
+                daemon=True,
+            )
+            self._worker.start()
+
+    def _worker_loop(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            try:
+                with self._job_lock:
+                    stale = job.cancelled.is_set() or job.generation != self._generation
+                    if not stale:
+                        self._current_job = job
+                if stale:
+                    continue
+                with self._job_lock:
+                    self._active_jobs += 1
+                try:
+                    self._run_job(job)
+                finally:
+                    with self._job_lock:
+                        self._active_jobs = max(0, self._active_jobs - 1)
+            finally:
+                with self._job_lock:
+                    if self._current_job is job:
+                        self._current_job = None
+                    self._pending = max(0, self._pending - 1)
+
+    def _run_job(self, job: _SpeechJob) -> None:
+        pool = ThreadPoolExecutor(max_workers=self.workers)
+        try:
+            futures = [pool.submit(self._synth_cached, chunk) for chunk in job.chunks]
+            for chunk, future in zip(job.chunks, futures, strict=False):
+                if not self._job_alive(job):
+                    break
+                # Синтез идёт по сети: проверяем отмену, не дожидаясь
+                # полного ответа ProxyAPI.
+                while not future.done():
+                    if not self._job_alive(job):
+                        return
+                    time.sleep(0.05)
+                try:
+                    data = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("TTS: фрагмент не синтезирован: %s", exc)
+                    data = None
+                if data is None:
+                    continue
+                with self._job_lock:
+                    self._current_text = chunk
+                if not self._play(data, job):
+                    break
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+            with self._job_lock:
+                self._current_text = ""
+
+    def _job_alive(self, job: _SpeechJob) -> bool:
+        with self._job_lock:
+            return not job.cancelled.is_set() and job.generation == self._generation
 
     # ------------------------------------------------------------------ synth
     def _cache_path(self, text: str) -> Path:
@@ -363,20 +491,26 @@ class TTSService:
         raise RuntimeError(f"ProxyAPI недоступен: {last_error}")
 
     # ------------------------------------------------------------------ audio
-    def _play(self, data: np.ndarray) -> bool:
-        if self._stop.is_set():
+    def _play(self, data: np.ndarray, job: _SpeechJob | None = None) -> bool:
+        if job is not None and not self._job_alive(job):
             return False
         if self.volume != 1.0:
             data = np.clip(data * self.volume, -1.0, 1.0)
-        self._speaking.set()
         try:
             import sounddevice as sd
 
             with self._play_lock:
-                sd.play(data, samplerate=SAMPLE_RATE, blocking=True)
-            return True
+                # stop() мог сработать, пока мы ждали предыдущий фрагмент.
+                if job is not None and not self._job_alive(job):
+                    return False
+                with self._job_lock:
+                    self._playing += 1
+                try:
+                    sd.play(data, samplerate=SAMPLE_RATE, blocking=True)
+                finally:
+                    with self._job_lock:
+                        self._playing = max(0, self._playing - 1)
+            return job is None or self._job_alive(job)
         except Exception as exc:  # noqa: BLE001
             log.warning("TTS: не удалось воспроизвести: %s", exc)
             return False
-        finally:
-            self._speaking.clear()

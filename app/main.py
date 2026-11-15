@@ -27,7 +27,7 @@ from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
-from .wake import OpenWakeWordDetector, WakeWordDetector
+from .wake import BargeInDetector, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +139,7 @@ class Assistant:
                 threshold=float(audio_cfg.get("vad_threshold", 0.5)),
             )
         self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
+        self.barge: BargeInDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
         self.server: ControlServer | None = None
         self._hotkey_listener = None
@@ -178,6 +179,7 @@ class Assistant:
             "stt_loaded": self.stt.loaded,
             "stt_english_loaded": getattr(self.stt, "english_loaded", False),
             "wake_loaded": self.wake is not None,
+            "speaking": bool(getattr(getattr(self, "tts", None), "busy", False)),
             "tray": self.tray.status() if self.tray is not None else None,
         }
 
@@ -268,6 +270,26 @@ class Assistant:
                 log.exception("Детектор ключевого слова не загрузился")
                 self.notify(f"Vosk не загрузился: {exc}. Используйте {self.cfg['hotkey']}.")
 
+        barge_cfg = self.cfg.get("barge_in") or {}
+        if self.wake is None or not bool(barge_cfg.get("enabled", True)):
+            log.info("Перебивание голосом выключено")
+        elif not isinstance(self.wake, WakeWordDetector):
+            # openWakeWord ищет только свою акустическую фразу и не умеет
+            # распознавать «стоп», поэтому перебивание оставляем для Vosk.
+            log.info("Перебивание голосом недоступно с openWakeWord")
+        else:
+            try:
+                self.barge = BargeInDetector(
+                    self.wake.model,
+                    aliases,
+                    sample_rate=int(self.cfg["audio"]["sample_rate"]),
+                    stop_words=barge_cfg.get("stop_words") or None,
+                    min_level=float(barge_cfg.get("min_level", 0.002)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Детектор перебивания не загрузился")
+                self.notify(f"Перебивание голосом недоступно: {exc}")
+
         threading.Thread(target=self._warmup_stt, daemon=True, name="stt-warmup").start()
         threading.Thread(target=self._start_hotkey, daemon=True, name="hotkey").start()
 
@@ -295,12 +317,21 @@ class Assistant:
                 continue
 
             if self.tts.speaking:
-                # Пока ассистент говорит, не слушаем собственный голос.
-                self._tts_was_speaking = True
-                if self.mic is not None:
-                    self.mic.read(timeout=0.05)
-                if self.wake is not None:
-                    self.wake.reset()
+                if not self._tts_was_speaking:
+                    self._tts_was_speaking = True
+                    # В pre-roll не должно остаться звука от прошлой команды.
+                    self._preroll.clear()
+
+                # Команда из API важнее текущей озвучки: не ждём её конца.
+                try:
+                    text = self._command_queue.get_nowait()
+                except queue.Empty:
+                    text = None
+                if text:
+                    self._run_text_command(text)
+                    continue
+
+                self._handle_speech()
                 continue
             if self._tts_was_speaking:
                 self._tts_was_speaking = False
@@ -308,6 +339,9 @@ class Assistant:
                     self.mic.flush()
                 if self.wake is not None:
                     self.wake.reset()
+                if self.barge is not None:
+                    self.barge.reset()
+                self._preroll.clear()
 
             if self._force_listen.is_set():
                 self._force_listen.clear()
@@ -319,15 +353,7 @@ class Assistant:
             except queue.Empty:
                 text = None
             if text:
-                # Текстовая команда из API начинает новую команду — старые
-                # уведомления больше не актуальны.
-                self.clear_notifications()
-                try:
-                    self._process(text)
-                finally:
-                    if self.mic is not None:
-                        self.mic.flush()
-                    self._preroll.clear()
+                self._run_text_command(text)
                 continue
 
             if self.wake is None or self.mic is None:
@@ -350,6 +376,64 @@ class Assistant:
                 self.set_state("error")
                 time.sleep(1)
                 self.set_state("idle")
+
+    def _run_text_command(self, text: str) -> None:
+        """Новая команда начинает новый ответ, старые уведомления не нужны."""
+        self.clear_notifications()
+        try:
+            self._process(text)
+        finally:
+            if self.mic is not None:
+                self.mic.flush()
+            self._preroll.clear()
+
+    def _handle_speech(self) -> None:
+        """Слушает микрофон, пока ассистент говорит: «стоп» или wake-фраза."""
+        if self.mic is None:
+            time.sleep(0.05)
+            return
+        try:
+            chunk = self.mic.read(timeout=0.15)
+        except Exception:  # noqa: BLE001
+            log.exception("Ошибка чтения микрофона во время озвучки")
+            time.sleep(0.1)
+            return
+        if not chunk:
+            return
+        self._preroll.append(chunk)
+        if self.barge is None:
+            return
+
+        match = self.barge.feed(chunk)
+        if match is None:
+            return
+        # Ассистент мог сам произнести «стоп» или wake-фразу: не перебиваем
+        # себя. Хватает текущего фрагмента: эхо с задержкой отсекает
+        # энергетический гейт в детекторе.
+        spoken = normalize(getattr(self.tts, "current_text", "") or "")
+        if match.phrase and re.search(
+            rf"(?<!\w){re.escape(match.phrase)}(?!\w)",
+            spoken,
+        ):
+            log.debug("Перебивание: «%s» есть в озвучке, игнорирую", match.phrase)
+            self.barge.reset()
+            return
+
+        log.info("Перебивание голосом: «%s» (%s)", match.phrase, match.action)
+        self.tts.stop()
+        self.barge.reset()
+        if self.wake is not None:
+            self.wake.reset()
+        if match.action == "wake":
+            # Отдаём весь pre-roll: Vosk финализирует фразу с задержкой,
+            # и команда после «хей луна» уже успевает попасть в буфер.
+            pre_roll = list(self._preroll)
+            self._preroll.clear()
+            self._last_wake = time.monotonic()
+            self._listen_and_execute(pre_roll, chime=False)
+        else:
+            self._preroll.clear()
+            self.set_state("idle")
 
     def _warmup_stt(self) -> None:
         try:
@@ -400,21 +484,32 @@ class Assistant:
             "Статус",
         )
 
-    def _listen_and_execute(self, pre_roll: list[bytes] | None = None) -> None:
+    def _listen_and_execute(
+        self,
+        pre_roll: list[bytes] | None = None,
+        *,
+        chime: bool = True,
+    ) -> None:
         if self._paused or self.mic is None:
             return
         self.set_state("listening")
         # Новая команда: убираем результат предыдущей, не ждём, пока
         # системный центр уведомлений до неё доберётся.
         self.clear_notifications()
-        if not self.tts.phrase("wake"):
-            beep(880, 80)
-        time.sleep(0.12)
-        # Фраза «Слушаю» не должна попасть в запись команды.
-        if self.mic is not None:
-            self.mic.flush()
+        if chime:
+            if not self.tts.phrase("wake"):
+                beep(880, 80)
+            time.sleep(0.12)
+            # Фраза «Слушаю» не должна попасть в запись команды.
+            if self.mic is not None:
+                self.mic.flush()
+        else:
+            # Даём звуковой карте выбросить хвост остановленной озвучки.
+            time.sleep(0.05)
         if self.wake is not None:
             self.wake.reset()
+        if self.barge is not None:
+            self.barge.reset()
         if self.ducker is not None:
             # Музыка из браузера не должна попадать в запись команды.
             # Громкость вернётся сразу после захвата, до распознавания.
@@ -631,6 +726,11 @@ class Assistant:
 
     def _process(self, text: str) -> str:
         text = canonicalize(normalize(text))
+        if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
+            log.info("Прерываю озвучку новой командой")
+            stop = getattr(self.tts, "stop", None)
+            if stop is not None:
+                stop()
         self.set_state("thinking")
         try:
             qa = getattr(self, "qa", None)
@@ -673,8 +773,17 @@ class Assistant:
                 message = answer.short or answer.error or "Не смог ответить"
                 self.notify(message[:250])
                 if answer.ok:
-                    qa.show(answer)
+                    # Вкладка с полным текстом не должна задерживать звук:
+                    # Playwright открывает её, пока TTS уже говорит.
+                    render = threading.Thread(
+                        target=qa.show,
+                        args=(answer,),
+                        name="qa-render",
+                        daemon=True,
+                    )
+                    render.start()
                     self.tts.say(message)
+                    render.join(timeout=2)
                 else:
                     beep(320, 120)
                     if answer.kind == "no_model":
@@ -737,6 +846,7 @@ class Assistant:
                 pass
         if self.server is not None:
             self.server.stop()
+        self.tts.shutdown()
         self.browser.stop()
         if self.tray is not None:
             self.tray.stop()
@@ -757,6 +867,9 @@ def main(argv: list[str] | None = None) -> int:
     assistant = Assistant(cfg, use_tray=not namespace.no_tray)
     if namespace.text:
         result = assistant.run_text(namespace.text)
+        # Озвучка теперь асинхронная: даём ей договорить перед выходом.
+        assistant.tts.wait(30)
+        assistant.tts.shutdown()
         print(result)
         return 0
     return assistant.run()
