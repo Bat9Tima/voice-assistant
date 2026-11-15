@@ -27,7 +27,7 @@ from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
-from .wake import BargeInDetector, OpenWakeWordDetector, WakeWordDetector
+from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
 
@@ -259,12 +259,18 @@ class Assistant:
                 self.notify(f"openWakeWord не загрузился: {exc}. Использую Vosk.")
 
         if self.wake is None:
+            audio_cfg = self.cfg["audio"]
+            quiet_level = max(
+                float(audio_cfg.get("energy_threshold", 0.01)),
+                self._noise_floor * float(audio_cfg.get("noise_multiplier", 2.0)),
+            )
             try:
                 self.wake = WakeWordDetector(
                     VOSK_DIR,
                     aliases,
-                    sample_rate=int(self.cfg["audio"]["sample_rate"]),
+                    sample_rate=int(audio_cfg["sample_rate"]),
                     confusables=self.cfg.get("wake_confusables") or [],
+                    quiet_level=quiet_level,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("Детектор ключевого слова не загрузился")
@@ -321,6 +327,10 @@ class Assistant:
                     self._tts_was_speaking = True
                     # В pre-roll не должно остаться звука от прошлой команды.
                     self._preroll.clear()
+                    # Детектор wake слушает и во время озвучки: начинаем
+                    # с чистого состояния, чтобы не сработать на хвосте.
+                    if self.wake is not None:
+                        self.wake.reset()
 
                 # Команда из API важнее текущей озвучки: не ждём её конца.
                 try:
@@ -405,6 +415,15 @@ class Assistant:
             return
 
         match = self.barge.feed(chunk)
+        if match is None and self.wake is not None:
+            # Свободное распознавание часто теряет первое слово wake-фразы
+            # («элвина», «коммуна», «сити»). Грамматический детектор на том
+            # же звуке слышит её надёжно, поэтому спрашиваем и его.
+            if self.wake.feed(chunk):
+                match = BargeInMatch(
+                    "wake",
+                    getattr(self.wake, "last_match", None) or "",
+                )
         if match is None:
             return
         # Ассистент мог сам произнести «стоп» или wake-фразу: не перебиваем

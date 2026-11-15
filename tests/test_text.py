@@ -5,11 +5,27 @@ import unittest
 from app.main import to_pynput
 from app.text import (
     canonicalize,
+    fuzzy_contains,
     normalize,
     split_agent_trigger,
     strip_wake_word,
     translit,
 )
+
+
+class FuzzyContainsTest(unittest.TestCase):
+    def test_exact_phrase(self) -> None:
+        self.assertTrue(fuzzy_contains("хей луна включи музыку", "хей луна"))
+
+    def test_merged_variant_is_found(self) -> None:
+        self.assertTrue(fuzzy_contains("хейлуна включи музыку", "хей луна", merged=True))
+        self.assertTrue(fuzzy_contains("хейлун включи музыку", "хей луна", 1, merged=True))
+
+    def test_merged_is_off_by_default(self) -> None:
+        self.assertFalse(fuzzy_contains("хейлуна включи музыку", "хей луна", 1))
+
+    def test_unrelated_speech_is_not_a_match(self) -> None:
+        self.assertFalse(fuzzy_contains("какая погода в москве", "хей луна", 1, merged=True))
 
 
 class TextTest(unittest.TestCase):

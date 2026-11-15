@@ -458,8 +458,17 @@ def levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
-    """Ищет фразу в тексте, допуская небольшие ошибки распознавания."""
+def fuzzy_contains(
+    text: str,
+    phrase: str,
+    max_distance: int = 2,
+    merged: bool = False,
+) -> bool:
+    """Ищет фразу в тексте, допуская небольшие ошибки распознавания.
+
+    ``merged`` дополнительно сравнивает окна со склеенными пробелами:
+    Vosk часто пишет «хей луна» как «хэлуна» или «хейлуна» одним словом.
+    """
     if not text or not phrase:
         return False
     if phrase in text:
@@ -467,12 +476,23 @@ def fuzzy_contains(text: str, phrase: str, max_distance: int = 2) -> bool:
     words = text.split()
     target = phrase.split()
     size = len(target)
-    if size == 0 or len(words) < size:
+    if size == 0:
         return False
-    for start in range(len(words) - size + 1):
-        window = " ".join(words[start : start + size])
-        if levenshtein(window, phrase) <= max_distance:
-            return True
+    if len(words) >= size:
+        for start in range(len(words) - size + 1):
+            window = " ".join(words[start : start + size])
+            if levenshtein(window, phrase) <= max_distance:
+                return True
+    if not merged:
+        return False
+    joined = "".join(target)
+    for start in range(len(words)):
+        for width in (size - 1, size, size + 1):
+            if width <= 0:
+                continue
+            candidate = "".join(words[start : start + width])
+            if candidate and levenshtein(candidate, joined) <= max_distance:
+                return True
     return False
 
 

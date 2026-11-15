@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections import deque
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -27,6 +28,11 @@ class AllowedErrorsTest(unittest.TestCase):
 
     def test_long_phrase_allows_one_error(self) -> None:
         self.assertEqual(allowed_errors("окей ассистент"), 1)
+
+    def test_default_wake_word_allows_one_error(self) -> None:
+        # Vosk слышит «хей луна» как «хэ луна»: одна опечатка обязательна.
+        self.assertEqual(allowed_errors("хей луна"), 1)
+        self.assertEqual(allowed_errors("эй луна"), 0)
 
     def test_long_single_word_allows_one_error(self) -> None:
         self.assertEqual(allowed_errors("ассистент"), 1)
@@ -68,12 +74,24 @@ class ConditionPcmTest(unittest.TestCase):
         self.assertEqual(condition_pcm(b"\x01", 0.01, 0.08), b"")
 
 
+SILENCE = b"\x00\x00" * 1600
+LOUD = np.full(1600, int(0.3 * 32767), dtype="<i2").tobytes()
+
+
+def make_detector(text: str, aliases: list[str] | None = None) -> WakeWordDetector:
+    detector = WakeWordDetector.__new__(WakeWordDetector)
+    detector.aliases = list(aliases or ["луна"])
+    detector.recognizer = FakeRecognizer(text)
+    detector.quiet_level = 0.01
+    detector._quiet = deque(maxlen=8)
+    detector._mute_until = 0.0
+    detector.last_match = None
+    return detector
+
+
 class WakeMatchTest(unittest.TestCase):
     def detector(self, text: str) -> WakeWordDetector:
-        detector = WakeWordDetector.__new__(WakeWordDetector)
-        detector.aliases = ["луна"]
-        detector.recognizer = FakeRecognizer(text)
-        return detector
+        return make_detector(text)
 
     def test_exact_word_triggers(self) -> None:
         self.assertTrue(self.detector("луна").feed(b"pcm"))
@@ -83,11 +101,81 @@ class WakeMatchTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(self.detector(text).feed(b"pcm"))
 
+    def test_similar_phrase_does_not_match_full_alias(self) -> None:
+        detector = make_detector("хей хуйло", aliases=["хей луна"])
+
+        self.assertFalse(detector.feed(LOUD))
+
     def test_word_inside_command_triggers(self) -> None:
         self.assertTrue(self.detector("луна открой ютуб").feed(b"pcm"))
 
     def test_empty_audio_is_ignored(self) -> None:
         self.assertFalse(self.detector("луна").feed(b""))
+
+    def test_alias_is_saved_for_caller(self) -> None:
+        detector = self.detector("луна открой ютуб")
+
+        self.assertTrue(detector.feed(b"pcm"))
+
+        self.assertEqual(detector.last_match, "луна")
+
+
+class WakePauseGateTest(unittest.TestCase):
+    def test_phrase_after_pause_triggers(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(SILENCE)
+            self.assertTrue(detector.feed(LOUD))
+
+    def test_phrase_inside_continuous_speech_is_ignored(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+
+    def test_cold_start_without_history_triggers(self) -> None:
+        self.assertTrue(make_detector("луна").feed(LOUD))
+
+    def test_ignored_match_mutes_repeats(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+            detector.feed(SILENCE)
+            detector.feed(SILENCE)
+            self.assertFalse(detector.feed(LOUD))
+
+    def test_mute_expires_after_two_seconds(self) -> None:
+        detector = make_detector("луна")
+
+        with patch("app.wake.time.monotonic", return_value=100.0):
+            for _ in range(3):
+                detector.feed(LOUD)
+            self.assertFalse(detector.feed(LOUD))
+
+        with patch("app.wake.time.monotonic", return_value=101.5):
+            detector.feed(SILENCE)
+            detector.feed(SILENCE)
+            self.assertFalse(detector.feed(LOUD))
+
+        with patch("app.wake.time.monotonic", return_value=102.5):
+            self.assertTrue(detector.feed(LOUD))
+
+    def test_after_pause_needs_two_quiet_blocks_in_a_row(self) -> None:
+        detector = WakeWordDetector.__new__(WakeWordDetector)
+        detector._quiet = deque([True, False, True], maxlen=8)
+        self.assertFalse(detector._after_pause())
+        detector._quiet.append(True)
+        self.assertTrue(detector._after_pause())
+        empty = WakeWordDetector.__new__(WakeWordDetector)
+        empty._quiet = deque(maxlen=8)
+        self.assertTrue(empty._after_pause())
 
 
 class WakeResetTest(unittest.TestCase):
@@ -96,8 +184,12 @@ class WakeResetTest(unittest.TestCase):
         detector.recognizer = object()
         created = object()
         detector._new_recognizer = lambda: created
+        detector._quiet = deque([True, False], maxlen=8)
+        detector._mute_until = 123.0
         detector.reset()
         self.assertIs(detector.recognizer, created)
+        self.assertEqual(list(detector._quiet), [])
+        self.assertEqual(detector._mute_until, 0.0)
 
 
 class WakeWarmupTest(unittest.TestCase):
@@ -138,6 +230,7 @@ class BargeInMatchTest(unittest.TestCase):
     def detector(self, text: str) -> BargeInDetector:
         detector = BargeInDetector.__new__(BargeInDetector)
         detector.aliases = ["хей луна", "эй луна"]
+        detector.aliases_folded = ["хеи луна", "еи луна"]
         detector.stop_words = ["стоп", "хватит"]
         detector.min_level = 0.01
         detector.recognizer = FakeRecognizer(text)
@@ -179,8 +272,25 @@ class BargeInMatchTest(unittest.TestCase):
             BargeInMatch("wake", "хей луна"),
         )
 
+    def test_wake_word_with_vosk_spelling(self) -> None:
+        # Vosk стабильно пишет «хей луна» как «хэ луна».
+        for text in ("хэ луна", "хэ луна новости ирака", "хэй луна"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.detector(text).feed(b"pcm"),
+                    BargeInMatch("wake", "хей луна"),
+                )
+
+    def test_wake_word_glued_by_vosk(self) -> None:
+        for text in ("хейлуна новости", "хэлуна новости ирака"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    self.detector(text).feed(b"pcm"),
+                    BargeInMatch("wake", "хей луна"),
+                )
+
     def test_other_speech_is_ignored(self) -> None:
-        for text in ("какая погода", "луна", "хей", "unk"):
+        for text in ("какая погода", "луна", "хей", "и луна", "unk"):
             with self.subTest(text=text):
                 self.assertIsNone(self.detector(text).feed(b"pcm"))
 
@@ -207,6 +317,7 @@ class BargeInGateTest(unittest.TestCase):
     def detector(self, recognizer: GateRecognizer) -> BargeInDetector:
         detector = BargeInDetector.__new__(BargeInDetector)
         detector.aliases = ["хей луна"]
+        detector.aliases_folded = ["хеи луна"]
         detector.stop_words = ["стоп"]
         detector.min_level = 0.01
         detector.recognizer = recognizer

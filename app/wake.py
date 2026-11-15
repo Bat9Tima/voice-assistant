@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,8 +64,22 @@ def allowed_errors(alias: str) -> int:
     «лупа», «руна». Поэтому такие фразы сравниваем точно.
     """
     if len(alias.split()) > 1:
-        return 1 if len(alias) >= 10 else 0
+        # «хей луна» Vosk стабильно слышит как «хэ луна». Более коротким
+        # фразам («эй луна») опечатку не прощаем: иначе «и луна» в ответе
+        # про космос превращается в ложный wake.
+        return 1 if len(alias) >= 8 else 0
     return 0 if len(alias) <= 6 else 1
+
+
+# Vosk путает «э»/«е» и «й»/«и»: «хей луна» стабильно превращается в
+# «хэ луна» или «хэлуна». Перед сравнением сводим эти буквы к одной форме,
+# иначе wake-фраза не ловится вообще.
+_WAKE_FOLD = str.maketrans({"э": "е", "й": "и"})
+
+
+def fold_wake_text(text: str) -> str:
+    """Приводит текст к форме, устойчивой к заменам «э/е» и «й/и»."""
+    return normalize(text).translate(_WAKE_FOLD)
 
 
 class WakeWordDetector:
@@ -76,6 +92,8 @@ class WakeWordDetector:
         sample_rate: int = 16000,
         confusables: list[str] | None = None,
         warm_up: bool = True,
+        quiet_level: float = 0.01,
+        quiet_window: int = 8,
     ) -> None:
         if not model_dir.exists():
             raise FileNotFoundError(
@@ -86,6 +104,15 @@ class WakeWordDetector:
             raise ValueError("В config.json не заданы wake_aliases")
 
         self.sample_rate = int(sample_rate)
+        # Уровень, ниже которого блок считается тишиной. Wake-фраза должна
+        # начинаться после паузы: иначе это обрывок чужой речи или телевизора,
+        # а грамматический декодер всё равно выдаст знакомые слова.
+        self.quiet_level = max(0.0, float(quiet_level))
+        self._quiet: deque[bool] = deque(maxlen=max(3, int(quiet_window)))
+        self._mute_until = 0.0
+        # Алиас, на котором сработал последний feed: нужен вызывающей
+        # стороне, чтобы отличить свою озвучку от команды пользователя.
+        self.last_match: str | None = None
         vosk.SetLogLevel(-1)
         self.model = vosk.Model(str(model_dir))
         # Если в грамматике только «луна», декодер обязан услышать её даже
@@ -95,9 +122,10 @@ class WakeWordDetector:
         self.grammar = json.dumps([*vocabulary, "[unk]"], ensure_ascii=False)
         self.recognizer = self._new_recognizer()
         log.info(
-            "Детектор ключевого слова готов: %s (похожих слов: %d)",
+            "Детектор ключевого слова готов: %s (похожих слов: %d, порог паузы: %.4f)",
             ", ".join(self.aliases),
             len(extra),
+            self.quiet_level,
         )
         if warm_up:
             self._warm_up()
@@ -117,6 +145,12 @@ class WakeWordDetector:
     def feed(self, pcm: bytes) -> bool:
         if not pcm:
             return False
+        self._quiet.append(self._level(pcm) < self.quiet_level)
+
+        if time.monotonic() < self._mute_until:
+            return False
+
+        self.last_match = None
         if self.recognizer.AcceptWaveform(pcm):
             raw = json.loads(self.recognizer.Result()).get("text", "")
         else:
@@ -127,15 +161,47 @@ class WakeWordDetector:
             return False
         for alias in self.aliases:
             if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+                if not self._after_pause():
+                    log.info(
+                        "Похоже на «%s», но перед фразой не было паузы — игнорирую",
+                        alias,
+                    )
+                    # Гасим повторы: на непрерывной чужой речи декодер будет
+                    # находить фразу в каждом блоке.
+                    self._mute_until = time.monotonic() + 2.0
+                    return False
+                self.last_match = alias
                 log.info("Ключевое слово: «%s» (услышано: «%s»)", alias, text)
                 return True
         return False
+
+    @staticmethod
+    def _level(pcm: bytes) -> float:
+        usable = len(pcm) - (len(pcm) % 2)
+        if usable <= 0:
+            return 0.0
+        samples = np.frombuffer(pcm[:usable], dtype="<i2").astype(np.float32) / 32768.0
+        return float(np.sqrt(np.mean(samples**2)))
+
+    def _after_pause(self) -> bool:
+        """Перед фразой должна быть пауза: два тихих блока подряд (0,5 с).
+
+        Один тихий блок — это зазор между словами в чужой речи, его мало.
+        В начале прослушивания истории ещё нет, поэтому первые блоки
+        пропускаем: иначе первая же фраза после запуска не сработает.
+        """
+        history = list(self._quiet)
+        if len(history) < 3:
+            return True
+        return any(left and right for left, right in zip(history, history[1:], strict=False))
 
     def reset(self) -> None:
         # Vosk Reset() оставляет часть состояния: после команды следующая
         # фраза может распознаться хуже. Новый recognizer стоит доли мс,
         # зато поток начинается с чистого листа.
         self.recognizer = self._new_recognizer()
+        self._quiet.clear()
+        self._mute_until = 0.0
 
 
 @dataclass(frozen=True)
@@ -163,6 +229,7 @@ class BargeInDetector:
         min_level: float = BARGE_MIN_LEVEL,
     ) -> None:
         self.aliases = [normalize(alias) for alias in aliases if normalize(alias)]
+        self.aliases_folded = [fold_wake_text(alias) for alias in self.aliases]
         words = stop_words or DEFAULT_STOP_WORDS
         self.stop_words = [normalize(word) for word in words if normalize(word)]
         if not self.aliases or not self.stop_words:
@@ -192,6 +259,10 @@ class BargeInDetector:
             return None
         if self.recognizer.AcceptWaveform(prepared):
             raw = json.loads(self.recognizer.Result()).get("text", "")
+            if raw:
+                # Финальные фразы пишем в лог: по ним видно, что именно
+                # услышал детектор, если перебивание не сработало.
+                log.info("Перебивание слышит: %r", raw)
         else:
             raw = json.loads(self.recognizer.PartialResult()).get("partial", "")
 
@@ -207,11 +278,24 @@ class BargeInDetector:
             if word in self.stop_words:
                 return BargeInMatch("stop", word)
 
-        for alias in self.aliases:
+        folded = fold_wake_text(text)
+        flat = folded.replace(" ", "")
+        # Сначала точное совпадение: «эй луна» не должно матчиться как
+        # «хей луна» с одной опечаткой и подменять собой название фразы.
+        for alias, folded_alias in zip(self.aliases, self.aliases_folded, strict=True):
+            if folded_alias in folded or folded_alias.replace(" ", "") in flat:
+                return BargeInMatch("wake", alias)
+
+        for alias, folded_alias in zip(self.aliases, self.aliases_folded, strict=True):
             # «хей луна открой ютуб» приходит одним транскриптом; фраза
             # может начинаться не с первого слова, если в буфере остался
-            # хвост озвучки.
-            if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+            # хвост озвучки. Склеенные варианты («хэлуна») тоже ловим.
+            if fuzzy_contains(
+                folded,
+                folded_alias,
+                max_distance=allowed_errors(folded_alias),
+                merged=True,
+            ):
                 return BargeInMatch("wake", alias)
         return None
 
