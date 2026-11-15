@@ -8,6 +8,10 @@
 Модуль не решает, когда сохранять: это делает ``SessionMemory.on_finish``.
 Ошибки записи пробрасываются наверх — их ловит и логирует ``SessionMemory``,
 чтобы сбой диска не ломал разговор.
+
+Кроме сырых сессий и реплик есть таблица ``summaries``: одно резюме на
+сессию. Пока это только хранилище — генерация и подмешивание в диалог
+будут отдельным этапом.
 """
 
 from __future__ import annotations
@@ -15,10 +19,17 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .session import DialogSession, SessionMemory
+
+
+def _now() -> datetime:
+    """Локальное время с часовым поясом, как в сессиях."""
+    return datetime.now().astimezone()
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -42,6 +53,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_session
 
 CREATE INDEX IF NOT EXISTS idx_sessions_started
     ON sessions(started_at);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_version INTEGER NOT NULL DEFAULT 1
+);
 """
 
 
@@ -96,10 +115,44 @@ class SessionStore:
             )
 
     def delete(self, session_id: str) -> bool:
-        """Удаляет сессию вместе с репликами. ``True``, если запись была."""
+        """Удаляет сессию вместе с репликами и резюме. ``True``, если запись была."""
         with self._connection() as conn:
             cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         return cursor.rowcount > 0
+
+    def save_summary(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        model: str = "",
+        prompt_version: int = 1,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Сохраняет резюме сессии. Повторная запись заменяет прошлое."""
+        text = (summary or "").strip()
+        if not text:
+            raise ValueError("пустое резюме")
+        moment = created_at or _now()
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO summaries (session_id, summary, created_at, model, prompt_version)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    created_at = excluded.created_at,
+                    model = excluded.model,
+                    prompt_version = excluded.prompt_version
+                """,
+                (
+                    session_id,
+                    text,
+                    moment.isoformat(),
+                    str(model or ""),
+                    max(1, int(prompt_version)),
+                ),
+            )
 
     # ------------------------------------------------------------------- read
     def sessions(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -128,6 +181,34 @@ class SessionStore:
                 ORDER BY position
                 """,
                 (session_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def summary(self, session_id: str) -> dict[str, Any] | None:
+        """Резюме одной сессии или ``None``."""
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id, summary, created_at, model, prompt_version
+                FROM summaries
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def summaries(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Последние резюме, новые сверху."""
+        limit = max(1, int(limit))
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, summary, created_at, model, prompt_version
+                FROM summaries
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
 

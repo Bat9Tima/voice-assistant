@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -134,6 +135,82 @@ class SessionStoreTest(unittest.TestCase):
 
         self.assertIsNotNone(session)
         self.assertIsNone(memory.current)
+
+
+class SummaryStoreTest(unittest.TestCase):
+    def make(self) -> SessionStore:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return SessionStore(Path(directory.name) / "dialog.db")
+
+    def test_save_and_read_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        store.save_summary(
+            "s1",
+            "  Говорили про C++.\nОбсудили циклы.  ",
+            model="test-model",
+            prompt_version=2,
+            created_at=at(10),
+        )
+
+        self.assertEqual(
+            store.summary("s1"),
+            {
+                "session_id": "s1",
+                "summary": "Говорили про C++.\nОбсудили циклы.",
+                "created_at": at(10).isoformat(),
+                "model": "test-model",
+                "prompt_version": 2,
+            },
+        )
+
+    def test_summary_is_replaced(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        store.save_summary("s1", "первое", created_at=at(10))
+        store.save_summary("s1", "второе", created_at=at(11))
+
+        self.assertEqual(store.summary("s1")["summary"], "второе")
+        self.assertEqual(len(store.summaries()), 1)
+
+    def test_empty_summary_is_rejected(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        with self.assertRaises(ValueError):
+            store.save_summary("s1", "   ")
+
+    def test_summary_requires_session(self) -> None:
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.make().save_summary("нет-такой", "текст")
+
+    def test_unknown_summary_is_none(self) -> None:
+        self.assertIsNone(self.make().summary("нет-такой"))
+
+    def test_summaries_are_newest_first(self) -> None:
+        store = self.make()
+        store.save(make_session("old", minute=0))
+        store.save(make_session("new", minute=10))
+        store.save_summary("old", "старое", created_at=at(20))
+        store.save_summary("new", "новое", created_at=at(30))
+
+        self.assertEqual(
+            [item["session_id"] for item in store.summaries()],
+            ["new", "old"],
+        )
+        self.assertEqual(
+            [item["session_id"] for item in store.summaries(limit=1)],
+            ["new"],
+        )
+
+    def test_delete_session_removes_summary(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        store.save_summary("s1", "резюме")
+
+        self.assertTrue(store.delete("s1"))
+        self.assertIsNone(store.summary("s1"))
+        self.assertEqual(store.summaries(), [])
 
 
 if __name__ == "__main__":
