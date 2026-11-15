@@ -100,6 +100,9 @@ class WakeWordDetector:
             raise ValueError("В config.json не заданы wake_aliases")
 
         self.sample_rate = int(sample_rate)
+        # Алиас, на котором сработал последний feed: нужен вызывающей
+        # стороне, чтобы отличить свою озвучку от команды пользователя.
+        self.last_match: str | None = None
         vosk.SetLogLevel(-1)
         self.model = vosk.Model(str(model_dir))
         # Если в грамматике только «луна», декодер обязан услышать её даже
@@ -131,6 +134,7 @@ class WakeWordDetector:
     def feed(self, pcm: bytes) -> bool:
         if not pcm:
             return False
+        self.last_match = None
         if self.recognizer.AcceptWaveform(pcm):
             raw = json.loads(self.recognizer.Result()).get("text", "")
         else:
@@ -141,6 +145,7 @@ class WakeWordDetector:
             return False
         for alias in self.aliases:
             if fuzzy_contains(text, alias, max_distance=allowed_errors(alias)):
+                self.last_match = alias
                 log.info("Ключевое слово: «%s» (услышано: «%s»)", alias, text)
                 return True
         return False

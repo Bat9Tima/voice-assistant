@@ -706,6 +706,14 @@ class FakeBarge:
 class FakeWake:
     def __init__(self) -> None:
         self.resets = 0
+        self.triggered = False
+        self.last_match: str | None = None
+        self.fed = 0
+        self.match = None
+
+    def feed(self, pcm: bytes) -> bool:
+        self.fed += 1
+        return self.triggered
 
     def reset(self) -> None:
         self.resets += 1
@@ -772,6 +780,38 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.tts.stops, 0)
         self.assertEqual(assistant.listen_calls, [])
         self.assertIn(b"pcm", assistant._preroll)
+
+    def test_wake_detector_catches_phrase_free_vosk_missed(self) -> None:
+        assistant = self.make(None)
+        assistant.wake.triggered = True
+        assistant.wake.last_match = "хей луна"
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 1)
+        self.assertEqual(assistant.wake.fed, 1)
+        self.assertEqual(assistant.listen_calls, [([b"old", b"old2", b"new", b"pcm"], False)])
+        self.assertEqual(list(assistant._preroll), [])
+
+    def test_own_wake_phrase_is_ignored(self) -> None:
+        assistant = self.make(
+            None,
+            current_text="Скажите «хей луна» или нажмите ctrl+alt+space.",
+        )
+        assistant.wake.triggered = True
+        assistant.wake.last_match = "хей луна"
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 0)
+        self.assertEqual(assistant.listen_calls, [])
+
+    def test_barge_match_does_not_feed_wake_detector(self) -> None:
+        assistant = self.make(BargeInMatch("stop", "стоп"))
+
+        assistant._handle_speech()
+
+        self.assertEqual(assistant.wake.fed, 0)
 
 
 if __name__ == "__main__":

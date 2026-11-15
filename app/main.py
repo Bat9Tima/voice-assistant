@@ -27,7 +27,7 @@ from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
-from .wake import BargeInDetector, OpenWakeWordDetector, WakeWordDetector
+from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
 
@@ -321,6 +321,10 @@ class Assistant:
                     self._tts_was_speaking = True
                     # В pre-roll не должно остаться звука от прошлой команды.
                     self._preroll.clear()
+                    # Детектор wake слушает и во время озвучки: начинаем
+                    # с чистого состояния, чтобы не сработать на хвосте.
+                    if self.wake is not None:
+                        self.wake.reset()
 
                 # Команда из API важнее текущей озвучки: не ждём её конца.
                 try:
@@ -405,6 +409,15 @@ class Assistant:
             return
 
         match = self.barge.feed(chunk)
+        if match is None and self.wake is not None:
+            # Свободное распознавание часто теряет первое слово wake-фразы
+            # («элвина», «коммуна», «сити»). Грамматический детектор на том
+            # же звуке слышит её надёжно, поэтому спрашиваем и его.
+            if self.wake.feed(chunk):
+                match = BargeInMatch(
+                    "wake",
+                    getattr(self.wake, "last_match", None) or "",
+                )
         if match is None:
             return
         # Ассистент мог сам произнести «стоп» или wake-фразу: не перебиваем

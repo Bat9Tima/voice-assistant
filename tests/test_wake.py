@@ -94,6 +94,13 @@ class WakeMatchTest(unittest.TestCase):
     def test_empty_audio_is_ignored(self) -> None:
         self.assertFalse(self.detector("луна").feed(b""))
 
+    def test_alias_is_saved_for_caller(self) -> None:
+        detector = self.detector("луна открой ютуб")
+
+        self.assertTrue(detector.feed(b"pcm"))
+
+        self.assertEqual(detector.last_match, "луна")
+
 
 class WakeResetTest(unittest.TestCase):
     def test_reset_creates_fresh_recognizer(self) -> None:
