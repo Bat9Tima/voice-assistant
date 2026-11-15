@@ -146,11 +146,13 @@ class SessionMemoryTest(unittest.TestCase):
         memory.finish()
         self.assertEqual(len(self.saved), 1)
 
-    def test_empty_session_is_not_saved(self) -> None:
+    def test_empty_session_is_not_archived_but_hook_runs(self) -> None:
         memory = self.make()
         memory.start()
         memory.finish()
-        self.assertEqual(self.saved, [])
+        # Хук получает пустую сессию, чтобы хранилище удалило её запись.
+        self.assertEqual(len(self.saved), 1)
+        self.assertEqual(self.saved[0].messages, [])
         self.assertEqual(memory.finished, [])
 
     def test_start_closes_previous_session(self) -> None:
@@ -225,6 +227,42 @@ class SessionMemoryTest(unittest.TestCase):
     def test_add_hook_returns_memory(self) -> None:
         memory = SessionMemory()
         self.assertIs(memory.add_hook(lambda session: None), memory)
+
+    def test_start_and_message_hooks_fire_immediately(self) -> None:
+        started: list[DialogSession] = []
+        written: list[tuple[str, int]] = []
+        memory = SessionMemory(
+            on_start=started.append,
+            on_message=lambda session, message, position: written.append((message.role, position)),
+        )
+
+        session = memory.start()
+        memory.add("user", "привет")
+        memory.add("assistant", "здравствуй")
+
+        self.assertEqual(started, [session])
+        self.assertEqual(written, [("user", 0), ("assistant", 1)])
+
+    def test_broken_message_hook_does_not_break_add(self) -> None:
+        def boom(session: DialogSession, message: Message, position: int) -> None:
+            raise RuntimeError("нет диска")
+
+        memory = SessionMemory(on_message=boom)
+        with self.assertLogs("app.session", level="ERROR"):
+            message = memory.add("user", "привет")
+
+        self.assertIsNotNone(message)
+        self.assertEqual(len(memory.current.messages), 1)
+
+    def test_broken_start_hook_does_not_break_start(self) -> None:
+        def boom(session: DialogSession) -> None:
+            raise RuntimeError("нет диска")
+
+        memory = SessionMemory(on_start=boom)
+        with self.assertLogs("app.session", level="ERROR"):
+            session = memory.start()
+
+        self.assertIs(memory.current, session)
 
 
 if __name__ == "__main__":

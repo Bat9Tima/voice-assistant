@@ -1,42 +1,41 @@
-"""Сохранение завершённых сессий диалога в SQLite.
+"""Сохранение разговоров диалога в SQLite.
 
-Одна сессия пишется одной транзакцией: либо сессия и все её реплики, либо
-ничего. Соединение открывается на каждую операцию и сразу закрывается,
-поэтому голосовой цикл и будущие читатели не делят одно подключение
-между потоками.
+Запись идёт по ходу разговора, а не одной пачкой в конце:
 
-Модуль не решает, когда сохранять: это делает ``SessionMemory.on_finish``.
-Ошибки записи пробрасываются наверх — их ловит и логирует ``SessionMemory``,
-чтобы сбой диска не ломал разговор.
+* ``create`` заводит сессию один раз, в момент начала разговора
+  (``sessions.status = 'active'``);
+* ``append`` дописывает каждую реплику сразу после её появления;
+* ``finish`` ставит ``status = 'completed'`` и время окончания.
 
-Кроме сырых сессий и реплик есть таблица ``summaries``: одно резюме на
-сессию. Пока это только хранилище — генерация и подмешивание в диалог
-будут отдельным этапом.
+Так разговор переживает аварийное закрытие программы: в базе остаётся
+всё, что успели записать. Перечитать его можно через ``sessions`` и
+``messages``; незавершённые сессии видны в ``active``.
+
+``save`` остаётся полной синхронизацией сессии: им чинят разговор,
+если отдельные реплики не дошли до диска. Соединение открывается на
+каждую операцию и сразу закрывается, поэтому голосовой цикл и фоновое
+резюме не делят одно подключение между потоками.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .session import DialogSession, SessionMemory
-
-
-def _now() -> datetime:
-    """Локальное время с часовым поясом, как в сессиях."""
-    return datetime.now().astimezone()
-
+from .session import DialogSession, Message, SessionMemory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     started_at TEXT NOT NULL,
     ended_at TEXT,
-    messages_count INTEGER NOT NULL DEFAULT 0
+    messages_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'completed'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -48,7 +47,7 @@ CREATE TABLE IF NOT EXISTS messages (
     at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session
+CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
     ON messages(session_id, position);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_started
@@ -69,50 +68,78 @@ class SessionStore:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
+        self._ready = False
+        self._migrate_lock = threading.Lock()
 
     def attach(self, sessions: SessionMemory) -> SessionStore:
-        """Вешает сохранение на память сессий и возвращает себя."""
-        sessions.on_finish = self.save
+        """Вешает запись на память сессий и возвращает себя.
+
+        Сессия заводится на старте, реплики пишутся по одной, финал
+        закрывает сессию. Резюме подключается отдельным хуком.
+        """
+        sessions.on_start = self.create
+        sessions.on_message = self.append
+        sessions.on_finish = self.finish
         return self
 
     # ------------------------------------------------------------------ write
-    def save(self, session: DialogSession) -> None:
-        """Пишет сессию и все реплики. Повторное сохранение не плодит дубли."""
-        if not session.messages:
-            return
+    def create(self, session: DialogSession) -> None:
+        """Заводит сессию в начале разговора. Повторный вызов безопасен."""
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions (id, started_at, ended_at, messages_count)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    ended_at = excluded.ended_at,
-                    messages_count = excluded.messages_count
+                INSERT INTO sessions (id, started_at, ended_at, messages_count, status)
+                VALUES (?, ?, NULL, 0, 'active')
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (session.id, session.started_at.isoformat()),
+            )
+
+    def append(self, session: DialogSession, message: Message, position: int) -> None:
+        """Дописывает одну реплику. Повтор с той же позицией не плодит дубль."""
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO messages (session_id, position, role, content, at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     session.id,
-                    session.started_at.isoformat(),
-                    session.ended_at.isoformat() if session.ended_at is not None else None,
-                    len(session.messages),
+                    position,
+                    message.role,
+                    message.content,
+                    message.at.isoformat(),
                 ),
             )
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session.id,))
-            conn.executemany(
-                """
-                INSERT INTO messages (session_id, position, role, content, at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        session.id,
-                        position,
-                        message.role,
-                        message.content,
-                        message.at.isoformat(),
-                    )
-                    for position, message in enumerate(session.messages)
-                ],
-            )
+            self._sync_count(conn, session.id)
+
+    def finish(self, session: DialogSession) -> None:
+        """Закрывает сессию и ставит время окончания.
+
+        Метод самодостаточен: если у сессии не проставлен ``ended_at``,
+        берётся текущее время. Пустая сессия удаляется — восстанавливать
+        из неё нечего. Если в базе не хватает реплик (сбой при
+        дописывании), сессия целиком перезаписывается из памяти.
+        """
+        with self._connection() as conn:
+            if not session.messages:
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session.id,))
+                return
+            stored = conn.execute(
+                "SELECT COUNT(*) AS total FROM messages WHERE session_id = ?",
+                (session.id,),
+            ).fetchone()["total"]
+            if int(stored) != len(session.messages):
+                self._write_all(conn, session, closed=True)
+            else:
+                self._upsert_session(conn, session, closed=True)
+
+    def save(self, session: DialogSession) -> None:
+        """Полная запись сессии одной транзакцией: чинит недостающие реплики."""
+        if not session.messages:
+            return
+        with self._connection() as conn:
+            self._write_all(conn, session)
 
     def delete(self, session_id: str) -> bool:
         """Удаляет сессию вместе с репликами и резюме. ``True``, если запись была."""
@@ -155,20 +182,26 @@ class SessionStore:
             )
 
     # ------------------------------------------------------------------- read
-    def sessions(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Последние сессии, новые сверху."""
+    def sessions(self, limit: int = 20, *, status: str = "") -> list[dict[str, Any]]:
+        """Последние сессии, новые сверху. ``status`` фильтрует active/completed."""
         limit = max(1, int(limit))
+        query = """
+            SELECT id, started_at, ended_at, messages_count, status
+            FROM sessions
+        """
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY started_at DESC, rowid DESC LIMIT ?"
+        params.append(limit)
         with self._connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, started_at, ended_at, messages_count
-                FROM sessions
-                ORDER BY started_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def active(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Незавершённые сессии: разговор идёт сейчас или оборвался сбоем."""
+        return self.sessions(limit, status="active")
 
     def messages(self, session_id: str) -> list[dict[str, str]]:
         """Реплики сессии в порядке разговора."""
@@ -219,6 +252,86 @@ class SessionStore:
         return int(row["total"])
 
     # --------------------------------------------------------------- private
+    def _write_all(
+        self,
+        conn: sqlite3.Connection,
+        session: DialogSession,
+        *,
+        closed: bool = False,
+    ) -> None:
+        """Перезаписывает сессию и все её реплики."""
+        self._upsert_session(conn, session, closed=closed)
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session.id,))
+        conn.executemany(
+            """
+            INSERT INTO messages (session_id, position, role, content, at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    session.id,
+                    position,
+                    message.role,
+                    message.content,
+                    message.at.isoformat(),
+                )
+                for position, message in enumerate(session.messages)
+            ],
+        )
+        self._sync_count(conn, session.id)
+
+    @staticmethod
+    def _upsert_session(
+        conn: sqlite3.Connection,
+        session: DialogSession,
+        *,
+        closed: bool = False,
+    ) -> None:
+        ended_at = session.ended_at
+        if ended_at is None and closed:
+            ended_at = _now()
+        conn.execute(
+            """
+            INSERT INTO sessions (id, started_at, ended_at, messages_count, status)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                messages_count = excluded.messages_count,
+                status = excluded.status
+            """,
+            (
+                session.id,
+                session.started_at.isoformat(),
+                ended_at.isoformat() if ended_at is not None else None,
+                len(session.messages),
+                "completed" if closed or session.finished else "active",
+            ),
+        )
+
+    @staticmethod
+    def _sync_count(conn: sqlite3.Connection, session_id: str) -> None:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET messages_count = (
+                SELECT COUNT(*) FROM messages WHERE session_id = sessions.id
+            )
+            WHERE id = ?
+            """,
+            (session_id,),
+        )
+
+    def _migrate_once(self, conn: sqlite3.Connection) -> None:
+        """Миграция схемы один раз на процесс: на каждой записи она лишняя."""
+        if self._ready:
+            return
+        with self._migrate_lock:
+            if self._ready:
+                return
+            _migrate(conn)
+            self._ready = True
+
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,6 +340,7 @@ class SessionStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.executescript(SCHEMA)
+            self._migrate_once(conn)
             yield conn
             conn.commit()
         except Exception:
@@ -234,3 +348,23 @@ class SessionStore:
             raise
         finally:
             conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Доводит старую базу до текущей схемы: колонка status и уникальность."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "status" not in columns:
+        # Сессии, записанные до этого изменения, все завершены.
+        conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
+            ON messages(session_id, position)
+        """
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_messages_session")
+
+
+def _now() -> datetime:
+    """Локальное время с часовым поясом, как в сессиях."""
+    return datetime.now().astimezone()

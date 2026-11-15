@@ -2,8 +2,10 @@
 
 Модуль намеренно не знает про сеть, файлы и базу данных. Его задача —
 держать сообщения одного разговора и отдавать модели урезанное окно.
-Завершённая сессия уходит в колбэки: ``on_finish`` (основной, туда
-подключён ``SessionStore``) и дополнительные ``hooks`` (резюме).
+Жизненный цикл отдаётся колбэками: ``on_start`` (сессия началась),
+``on_message`` (появилась реплика) и ``on_finish`` + ``hooks`` (сессия
+закрылась). В приложении к ним подключены ``SessionStore`` (запись в
+SQLite по ходу разговора) и суммаризатор (резюме после выхода).
 Сам модуль о SQLite и модели ничего не знает.
 
 Границы: ``start`` открывает сессию, ``finish`` закрывает её и вызывает
@@ -28,6 +30,7 @@ DEFAULT_KEEP_FINISHED = 10
 ROLES = ("user", "assistant")
 
 SessionHook = Callable[["DialogSession"], None]
+MessageHook = Callable[["DialogSession", "Message", int], None]
 
 
 def _now() -> datetime:
@@ -111,12 +114,19 @@ class SessionMemory:
         keep_finished: int = DEFAULT_KEEP_FINISHED,
         on_finish: SessionHook | None = None,
         hooks: Iterable[SessionHook] | None = None,
+        on_start: SessionHook | None = None,
+        on_message: MessageHook | None = None,
     ) -> None:
         self.max_messages = max(0, int(max_messages))
         self.max_chars = max(0, int(max_chars))
         self.keep_finished = max(0, int(keep_finished))
         self.on_finish = on_finish
         self.hooks: list[SessionHook] = list(hooks or ())
+        # Колбэки записи: сессия заводится в начале разговора, каждая
+        # реплика дописывается сразу после появления. Так база не теряет
+        # разговор, если программу закрыли посреди беседы.
+        self.on_start = on_start
+        self.on_message = on_message
         self._current: DialogSession | None = None
         self._finished: list[DialogSession] = []
 
@@ -145,6 +155,7 @@ class SessionMemory:
         if self._current is not None:
             self.finish()
         self._current = DialogSession(started_at=_now())
+        self._notify_start(self._current)
         return self._current
 
     def ensure(self) -> DialogSession:
@@ -154,16 +165,16 @@ class SessionMemory:
     def finish(self) -> DialogSession | None:
         """Закрывает текущую сессию и отдаёт её в ``on_finish``.
 
-        Пустая сессия не сохраняется: разговор без реплик никому не нужен.
+        Пустая сессия не попадает в список завершённых, но колбэк получает
+        её тоже: хранилище по нему удаляет пустую запись из базы.
         """
         session = self._current
         if session is None:
             return None
         self._current = None
         session.finish()
-        if not session.messages:
-            return session
-        self._remember(session)
+        if session.messages:
+            self._remember(session)
         self._notify(session)
         return session
 
@@ -180,8 +191,17 @@ class SessionMemory:
         *,
         at: datetime | None = None,
     ) -> Message | None:
-        """Добавляет реплику в текущую сессию, открывая её при необходимости."""
-        return self.ensure().add(role, content, at=at)
+        """Добавляет реплику в текущую сессию, открывая её при необходимости.
+
+        После добавления реплика сразу отдаётся в ``on_message``: так она
+        попадает в базу, не дожидаясь конца разговора.
+        """
+        session = self.ensure()
+        message = session.add(role, content, at=at)
+        if message is None:
+            return None
+        self._notify_message(session, message, len(session.messages) - 1)
+        return message
 
     def history(
         self,
@@ -217,6 +237,26 @@ class SessionMemory:
                 callback(session)
             except Exception:  # noqa: BLE001
                 log.exception("Обработчик завершённой сессии %s упал", session.id)
+
+    def _notify_start(self, session: DialogSession) -> None:
+        if self.on_start is None:
+            return
+        try:
+            self.on_start(session)
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось открыть сессию %s", session.id)
+
+    def _notify_message(self, session: DialogSession, message: Message, position: int) -> None:
+        if self.on_message is None:
+            return
+        try:
+            self.on_message(session, message, position)
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "Не удалось записать реплику %s сессии %s",
+                position,
+                session.id,
+            )
 
 
 def _fit_chars(messages: list[Message], limit: int) -> list[Message]:

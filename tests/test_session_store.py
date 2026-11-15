@@ -43,6 +43,7 @@ class SessionStoreTest(unittest.TestCase):
                     "started_at": at().isoformat(),
                     "ended_at": at(3).isoformat(),
                     "messages_count": 2,
+                    "status": "completed",
                 }
             ],
         )
@@ -129,12 +130,133 @@ class SessionStoreTest(unittest.TestCase):
         memory = SessionMemory()
         store.attach(memory)
 
-        memory.add("user", "привет")
         with self.assertLogs("app.session", level="ERROR"):
+            memory.add("user", "привет")
+            memory.add("assistant", "здравствуй")
             session = memory.finish()
 
         self.assertIsNotNone(session)
         self.assertIsNone(memory.current)
+
+    # ---------------------------------------------------------- incremental
+    def test_create_writes_active_session_once(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+
+        store.create(session)
+        store.create(session)
+
+        self.assertEqual(store.count(), 1)
+        self.assertEqual(store.sessions()[0]["status"], "active")
+        self.assertIsNone(store.sessions()[0]["ended_at"])
+        self.assertEqual(store.messages("live"), [])
+
+    def test_append_writes_message_immediately(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        message = session.add("user", "привет", at=at(1))
+
+        store.append(session, message, 0)
+
+        self.assertEqual(
+            store.messages("live"),
+            [{"role": "user", "content": "привет", "at": at(1).isoformat()}],
+        )
+        self.assertEqual(store.sessions()[0]["messages_count"], 1)
+        self.assertEqual(store.sessions()[0]["status"], "active")
+
+    def test_append_ignores_duplicate_position(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        message = session.add("user", "привет", at=at(1))
+        store.append(session, message, 0)
+        store.append(session, message, 0)
+
+        self.assertEqual(len(store.messages("live")), 1)
+
+    def test_finish_closes_session(self) -> None:
+        store = self.make()
+        session = make_session()
+        store.create(session)
+        for position, message in enumerate(session.messages):
+            store.append(session, message, position)
+
+        store.finish(session)
+
+        saved = store.sessions()[0]
+        self.assertEqual(saved["status"], "completed")
+        self.assertEqual(saved["ended_at"], at(3).isoformat())
+        self.assertEqual(saved["messages_count"], 2)
+        self.assertEqual(store.active(), [])
+
+    def test_finish_does_not_require_ended_at(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        message = session.add("user", "привет", at=at(1))
+        store.append(session, message, 0)
+
+        store.finish(session)
+
+        saved = store.sessions()[0]
+        self.assertEqual(saved["status"], "completed")
+        self.assertIsNotNone(saved["ended_at"])
+
+    def test_crash_leaves_active_session_with_messages(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        first = session.add("user", "привет", at=at(1))
+        second = session.add("assistant", "здравствуй", at=at(2))
+        store.append(session, first, 0)
+        store.append(session, second, 1)
+
+        # finish() не вызывали: программа закрылась посреди разговора.
+        self.assertEqual([item["id"] for item in store.active()], ["live"])
+        self.assertEqual(len(store.messages("live")), 2)
+
+    def test_finish_of_empty_session_removes_it(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="empty")
+        store.create(session)
+
+        store.finish(session)
+
+        self.assertEqual(store.count(), 0)
+
+    def test_finish_repairs_missing_messages(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        first = session.add("user", "привет", at=at(1))
+        store.append(session, first, 0)
+        # Вторая реплика есть в памяти, но до диска не дошла.
+        session.add("assistant", "здравствуй", at=at(2))
+
+        store.finish(session)
+
+        self.assertEqual(len(store.messages("live")), 2)
+        self.assertEqual(store.sessions()[0]["messages_count"], 2)
+
+    def test_attach_writes_while_talking(self) -> None:
+        store = self.make()
+        memory = SessionMemory()
+        store.attach(memory)
+
+        memory.start()
+        memory.add("user", "привет")
+
+        live = memory.current.id
+        self.assertEqual([item["id"] for item in store.active()], [live])
+        self.assertEqual(len(store.messages(live)), 1)
+
+        memory.add("assistant", "здравствуй")
+        memory.finish()
+
+        self.assertEqual(store.sessions()[0]["status"], "completed")
+        self.assertEqual(len(store.messages(live)), 2)
 
 
 class SummaryStoreTest(unittest.TestCase):
