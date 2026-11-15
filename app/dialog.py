@@ -3,9 +3,25 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
+
+from .datetime_answer import datetime_context
+from .profile import Profile
+from .prompts import DIALOG_SYSTEM
+from .text import normalize
 
 DEFAULT_TURN_TTL_SEC = 180.0
 DEFAULT_NEWS_TTL_SEC = 900.0
+DEFAULT_ENTRY_PHRASES = ("давай поговорим", "давай поболтаем", "поговорим", "поболтаем")
+DEFAULT_EXIT_PHRASES = (
+    "хватит",
+    "закончим",
+    "закончим разговор",
+    "заверши разговор",
+    "до свидания",
+)
+# Вводные слова, с которых начинается устная фраза: «ну давай поговорим».
+_ENTRY_FILLERS = ("ну", "ладно", "окей", "ок", "так", "хорошо", "давай")
 
 
 @dataclass(frozen=True)
@@ -133,3 +149,83 @@ class DialogContext:
         self._news = []
         self._news_at = 0.0
         self.weather_city = ""
+
+
+class DialogService:
+    """Режим непрерывного разговора без хранения истории реплик.
+
+    Контекст задаёт текстовый файл профиля, который пользователь пишет сам.
+    Задача сервиса — распознать вход/выход и отправить реплику модели.
+    """
+
+    def __init__(
+        self,
+        cfg: dict[str, Any],
+        llm: Any,
+        profile: Profile | None = None,
+    ) -> None:
+        section = (cfg or {}).get("dialog") or {}
+        self.llm = llm
+        self.profile = profile
+        self.entry_phrases = self._phrases(section.get("entry_phrases"), DEFAULT_ENTRY_PHRASES)
+        self.exit_phrases = self._phrases(section.get("exit_phrases"), DEFAULT_EXIT_PHRASES)
+        self.idle_timeout = max(1.0, float(section.get("idle_timeout_sec") or 60))
+        self.max_utterance = max(1.0, float(section.get("max_utterance_sec") or 60))
+        self.no_speech_timeout = max(1.0, float(section.get("no_speech_timeout_sec") or 10))
+        self.silence_ms = max(200, int(section.get("silence_ms") or 1200))
+        self.max_errors = max(1, int(section.get("max_errors") or 2))
+        self.max_tokens = max(1, int(section.get("max_tokens") or 400))
+        self.temperature = float(section.get("temperature", 0.5))
+        self.timeout = float(section.get("timeout_sec") or 60)
+
+    @staticmethod
+    def _phrases(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+        items = value if isinstance(value, (list, tuple)) and value else default
+        return tuple(phrase for phrase in (normalize(str(item)) for item in items) if phrase)
+
+    def wants_entry(self, text: str) -> bool:
+        return self._matches(text, self.entry_phrases)
+
+    def wants_exit(self, text: str) -> bool:
+        return self._matches(text, self.exit_phrases)
+
+    @staticmethod
+    def _matches(text: str, phrases: tuple[str, ...]) -> bool:
+        normalized = normalize(text)
+        if not normalized:
+            return False
+        candidates = [normalized]
+        words = normalized.split()
+        # «ну давай поговорим», «ладно хватит»: вводные слова не мешают.
+        while words and words[0] in _ENTRY_FILLERS:
+            words = words[1:]
+            candidate = " ".join(words)
+            if candidate:
+                candidates.append(candidate)
+        return any(candidate in phrases for candidate in candidates)
+
+    def system_prompt(self) -> str:
+        """Правила + дата и время + пользовательский контекст из файла."""
+        parts = [DIALOG_SYSTEM.strip(), datetime_context()]
+        if self.profile is not None:
+            block = self.profile.block()
+            if block:
+                parts.append(block)
+        return "\n\n".join(parts)
+
+    def reply(self, text: str) -> str:
+        """Один ход разговора. Историю не ведём: только текущая реплика."""
+        text = " ".join((text or "").split())
+        if not text:
+            raise ValueError("пустая реплика")
+        answer = self.llm.chat(
+            [{"role": "user", "content": text}],
+            system=self.system_prompt(),
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            timeout=self.timeout,
+        )
+        answer = " ".join((answer or "").split())
+        if not answer:
+            raise ValueError("модель вернула пустой ответ")
+        return answer

@@ -814,5 +814,171 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.wake.fed, 0)
 
 
+class FakeDialog:
+    def __init__(self, answer: str = "ответ диалога", error: Exception | None = None) -> None:
+        self.answer = answer
+        self.error = error
+        self.replied: list[str] = []
+        self.max_errors = 2
+        self.idle_timeout = 60
+        self.max_utterance = 60
+        self.no_speech_timeout = 10
+        self.silence_ms = 1200
+
+    def wants_entry(self, text: str) -> bool:
+        return text in {"давай поговорим", "поговорим"}
+
+    def wants_exit(self, text: str) -> bool:
+        return text in {"хватит", "закончим"}
+
+    def reply(self, text: str) -> str:
+        self.replied.append(text)
+        if self.error is not None:
+            raise self.error
+        return self.answer
+
+
+class DialogModeTest(unittest.TestCase):
+    def make(self, result: CommandResult | None = None) -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        assistant.router = FakeRouter(result)
+        assistant.brain = FakeBrain()
+        assistant.planner = FakeLocalPlanner()
+        assistant.qa = None
+        assistant.tts = FakeTTS()
+        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
+        assistant.notifications = []
+        assistant.states = []
+        assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
+            message
+        )
+        assistant.set_state = lambda state: assistant.states.append(state)
+        assistant.dialog = FakeDialog()
+        assistant._dialog_active = False
+        assistant._dialog_last = 0.0
+        assistant._dialog_errors = 0
+        return assistant
+
+    def test_entry_phrase_enables_dialog(self) -> None:
+        assistant = self.make()
+        with patch("app.main.beep"):
+            message = assistant.run_text("давай поговорим")
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(message, "Слушаю. О чём поговорим?")
+        self.assertEqual(assistant.router.seen, [])
+        self.assertIn(message, assistant.tts.said)
+
+    def test_exit_phrase_disables_dialog(self) -> None:
+        assistant = self.make()
+        assistant._dialog_active = True
+        message = assistant.run_text("хватит")
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(message, "Хорошо, закончили.")
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_free_speech_goes_to_dialog_not_qa(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="general")
+        assistant._dialog_active = True
+        message = assistant.run_text("как дела")
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["как дела"])
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.planner.seen, [])
+
+    def test_command_inside_dialog_stays_a_command(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant._dialog_active = True
+        message = assistant.run_text("открой ютуб")
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertTrue(assistant._dialog_active)
+
+    def test_weather_inside_dialog_uses_qa(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(
+            QAAnswer(True, "погода", "Ясно", "Ясно", "weather"),
+            kind="weather",
+        )
+        assistant._dialog_active = True
+        message = assistant.run_text("какая погода")
+        self.assertEqual(message, "Ясно")
+        self.assertEqual(assistant.qa.answered, ["какая погода"])
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_dialog_exits_after_error_limit(self) -> None:
+        assistant = self.make()
+        assistant.dialog.error = RuntimeError("boom")
+        assistant._dialog_active = True
+        with (
+            patch("app.main.beep"),
+            patch("app.main.log.exception"),
+        ):
+            assistant.run_text("раз")
+            assistant.run_text("два")
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(len(assistant.dialog.replied), 2)
+
+    def test_status_reports_dialog(self) -> None:
+        assistant = self.make()
+        assistant.wake = None
+        assistant.tray = None
+        assistant.cfg = {"wake_word": "хей луна", "hotkey": "ctrl+alt+space"}
+        assistant.stt = SimpleNamespace(loaded=False)
+        assistant._state_lock = threading.Lock()
+        assistant._state = "idle"
+        assistant._paused = False
+        self.assertFalse(assistant.status()["dialog"])
+        assistant._dialog_active = True
+        self.assertTrue(assistant.status()["dialog"])
+
+
+class SilentMic:
+    """Микрофон для проверки лимитов записи: всегда отдаёт тишину."""
+
+    def __init__(self, chunk: bytes) -> None:
+        self.chunk = chunk
+        self.reads = 0
+
+    def read(self, timeout: float = 0) -> bytes:
+        self.reads += 1
+        return self.chunk
+
+
+class RecordDialogLimitsTest(unittest.TestCase):
+    def make(self, *, dialog: bool) -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        # 1600 байт PCM16 при 16 кГц — 50 мс.
+        assistant.mic = SilentMic(b"\x00\x00" * 800)
+        assistant.cfg = {
+            "audio": {
+                "energy_threshold": 0.01,
+                "noise_multiplier": 2.0,
+                "silence_ms": 800,
+                "min_speech_ms": 250,
+                "max_command_sec": 15,
+                "no_speech_timeout_sec": 3,
+            },
+            "dialog": {
+                "silence_ms": 1200,
+                "max_utterance_sec": 60,
+                "no_speech_timeout_sec": 1,
+            },
+        }
+        assistant._noise_floor = 0.0
+        assistant.vad = None
+        return assistant
+
+    def test_dialog_uses_its_own_no_speech_timeout(self) -> None:
+        assistant = self.make(dialog=True)
+        self.assertEqual(assistant._record_command(dialog=True), b"")
+        self.assertEqual(assistant.mic.reads, 20)
+
+    def test_command_keeps_audio_timeout(self) -> None:
+        assistant = self.make(dialog=False)
+        self.assertEqual(assistant._record_command(dialog=False), b"")
+        self.assertEqual(assistant.mic.reads, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

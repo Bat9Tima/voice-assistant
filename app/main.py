@@ -18,7 +18,9 @@ from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
+from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
 from .single_instance import acquire
@@ -30,6 +32,10 @@ from .vad import EndpointTracker, SileroVad
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
+
+# Внутри разговора эти фразы обслуживают быстрые сервисы, остальное уходит
+# в чат. Уточнения и общие вопросы — тоже чат: истории пока нет.
+DIALOG_INTENT_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -116,8 +122,20 @@ class Assistant:
             from .local_planner import LocalPlanner
 
             self.planner = LocalPlanner(cfg)
-        self.qa = QAService(cfg, CloudLLM(cfg), self.browser)
+        self.llm = CloudLLM(cfg)
+        self.qa = QAService(cfg, self.llm, self.browser)
         self.tts = TTSService(cfg)
+        self.dialog: DialogService | None = None
+        dialog_cfg = cfg.get("dialog") or {}
+        if bool(dialog_cfg.get("enabled", True)):
+            profile = Profile(
+                dialog_cfg.get("profile_path"),
+                limit=int(dialog_cfg.get("profile_chars") or 4000),
+            )
+            self.dialog = DialogService(cfg, self.llm, profile)
+        self._dialog_active = False
+        self._dialog_last = 0.0
+        self._dialog_errors = 0
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -180,6 +198,7 @@ class Assistant:
             "stt_english_loaded": getattr(self.stt, "english_loaded", False),
             "wake_loaded": self.wake is not None,
             "speaking": bool(getattr(getattr(self, "tts", None), "busy", False)),
+            "dialog": bool(getattr(self, "_dialog_active", False)),
             "tray": self.tray.status() if self.tray is not None else None,
         }
 
@@ -355,6 +374,10 @@ class Assistant:
 
             if self._force_listen.is_set():
                 self._force_listen.clear()
+                if self._dialog_active:
+                    # Горячая клавиша закрывает разговор, как фраза «хватит».
+                    self._stop_dialog("hotkey")
+                    continue
                 self._listen_and_execute()
                 continue
 
@@ -364,6 +387,10 @@ class Assistant:
                 text = None
             if text:
                 self._run_text_command(text)
+                continue
+
+            if self._dialog_active:
+                self._dialog_step()
                 continue
 
             if self.wake is None or self.mic is None:
@@ -387,11 +414,32 @@ class Assistant:
                 time.sleep(1)
                 self.set_state("idle")
 
+    def _dialog_step(self) -> None:
+        """Один шаг разговора: проверка тишины и запись следующей реплики."""
+        dialog = getattr(self, "dialog", None)
+        if dialog is None:
+            self._dialog_active = False
+            return
+        if time.monotonic() - self._dialog_last >= dialog.idle_timeout:
+            self._stop_dialog("idle")
+            return
+        if getattr(self.tts, "busy", False):
+            # Ответ ещё в очереди озвучки: не начинаем запись раньше времени.
+            time.sleep(0.05)
+            return
+        if self.mic is None:
+            # Диалог из текстовых команд: микрофона нет, ждём API или hotkey.
+            time.sleep(0.1)
+            return
+        self._listen_and_execute(chime=False, dialog=True)
+
     def _run_text_command(self, text: str) -> None:
         """Новая команда начинает новый ответ, старые уведомления не нужны."""
         self.clear_notifications()
         try:
             self._process(text)
+            if getattr(self, "_dialog_active", False):
+                self._dialog_last = time.monotonic()
         finally:
             if self.mic is not None:
                 self.mic.flush()
@@ -449,7 +497,10 @@ class Assistant:
             pre_roll = list(self._preroll)
             self._preroll.clear()
             self._last_wake = time.monotonic()
-            self._listen_and_execute(pre_roll, chime=False)
+            if getattr(self, "_dialog_active", False):
+                self._listen_and_execute(pre_roll, chime=False, dialog=True)
+            else:
+                self._listen_and_execute(pre_roll, chime=False)
         else:
             self._preroll.clear()
             self.set_state("idle")
@@ -485,7 +536,7 @@ class Assistant:
         if self._paused:
             self.notify("Ассистент на паузе")
             return
-        if self.state in {"listening", "thinking"}:
+        if self.state in {"listening", "thinking"} and not getattr(self, "_dialog_active", False):
             return
         self._force_listen.set()
 
@@ -508,14 +559,17 @@ class Assistant:
         pre_roll: list[bytes] | None = None,
         *,
         chime: bool = True,
+        dialog: bool = False,
     ) -> None:
         if self._paused or self.mic is None:
             return
         self.set_state("listening")
         # Новая команда: убираем результат предыдущей, не ждём, пока
-        # системный центр уведомлений до неё доберётся.
-        self.clear_notifications()
-        if chime:
+        # системный центр уведомлений до неё доберётся. В разговоре
+        # автопрослушивание не должно стирать ответ каждые 10 секунд.
+        if not dialog:
+            self.clear_notifications()
+        if chime and not dialog:
             if not self.tts.phrase("wake"):
                 beep(880, 80)
             time.sleep(0.12)
@@ -554,7 +608,7 @@ class Assistant:
                         extra.append(chunk)
                     pre_roll = [*pre_roll, *extra]
 
-            pcm = self._record_command(pre_roll)
+            pcm = self._record_command(pre_roll, dialog=dialog)
         except Exception:  # noqa: BLE001
             log.exception("Ошибка записи команды")
             pcm = b""
@@ -568,6 +622,10 @@ class Assistant:
                 self.wake.reset()
 
         if not pcm:
+            if dialog:
+                log.info("Диалог: тишина, продолжаю слушать")
+                self.set_state("idle")
+                return
             self.notify("Не услышал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -590,26 +648,33 @@ class Assistant:
                 log.exception("Не удалось сохранить команду")
 
         self.set_state("thinking")
+        stt_started = time.monotonic()
         try:
             details = self.stt.transcribe_details(pcm)
             text = details.text
             russian = getattr(details, "russian", None)
             english = getattr(details, "english", None)
             log.info(
-                "STT RU: %r | EN: %r | источник: %s",
+                "STT RU: %r | EN: %r | источник: %s | %.2f с",
                 russian.text if russian is not None else text,
                 english.text if english is not None else "",
                 getattr(details, "source", "ru"),
+                time.monotonic() - stt_started,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка распознавания")
             self.notify(f"Ошибка распознавания: {exc}")
-            beep(320, 120)
-            self.tts.phrase("error")
+            if not dialog:
+                beep(320, 120)
+                self.tts.phrase("error")
             self.set_state("idle")
             return
 
         if not text:
+            if dialog:
+                log.info("Диалог: пустая реплика")
+                self.set_state("idle")
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -619,6 +684,10 @@ class Assistant:
         log.info("STT: %r", text)
         text = canonicalize(strip_wake_word(text, self.cfg.get("wake_aliases") or []))
         if not text:
+            if dialog:
+                log.info("Диалог: после wake-фразы ничего не осталось")
+                self.set_state("idle")
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -626,7 +695,11 @@ class Assistant:
             return
 
         log.info("Распознано: %s", text)
-        self.notify(f"«{text}»", "Услышал")
+        if dialog:
+            # Тишина в диалоге отсчитывается от последней реплики.
+            self._dialog_last = time.monotonic()
+        else:
+            self.notify(f"«{text}»", "Услышал")
         try:
             self._process(text)
         finally:
@@ -635,17 +708,29 @@ class Assistant:
             self._preroll.clear()
             self.set_state("idle")
 
-    def _record_command(self, pre_roll: list[bytes] | None = None) -> bytes:
+    def _record_command(
+        self,
+        pre_roll: list[bytes] | None = None,
+        *,
+        dialog: bool = False,
+    ) -> bytes:
         assert self.mic is not None
         audio_cfg = self.cfg["audio"]
         threshold = max(
             float(audio_cfg.get("energy_threshold", 0.01)),
             self._noise_floor * float(audio_cfg.get("noise_multiplier", 2.0)),
         )
-        silence_limit = int(audio_cfg.get("silence_ms", 800))
         min_speech = int(audio_cfg.get("min_speech_ms", 250))
-        max_ms = float(audio_cfg.get("max_command_sec", 15)) * 1000
-        no_speech_limit = float(audio_cfg.get("no_speech_timeout_sec", 6)) * 1000
+        if dialog:
+            # В разговоре паузы длиннее, а реплика может быть длинной.
+            dialog_cfg = self.cfg.get("dialog") or {}
+            silence_limit = int(dialog_cfg.get("silence_ms", 1200))
+            max_ms = float(dialog_cfg.get("max_utterance_sec", 60)) * 1000
+            no_speech_limit = float(dialog_cfg.get("no_speech_timeout_sec", 10)) * 1000
+        else:
+            silence_limit = int(audio_cfg.get("silence_ms", 800))
+            max_ms = float(audio_cfg.get("max_command_sec", 15)) * 1000
+            no_speech_limit = float(audio_cfg.get("no_speech_timeout_sec", 6)) * 1000
 
         initial = list(pre_roll or [])
         chunks: list[bytes] = list(initial)
@@ -743,6 +828,64 @@ class Assistant:
         if time.monotonic() - started >= 1.2:
             self.tts.phrase("done")
 
+    def _start_dialog(self) -> str:
+        """Включает непрерывный разговор и здоровается."""
+        self._dialog_active = True
+        self._dialog_errors = 0
+        self._dialog_last = time.monotonic()
+        self.set_state("idle")
+        message = "Слушаю. О чём поговорим?"
+        self.notify(message)
+        if not self.tts.say(message):
+            beep(880, 80)
+        log.info("Режим диалога включён")
+        return message
+
+    def _stop_dialog(self, reason: str = "phrase") -> str:
+        """Выключает разговор. Причина: phrase, hotkey, idle, errors."""
+        self._dialog_active = False
+        self._dialog_errors = 0
+        self.set_state("idle")
+        if reason == "idle":
+            message = "Похоже, разговор закончился."
+        elif reason == "errors":
+            message = "Не получается ответить, выхожу из разговора."
+        else:
+            message = "Хорошо, закончили."
+        self.notify(message)
+        if not self.tts.phrase("bye"):
+            self.tts.say(message)
+        log.info("Режим диалога выключен (%s)", reason)
+        return message
+
+    def _dialog_reply(self, text: str) -> str:
+        """Ответ модели в разговоре. Ошибки не рвут цикл с первой попытки."""
+        dialog = getattr(self, "dialog", None)
+        if dialog is None:
+            return "Не понял команду"
+        started = time.monotonic()
+        try:
+            answer = dialog.reply(text)
+        except Exception:  # noqa: BLE001
+            log.exception("Ошибка ответа в диалоге")
+            self._dialog_errors = int(getattr(self, "_dialog_errors", 0)) + 1
+            message = "Не получилось ответить."
+            self.notify(message)
+            if self._dialog_errors >= dialog.max_errors:
+                return self._stop_dialog("errors")
+            self.tts.say(message)
+            return message
+        self._dialog_errors = 0
+        self._dialog_last = time.monotonic()
+        self.notify(answer[:250])
+        self.tts.say(answer)
+        log.info(
+            "Диалог: ответ за %.2f с, символов %s",
+            time.monotonic() - started,
+            len(answer),
+        )
+        return answer
+
     def _process(self, text: str) -> str:
         text = canonicalize(normalize(text))
         if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
@@ -752,13 +895,26 @@ class Assistant:
                 stop()
         self.set_state("thinking")
         try:
+            dialog = getattr(self, "dialog", None)
+            in_dialog = bool(getattr(self, "_dialog_active", False))
+            if dialog is not None:
+                if not in_dialog and dialog.wants_entry(text):
+                    return self._start_dialog()
+                if in_dialog and dialog.wants_exit(text):
+                    return self._stop_dialog("phrase")
+
             qa = getattr(self, "qa", None)
             # Разбираем фразу один раз: и для подводки, и для ответа.
             route = qa.route(text) if qa is not None else None
-            self._ack(text, route)
-            started = time.monotonic()
+            if in_dialog and route is not None and route.kind not in DIALOG_INTENT_KINDS:
+                # В разговоре всё, что не команда и не справка, уходит в чат.
+                route = None
 
             triggered, request = split_agent_trigger(text, self.agent_triggers)
+            if not in_dialog or route is not None or triggered:
+                self._ack(text, route)
+            started = time.monotonic()
+
             if triggered:
                 if not request:
                     message = "Что спросить у агента?"
@@ -811,6 +967,10 @@ class Assistant:
                     else:
                         self.tts.phrase("error")
                 return message
+
+            if in_dialog:
+                # Команды и справки уже отработали; остальное — свободный разговор.
+                return self._dialog_reply(text)
 
             plan = None
             planner = getattr(self, "planner", None)

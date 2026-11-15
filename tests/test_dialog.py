@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from app.dialog import DialogContext, NewsItem, clip_text
+from app.dialog import DialogContext, DialogService, NewsItem, clip_text
+from app.profile import Profile
 
 
 class FakeClock:
@@ -138,6 +142,131 @@ class DialogResetTest(unittest.TestCase):
         self.assertEqual(context.news(), [])
         self.assertEqual(context.weather_city, "")
         self.assertEqual(context.history(), "")
+
+
+class FakeLLM:
+    def __init__(self, answer: str | Exception = "Ответ") -> None:
+        self.answer = answer
+        self.calls: list[tuple[list[dict[str, str]], dict]] = []
+
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> str:
+        self.calls.append((messages, kwargs))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+class DialogServiceTest(unittest.TestCase):
+    def test_entry_phrases_with_fillers(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+        for text in ("давай поговорим", "ну давай поговорим", "Давай поговорим!", "поговорим"):
+            self.assertTrue(service.wants_entry(text), text)
+        self.assertFalse(service.wants_entry("давай откроем ютуб"))
+
+    def test_exit_phrases_with_fillers(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+        self.assertTrue(service.wants_exit("ну хватит"))
+        self.assertTrue(service.wants_exit("закончим разговор"))
+        self.assertFalse(service.wants_exit("хватит играть"))
+
+    def test_reply_sends_one_message_and_system_prompt(self) -> None:
+        llm = FakeLLM("  Ответ   модели  ")
+        service = DialogService({"dialog": {"temperature": 0.4, "timeout_sec": 12}}, llm)
+        answer = service.reply("как дела?")
+        self.assertEqual(answer, "Ответ модели")
+        messages, kwargs = llm.calls[0]
+        self.assertEqual(messages, [{"role": "user", "content": "как дела?"}])
+        self.assertIn("голосовой ассистент", kwargs["system"])
+        self.assertEqual(kwargs["temperature"], 0.4)
+        self.assertEqual(kwargs["timeout"], 12)
+
+    def test_datetime_is_in_system_prompt(self) -> None:
+        now = "Сегодня 13 ноября 2026 года, пятница. Сейчас 20:47."
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm)
+        with patch("app.dialog.datetime_context", return_value=now):
+            service.reply("привет")
+        self.assertIn(now, llm.calls[0][1]["system"])
+
+    def test_profile_block_is_in_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.txt"
+            path.write_text("Меня зовут Алексей.", encoding="utf-8")
+            llm = FakeLLM()
+            service = DialogService({"dialog": {}}, llm, Profile(path))
+            service.reply("привет")
+        self.assertIn("Меня зовут Алексей.", llm.calls[0][1]["system"])
+
+    def test_empty_reply_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DialogService({"dialog": {}}, FakeLLM()).reply("  ")
+
+    def test_empty_model_answer_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            DialogService({"dialog": {}}, FakeLLM(" ")).reply("привет")
+
+    def test_custom_phrases_from_config(self) -> None:
+        service = DialogService(
+            {"dialog": {"entry_phrases": ["начнем"], "exit_phrases": ["конец"]}},
+            FakeLLM(),
+        )
+        self.assertTrue(service.wants_entry("начнем"))
+        self.assertFalse(service.wants_entry("давай поговорим"))
+        self.assertTrue(service.wants_exit("конец"))
+
+    def test_limits_from_config(self) -> None:
+        service = DialogService(
+            {
+                "dialog": {
+                    "idle_timeout_sec": 5,
+                    "max_utterance_sec": 7,
+                    "no_speech_timeout_sec": 3,
+                    "silence_ms": 900,
+                    "max_errors": 3,
+                }
+            },
+            FakeLLM(),
+        )
+        self.assertEqual(service.idle_timeout, 5)
+        self.assertEqual(service.max_utterance, 7)
+        self.assertEqual(service.no_speech_timeout, 3)
+        self.assertEqual(service.silence_ms, 900)
+        self.assertEqual(service.max_errors, 3)
+
+
+class ProfileTest(unittest.TestCase):
+    def make(self, text: str | None = None, limit: int = 4000) -> Profile:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "profile.txt"
+        if text is not None:
+            path.write_text(text, encoding="utf-8")
+        return Profile(path, limit=limit)
+
+    def test_missing_file_is_empty(self) -> None:
+        profile = Profile(Path(tempfile.gettempdir()) / "нет-такого-профиля.txt")
+        self.assertEqual(profile.text(), "")
+        self.assertEqual(profile.block(), "")
+
+    def test_without_path_is_empty(self) -> None:
+        self.assertEqual(Profile(None).text(), "")
+
+    def test_text_and_block(self) -> None:
+        profile = self.make("Персона: спокойно.\n\nФакты:\n- любит кратко.\n")
+        self.assertEqual(profile.text(), "Персона: спокойно.\n\nФакты:\n- любит кратко.")
+        self.assertIn("Персона: спокойно.", profile.block())
+        self.assertIn("Контекст от пользователя", profile.block())
+
+    def test_bom_is_stripped(self) -> None:
+        self.assertEqual(self.make("\ufeffПривет").text(), "Привет")
+
+    def test_limit_cuts_by_line(self) -> None:
+        profile = self.make("первая строка\nвторая строка\nтретья", limit=20)
+        self.assertEqual(profile.text(), "первая строка\n…")
+
+    def test_zero_limit_disables_cut(self) -> None:
+        text = "а" * 100
+        self.assertEqual(self.make(text, limit=0).text(), text)
 
 
 if __name__ == "__main__":

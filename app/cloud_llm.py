@@ -13,6 +13,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from .datetime_answer import datetime_context
@@ -131,6 +132,73 @@ class CloudLLM:
         temperature = self.temperature if temperature is None else float(temperature)
         timeout = self.timeout if timeout is None else float(timeout)
         preferred = model or (self.article_model if style == "article" else "")
+        return self._with_fallback(
+            lambda candidate: self._complete(
+                candidate,
+                system,
+                user,
+                max_tokens=limit,
+                temperature=temperature,
+                timeout=timeout,
+            ),
+            preferred=preferred,
+        )
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str = "",
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: float | None = None,
+        model: str | None = None,
+    ) -> str:
+        """Ответ на список сообщений в формате OpenAI.
+
+        Сервис диалога пока передаёт одну реплику: история не хранится.
+        Формат списка оставлен, чтобы позже добавить память без переделки.
+        """
+        cleaned: list[dict[str, str]] = []
+        for item in messages or []:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = item.get("content")
+            if role not in {"system", "user", "assistant"}:
+                continue
+            if not isinstance(content, str) or not content.strip():
+                continue
+            cleaned.append({"role": role, "content": content.strip()})
+        if not cleaned:
+            raise LLMError("пустой диалог")
+        system = (system or "").strip()
+        if system:
+            cleaned.insert(0, {"role": "system", "content": system})
+
+        if not self.enabled:
+            raise LLMError("облачная LLM выключена")
+        if not self.model:
+            raise LLMError("не задана модель cloud_llm.model")
+        if not self.api_key:
+            raise LLMError("не задан ключ cloud_llm.api_key")
+
+        limit = max(int(max_tokens or 0), self.max_completion_tokens)
+        temperature = self.temperature if temperature is None else float(temperature)
+        timeout = self.timeout if timeout is None else float(timeout)
+        return self._with_fallback(
+            lambda candidate: self._post(
+                candidate,
+                cleaned,
+                max_tokens=limit,
+                temperature=temperature,
+                timeout=timeout,
+            ),
+            preferred=model or "",
+        )
+
+    def _with_fallback(self, send: Callable[[str], str], *, preferred: str = "") -> str:
+        """Повторяет запрос и перебирает запасные модели."""
         candidates = [preferred or self.model]
         candidates.extend(item for item in self.fallback_models if item not in candidates)
 
@@ -138,14 +206,7 @@ class CloudLLM:
         for candidate in candidates:
             for attempt in range(1, self.retries + 2):
                 try:
-                    return self._complete(
-                        candidate,
-                        system,
-                        user,
-                        max_tokens=limit,
-                        temperature=temperature,
-                        timeout=timeout,
-                    )
+                    return send(candidate)
                 except LLMError as exc:
                     errors.append(f"{candidate}: {exc}")
                     log.warning(
@@ -172,12 +233,29 @@ class CloudLLM:
         temperature: float,
         timeout: float,
     ) -> str:
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": [
+        return self._post(
+            model,
+            [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+
+    def _post(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: float,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
             "max_completion_tokens": int(max_tokens),
             "temperature": float(temperature),
             "stream": False,
