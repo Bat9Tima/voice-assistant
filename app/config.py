@@ -203,6 +203,20 @@ DEFAULTS: dict[str, Any] = {
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
         "db_path": "state/dialog.db",
+        # После выхода сессия сжимается в короткое резюме и ложится в
+        # таблицу summaries. Пока оно только хранится, в новые разговоры
+        # не подмешивается. background — считать в фоновом потоке, чтобы
+        # не задерживать прощание; пустой model — модель cloud_llm.
+        "summary": {
+            "enabled": True,
+            "model": "",
+            "max_input_chars": 6000,
+            "max_tokens": 300,
+            "temperature": 0.2,
+            "timeout_sec": 45,
+            "min_messages": 2,
+            "background": True,
+        },
     },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
     # через ProxyAPI. Ключ и голос задаются в config.json.

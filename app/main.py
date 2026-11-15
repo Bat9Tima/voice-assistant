@@ -26,6 +26,7 @@ from .server import ControlServer
 from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
+from .summarizer import Summarizer
 from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
@@ -128,6 +129,7 @@ class Assistant:
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
+        self.summarizer: Summarizer | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
@@ -138,6 +140,11 @@ class Assistant:
             db_path = str(dialog_cfg.get("db_path") or "").strip()
             if db_path:
                 self.session_store = SessionStore(db_path).attach(self.dialog.sessions)
+                self.summarizer = Summarizer.from_config(
+                    self.llm,
+                    self.session_store,
+                    dialog_cfg.get("summary"),
+                ).attach(self.dialog.sessions)
                 log.info("Сессии диалога сохраняются в %s", db_path)
         self._dialog_active = False
         self._dialog_last = 0.0
@@ -1031,8 +1038,13 @@ class Assistant:
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             # Программу закрыли посреди разговора: сессия всё равно должна
-            # закрыться, иначе следующий этап не получит её в on_finish.
+            # закрыться, иначе резюме её не увидит.
             dialog.stop()
+        summarizer = getattr(self, "summarizer", None)
+        if summarizer is not None:
+            # Сырая сессия уже в базе; даём фоновому резюме дописаться,
+            # но не держим закрытие программы дольше десяти секунд.
+            summarizer.close(timeout=10)
         if self.mic is not None:
             self.mic.stop()
         if self._hotkey_listener is not None:

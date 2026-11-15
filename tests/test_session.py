@@ -195,6 +195,37 @@ class SessionMemoryTest(unittest.TestCase):
         self.assertEqual(memory.finished, [])
         self.assertEqual(self.saved, [])
 
+    def test_hooks_run_after_on_finish_in_order(self) -> None:
+        calls: list[str] = []
+        memory = SessionMemory(
+            on_finish=lambda session: calls.append("save"),
+            hooks=[lambda session: calls.append("summary")],
+        )
+        memory.add_hook(lambda session: calls.append("later"))
+        memory.add("user", "привет")
+
+        memory.finish()
+
+        self.assertEqual(calls, ["save", "summary", "later"])
+
+    def test_broken_hook_does_not_stop_others(self) -> None:
+        calls: list[str] = []
+
+        def boom(session: DialogSession) -> None:
+            raise RuntimeError("нет сети")
+
+        memory = SessionMemory(on_finish=boom).add_hook(lambda session: calls.append(session.id))
+        memory.add("user", "привет")
+
+        with self.assertLogs("app.session", level="ERROR"):
+            session = memory.finish()
+
+        self.assertEqual(calls, [session.id])
+
+    def test_add_hook_returns_memory(self) -> None:
+        memory = SessionMemory()
+        self.assertIs(memory.add_hook(lambda session: None), memory)
+
 
 if __name__ == "__main__":
     unittest.main()

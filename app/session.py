@@ -2,19 +2,20 @@
 
 Модуль намеренно не знает про сеть, файлы и базу данных. Его задача —
 держать сообщения одного разговора и отдавать модели урезанное окно.
-Завершённая сессия уходит в колбэк ``on_finish``: в приложении туда
-подключён ``SessionStore`` из ``app.session_store``, но сам модуль о
-SQLite ничего не знает.
+Завершённая сессия уходит в колбэки: ``on_finish`` (основной, туда
+подключён ``SessionStore``) и дополнительные ``hooks`` (резюме).
+Сам модуль о SQLite и модели ничего не знает.
 
 Границы: ``start`` открывает сессию, ``finish`` закрывает её и вызывает
-колбэк. Сбой колбэка только пишется в лог, голосовой цикл он не ломает.
+колбэки. Сбой одного колбэка только пишется в лог: остальные колбэки
+и голосовой цикл он не ломает.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -109,13 +110,25 @@ class SessionMemory:
         *,
         keep_finished: int = DEFAULT_KEEP_FINISHED,
         on_finish: SessionHook | None = None,
+        hooks: Iterable[SessionHook] | None = None,
     ) -> None:
         self.max_messages = max(0, int(max_messages))
         self.max_chars = max(0, int(max_chars))
         self.keep_finished = max(0, int(keep_finished))
         self.on_finish = on_finish
+        self.hooks: list[SessionHook] = list(hooks or ())
         self._current: DialogSession | None = None
         self._finished: list[DialogSession] = []
+
+    def add_hook(self, hook: SessionHook) -> SessionMemory:
+        """Добавляет обработчик завершённых сессий и возвращает себя.
+
+        Основной ``on_finish`` вызывается первым, затем хуки по порядку:
+        так сырая сессия успевает лечь в базу до того, как её начнут
+        сжимать в резюме.
+        """
+        self.hooks.append(hook)
+        return self
 
     @property
     def current(self) -> DialogSession | None:
@@ -198,12 +211,12 @@ class SessionMemory:
             self._finished.clear()
 
     def _notify(self, session: DialogSession) -> None:
-        if self.on_finish is None:
-            return
-        try:
-            self.on_finish(session)
-        except Exception:  # noqa: BLE001
-            log.exception("Не удалось сохранить сессию %s", session.id)
+        callbacks = ([self.on_finish] if self.on_finish is not None else []) + list(self.hooks)
+        for callback in callbacks:
+            try:
+                callback(session)
+            except Exception:  # noqa: BLE001
+                log.exception("Обработчик завершённой сессии %s упал", session.id)
 
 
 def _fit_chars(messages: list[Message], limit: int) -> list[Message]:
