@@ -520,8 +520,21 @@ class Assistant:
         self._preroll.append(chunk)
         if self.barge is None:
             return
+        try:
+            self._barge_in(self.barge, chunk)
+        except Exception:  # noqa: BLE001
+            # Сбой детектора не должен завершать ассистента: приводим
+            # детекторы в чистое состояние и продолжаем слушать.
+            log.exception("Ошибка обработки перебивания")
+            try:
+                self.barge.reset()
+                if self.wake is not None:
+                    self.wake.reset()
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось сбросить детекторы после ошибки")
 
-        match = self.barge.feed(chunk)
+    def _barge_in(self, barge: BargeInDetector, chunk: bytes) -> None:
+        match = barge.feed(chunk)
         if match is None and self.wake is not None:
             # Свободное распознавание часто теряет первое слово wake-фразы
             # («элвина», «коммуна», «сити»). Грамматический детектор на том
@@ -542,12 +555,12 @@ class Assistant:
             spoken,
         ):
             log.debug("Перебивание: «%s» есть в озвучке, игнорирую", match.phrase)
-            self.barge.reset()
+            barge.reset()
             return
 
         log.info("Перебивание голосом: «%s» (%s)", match.phrase, match.action)
         self.tts.stop()
-        self.barge.reset()
+        barge.reset()
         if self.wake is not None:
             self.wake.reset()
         if match.action == "wake":

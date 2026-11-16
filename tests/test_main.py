@@ -784,6 +784,22 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.listen_calls, [])
         self.assertIn(b"pcm", assistant._preroll)
 
+    def test_detector_error_does_not_break_loop(self) -> None:
+        assistant = self.make(None)
+
+        def boom(pcm: bytes) -> Any:
+            raise RuntimeError("vosk упал")
+
+        assistant.barge.feed = boom
+
+        with self.assertLogs("app.main", level="ERROR"):
+            assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 0)
+        self.assertEqual(assistant.barge.resets, 1)
+        self.assertEqual(assistant.wake.resets, 1)
+        self.assertEqual(assistant.listen_calls, [])
+
     def test_wake_detector_catches_phrase_free_vosk_missed(self) -> None:
         assistant = self.make(None)
         assistant.wake.triggered = True

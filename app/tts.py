@@ -30,6 +30,9 @@ from .config import DATA_DIR, ROOT
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 44100
+# Куски, которыми звук уходит в PortAudio. Меньше — быстрее перебивание,
+# больше — меньше вызовов и надёжнее на слабых машинах.
+PLAY_CHUNK_SEC = 0.1
 LEAD_SEC = 0.015
 TAIL_SEC = 0.060
 FADE_SEC = 0.005
@@ -337,12 +340,8 @@ class TTSService:
                 dropped += 1
             self._pending = max(0, self._pending - dropped)
             self._current_text = ""
-        try:
-            import sounddevice as sd
-
-            sd.stop()
-        except Exception:  # noqa: BLE001
-            pass
+        # PortAudio здесь не трогаем: остановку заметит сам воркер между
+        # блоками и закроет свой поток с того же потока, что открыл.
 
     def wait(self, timeout: float = 5.0) -> bool:
         """Ждёт, пока очередь озвучки опустеет. Нужен тестам и сценариям выхода."""
@@ -433,6 +432,13 @@ class TTSService:
         with self._job_lock:
             return not job.cancelled.is_set() and job.generation == self._generation
 
+    def _play_alive(self, job: _SpeechJob | None, generation: int) -> bool:
+        """Можно ли продолжать фрагмент: отмена джобы или stop() для фразы."""
+        if job is not None:
+            return self._job_alive(job)
+        with self._job_lock:
+            return generation == self._generation
+
     # ------------------------------------------------------------------ synth
     def _cache_path(self, text: str) -> Path:
         key = hashlib.sha256(f"{self.model}|{self.voice}|{text}".encode()).hexdigest()[:32]
@@ -492,25 +498,59 @@ class TTSService:
 
     # ------------------------------------------------------------------ audio
     def _play(self, data: np.ndarray, job: _SpeechJob | None = None) -> bool:
+        """Проигрывает фрагмент, закрывая поток в том же потоке, что открыл.
+
+        ``sd.stop()`` из главного цикла, пока воркер висит в
+        ``sd.play(blocking=True)``, закрывает один и тот же поток PortAudio
+        из двух потоков — процесс падает с 0xc0000005 в ntdll. Поэтому
+        звук пишется кусками: ``stop()`` только поднимает флаг, а поток
+        открывает и закрывает сам писатель.
+        """
         if job is not None and not self._job_alive(job):
             return False
         if self.volume != 1.0:
             data = np.clip(data * self.volume, -1.0, 1.0)
         try:
             import sounddevice as sd
-
-            with self._play_lock:
-                # stop() мог сработать, пока мы ждали предыдущий фрагмент.
-                if job is not None and not self._job_alive(job):
-                    return False
-                with self._job_lock:
-                    self._playing += 1
-                try:
-                    sd.play(data, samplerate=SAMPLE_RATE, blocking=True)
-                finally:
-                    with self._job_lock:
-                        self._playing = max(0, self._playing - 1)
-            return job is None or self._job_alive(job)
         except Exception as exc:  # noqa: BLE001
-            log.warning("TTS: не удалось воспроизвести: %s", exc)
+            log.warning("TTS: звук недоступен: %s", exc)
             return False
+        with self._play_lock:
+            # stop() мог сработать, пока мы ждали предыдущий фрагмент.
+            generation = self._generation
+            if not self._play_alive(job, generation):
+                return False
+            with self._job_lock:
+                self._playing += 1
+            stream = None
+            try:
+                stream = sd.OutputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                )
+                stream.start()
+                step = max(1, int(SAMPLE_RATE * PLAY_CHUNK_SEC))
+                for start in range(0, len(data), step):
+                    if not self._play_alive(job, generation):
+                        # abort выбрасывает уже поставленные в буфер кадры,
+                        # поэтому речь замолкает сразу, а не через блок.
+                        stream.abort()
+                        return False
+                    stream.write(data[start : start + step])
+                if not self._play_alive(job, generation):
+                    stream.abort()
+                    return False
+                stream.stop()
+                return True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("TTS: не удалось воспроизвести: %s", exc)
+                return False
+            finally:
+                if stream is not None:
+                    try:
+                        stream.close(True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                with self._job_lock:
+                    self._playing = max(0, self._playing - 1)
