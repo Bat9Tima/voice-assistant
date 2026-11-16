@@ -132,6 +132,8 @@
     "history_chars": 4000,
     "profile_path": "state/profile.txt",
     "profile_chars": 4000,
+    "persona_path": "state/luna.txt",
+    "persona_chars": 2000,
     "db_path": "state/dialog.db",
     "summary": {
       "enabled": true,

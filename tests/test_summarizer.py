@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.cloud_llm import LLMError
-from app.prompts import SUMMARY_SYSTEM
+from app.persona import PersonaMemory
+from app.prompts import SELF_FACTS_SYSTEM, SUMMARY_SYSTEM
 from app.session import DialogSession, SessionMemory
 from app.session_store import SessionStore
 from app.summarizer import Summarizer
@@ -271,6 +272,57 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(text, "Говорили о C++ и циклах.")
         self.assertEqual(store.summary("s1")["summary"], text)
 
+    def test_self_facts_are_saved_to_persona(self) -> None:
+        class PersonaLLM(FakeLLM):
+            def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+                self.calls.append({"messages": messages, **kwargs})
+                if kwargs.get("system") == SELF_FACTS_SYSTEM:
+                    return "- Мне 23 года.\n- Живу в Москве."
+                return "Говорили о C++ и циклах."
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        persona = PersonaMemory(Path(directory.name) / "luna.txt")
+        llm = PersonaLLM()
+        summarizer = Summarizer(llm, store, background=False, persona=persona)
+        session = make_session()
+        store.save(session)
+
+        summarizer.summarize(session)
+
+        self.assertEqual(persona.facts(), ["Мне 23 года.", "Живу в Москве."])
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[1]["system"], SELF_FACTS_SYSTEM)
+        self.assertEqual(llm.calls[1]["temperature"], 0.0)
+
+    def test_persona_failure_does_not_block_summary(self) -> None:
+        class BrokenPersonaLLM(FakeLLM):
+            def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+                if kwargs.get("system") == SELF_FACTS_SYSTEM:
+                    raise RuntimeError("нет сети")
+                return super().chat(messages, **kwargs)
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        persona = PersonaMemory(Path(directory.name) / "luna.txt")
+        summarizer = Summarizer(
+            BrokenPersonaLLM(),
+            store,
+            background=False,
+            persona=persona,
+        )
+        session = make_session()
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="ERROR"):
+            text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(store.summary("s1")["summary"], text)
+        self.assertEqual(persona.facts(), [])
+
     def test_from_config_passes_memory(self) -> None:
         class FakeMemory:
             def remember(self, session_id: str, summary: str) -> bool:
@@ -279,6 +331,11 @@ class SummarizerTest(unittest.TestCase):
         memory = FakeMemory()
         summarizer = Summarizer.from_config(FakeLLM(), object(), memory=memory)
         self.assertIs(summarizer.memory, memory)
+
+    def test_from_config_passes_persona(self) -> None:
+        persona = PersonaMemory(None)
+        summarizer = Summarizer.from_config(FakeLLM(), object(), persona=persona)
+        self.assertIs(summarizer.persona, persona)
 
     def test_from_config_overrides(self) -> None:
         summarizer = Summarizer.from_config(

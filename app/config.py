@@ -202,11 +202,15 @@ DEFAULTS: dict[str, Any] = {
         "history_chars": 4000,
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
+        # Факты Луны о себе: файл пополняется после разговоров и идёт
+        # в системный промпт отдельным блоком. Пустой путь выключает.
+        "persona_path": "state/luna.txt",
+        "persona_chars": 2000,
         "db_path": "state/dialog.db",
         # После выхода сессия сжимается в короткое резюме и ложится в
-        # таблицу summaries. Пока оно только хранится, в новые разговоры
-        # не подмешивается. background — считать в фоновом потоке, чтобы
-        # не задерживать прощание; пустой model — модель cloud_llm.
+        # таблицу summaries; резюме уходит в семантическую память, а факты
+        # Луны о себе — в persona_path. background — считать в фоновом
+        # потоке, чтобы не задерживать прощание; пустой model — cloud_llm.
         "summary": {
             "enabled": True,
             "model": "",
@@ -284,7 +288,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])
 
     dialog_cfg = cfg.get("dialog") or {}
-    for key in ("profile_path", "db_path"):
+    for key in ("profile_path", "persona_path", "db_path"):
         value = str(dialog_cfg.get(key) or "").strip()
         if not value:
             continue

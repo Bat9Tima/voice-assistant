@@ -5,8 +5,9 @@
 недоступна или вернула мусор, сырьё остаётся на месте, а резюме можно
 посчитать позже.
 
-Пока резюме только сохраняется в таблицу ``summaries``. В новые
-разговоры оно не подмешивается: это следующий этап.
+После резюме тем же фоновым воркером извлекаются факты Луны о себе и
+дописываются в ``PersonaMemory``. Это отдельная память личности: она не
+смешивается ни с профилем пользователя, ни с эпизодической памятью.
 
 Запрос к модели не должен задерживать выход из диалога, поэтому по
 умолчанию резюме считается в фоновом потоке. ``close()`` дожидается
@@ -20,7 +21,8 @@ import queue
 import threading
 from typing import Any
 
-from .prompts import SUMMARY_PROMPT_VERSION, SUMMARY_SYSTEM
+from .persona import PersonaMemory, parse_facts
+from .prompts import SELF_FACTS_SYSTEM, SUMMARY_PROMPT_VERSION, SUMMARY_SYSTEM
 from .session import DialogSession, SessionMemory
 
 log = logging.getLogger(__name__)
@@ -61,11 +63,14 @@ class Summarizer:
         prompt_version: int = SUMMARY_PROMPT_VERSION,
         background: bool = True,
         memory: Any | None = None,
+        persona: PersonaMemory | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
         # Необязательный индекс: если он упал, резюме всё равно сохранено.
         self.memory = memory
+        # Факты Луны о себе: отдельный файл, отдельный запрос к модели.
+        self.persona = persona
         self.enabled = bool(enabled)
         self.model = str(model or "").strip()
         self.max_input_chars = max(0, int(max_input_chars))
@@ -87,6 +92,7 @@ class Summarizer:
         section: dict[str, Any] | None = None,
         *,
         memory: Any | None = None,
+        persona: PersonaMemory | None = None,
     ) -> Summarizer:
         """Собирает суммаризатор из вложенной секции ``dialog.summary``."""
         section = section or {}
@@ -103,6 +109,7 @@ class Summarizer:
             prompt_version=_int(section.get("prompt_version"), SUMMARY_PROMPT_VERSION),
             background=bool(section.get("background", True)),
             memory=memory,
+            persona=persona,
         )
 
     # ------------------------------------------------------------------ hooks
@@ -148,6 +155,7 @@ class Summarizer:
         )
         log.info("Резюме сессии %s сохранено: %s символов", session.id, len(summary))
         self._remember(session.id, summary)
+        self._remember_self(session, transcript)
         return summary
 
     def _remember(self, session_id: str, summary: str) -> None:
@@ -158,6 +166,27 @@ class Summarizer:
             self.memory.remember(session_id, summary)
         except Exception:  # noqa: BLE001
             log.exception("Резюме сессии %s не попало в память", session_id)
+
+    def _remember_self(self, session: DialogSession, transcript: str) -> None:
+        """Извлекает из разговора факты Луны о себе. Сбой не критичен."""
+        if self.persona is None:
+            return
+        try:
+            answer = self.llm.chat(
+                [{"role": "user", "content": transcript}],
+                system=SELF_FACTS_SYSTEM,
+                max_tokens=self.max_tokens,
+                temperature=0.0,
+                timeout=self.timeout,
+                model=self.model or None,
+            )
+            facts = parse_facts(answer or "")
+            added = self.persona.merge(facts) if facts else 0
+        except Exception:  # noqa: BLE001
+            log.exception("Факты о Луне не сохранены для сессии %s", session.id)
+            return
+        if added:
+            log.info("Память личности: добавлено фактов %s", added)
 
     def transcript(self, session: DialogSession) -> str:
         """Реплики одной строкой на каждую, в пределах лимита символов.

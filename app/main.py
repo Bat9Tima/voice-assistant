@@ -21,6 +21,7 @@ from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_co
 from .dialog import DialogService
 from .duck import AppVolumeDucker
 from .memory import MemoryService
+from .persona import PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
@@ -139,10 +140,20 @@ class Assistant:
                 limit=int(dialog_cfg.get("profile_chars") or 4000),
             )
             db_path = str(dialog_cfg.get("db_path") or "").strip()
+            persona = PersonaMemory(
+                dialog_cfg.get("persona_path"),
+                limit=int(dialog_cfg.get("persona_chars") or 2000),
+            )
             if db_path:
                 self.session_store = SessionStore(db_path)
                 self.memory = MemoryService.from_config(cfg, self.session_store)
-            self.dialog = DialogService(cfg, self.llm, profile, memory=self.memory)
+            self.dialog = DialogService(
+                cfg,
+                self.llm,
+                profile,
+                memory=self.memory,
+                persona=persona,
+            )
             if self.session_store is not None:
                 self.session_store.attach(self.dialog.sessions)
                 self.summarizer = Summarizer.from_config(
@@ -150,8 +161,11 @@ class Assistant:
                     self.session_store,
                     dialog_cfg.get("summary"),
                     memory=self.memory,
+                    persona=persona,
                 ).attach(self.dialog.sessions)
                 log.info("Сессии диалога сохраняются в %s", db_path)
+                if persona.path is not None:
+                    log.info("Память личности: %s", persona.path)
                 if self.memory is not None:
                     log.info("Семантическая память включена: %s", self.memory.embedder.model)
                     self._restore_memory_async()

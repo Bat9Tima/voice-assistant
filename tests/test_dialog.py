@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.dialog import DialogContext, DialogService, NewsItem, clip_text
+from app.persona import PersonaMemory
 from app.profile import Profile
 from app.session import SessionMemory
 
@@ -343,6 +344,20 @@ class DialogServiceTest(unittest.TestCase):
         llm = FakeLLM()
         DialogService({"dialog": {}}, llm).reply("привет")
         self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_persona_block_is_added_to_system_prompt(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "luna.txt"
+        path.write_text("Люблю кофе.\n", encoding="utf-8")
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, persona=PersonaMemory(path))
+
+        service.reply("привет")
+
+        system = llm.calls[0][1]["system"]
+        self.assertIn("Твои собственные факты", system)
+        self.assertIn("Люблю кофе.", system)
 
 
 class ProfileTest(unittest.TestCase):

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .datetime_answer import datetime_context
+from .persona import PersonaMemory
 from .profile import Profile
 from .prompts import DIALOG_SYSTEM
 from .session import (
@@ -180,10 +181,14 @@ class DialogService:
         profile: Profile | None = None,
         sessions: SessionMemory | None = None,
         memory: Any | None = None,
+        persona: PersonaMemory | None = None,
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
         self.profile = profile
+        # Факты Луны о себе: отдельный блок, не смешивается с профилем
+        # пользователя и эпизодической памятью.
+        self.persona = persona
         # Эпизодическая память: резюме прошлых разговоров. Подключается
         # только в режиме диалога — сюда не ходят разовые команды.
         self.memory = memory
@@ -231,10 +236,14 @@ class DialogService:
         return any(candidate in phrases for candidate in candidates)
 
     def system_prompt(self) -> str:
-        """Правила + дата и время + пользовательский контекст из файла."""
+        """Правила + дата и время + профиль пользователя + факты Луны."""
         parts = [DIALOG_SYSTEM.strip(), datetime_context()]
         if self.profile is not None:
             block = self.profile.block()
+            if block:
+                parts.append(block)
+        if self.persona is not None:
+            block = self.persona.block()
             if block:
                 parts.append(block)
         return "\n\n".join(parts)
