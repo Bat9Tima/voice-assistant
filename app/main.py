@@ -154,6 +154,7 @@ class Assistant:
                 log.info("Сессии диалога сохраняются в %s", db_path)
                 if self.memory is not None:
                     log.info("Семантическая память включена: %s", self.memory.embedder.model)
+                    self._restore_memory_async()
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
@@ -196,6 +197,29 @@ class Assistant:
         # Последние ~1-3 секунды звука: чтобы не потерять начало команды,
         # если пользователь заговорил сразу после ключевой фразы.
         self._preroll: deque[bytes] = deque(maxlen=12)
+
+    # ------------------------------------------------------------------ memory
+    def _restore_memory_async(self) -> None:
+        """Достраивает индекс памяти в фоне, не задерживая запуск."""
+        memory = self.memory
+        if memory is None:
+            return
+        threading.Thread(
+            target=self._restore_memory,
+            args=(memory,),
+            name="memory-restore",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _restore_memory(memory: MemoryService) -> None:
+        try:
+            restored = memory.restore()
+        except Exception:  # noqa: BLE001
+            log.exception("Память: восстановление индекса упало")
+            return
+        if restored:
+            log.info("Память: восстановлено резюме %s", restored)
 
     # ------------------------------------------------------------------- state
     @property

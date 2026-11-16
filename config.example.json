@@ -156,6 +156,7 @@
     "min_score": 0.35,
     "min_margin": 0.05,
     "max_chars": 1200,
-    "timeout_sec": 10
+    "timeout_sec": 10,
+    "index_version": 1
   }
 }

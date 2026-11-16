@@ -324,6 +324,10 @@ class SummaryStoreTest(unittest.TestCase):
             [item["session_id"] for item in store.summaries(limit=1)],
             ["new"],
         )
+        self.assertEqual(
+            [item["session_id"] for item in store.summaries(limit=None)],
+            ["new", "old"],
+        )
 
     def test_delete_session_removes_summary(self) -> None:
         store = self.make()

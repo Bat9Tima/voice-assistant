@@ -10,7 +10,13 @@
 
 Ошибки Voyage или Chroma не ломают разговор: ``remember`` просто
 пропускает обновление индекса, ``recall`` возвращает пустой список.
-Вектор — производные данные, его всегда можно пересчитать из резюме.
+Вектор — производные данные, его всегда можно пересчитать из резюме:
+``restore`` достраивает индекс по SQLite после смены модели или версии.
+
+У каждого вектора в метаданных лежат ``embedding_model`` и
+``index_version``. Поиск видит только векторы текущей пары: старые не
+попадают в выдачу, пока ``restore`` их не пересчитает. Это защищает от
+тихого смешивания векторов разных моделей.
 """
 
 from __future__ import annotations
@@ -31,6 +37,11 @@ DEFAULT_MIN_SCORE = 0.35
 DEFAULT_MIN_MARGIN = 0.05
 DEFAULT_MAX_CHARS = 1200
 DEFAULT_COLLECTION = "summaries"
+# Версия раскладки индекса. Меняйте, если изменился способ подготовки
+# текста или модель: старые векторы перестанут участвовать в поиске,
+# а restore пересчитает их из резюме в SQLite.
+INDEX_VERSION = 1
+RESTORE_BATCH = 16
 # Насколько ниже порога пускаем лучший результат, если он оторвался
 # от второго. Так находятся перефразировки, а «погода» не цепляет мусор.
 MARGIN_WINDOW = 0.1
@@ -75,7 +86,14 @@ class VectorStore(Protocol):
         metadata: dict[str, Any],
     ) -> None: ...
 
-    def search(self, embedding: list[float], limit: int) -> list[VectorHit]: ...
+    def search(
+        self,
+        embedding: list[float],
+        limit: int,
+        where: dict[str, Any] | None = None,
+    ) -> list[VectorHit]: ...
+
+    def indexed(self) -> dict[str, dict[str, Any]]: ...
 
     def delete(self, session_id: str) -> None: ...
 
@@ -129,13 +147,21 @@ class ChromaVectorStore:
             metadatas=[clean],
         )
 
-    def search(self, embedding: list[float], limit: int) -> list[VectorHit]:
+    def search(
+        self,
+        embedding: list[float],
+        limit: int,
+        where: dict[str, Any] | None = None,
+    ) -> list[VectorHit]:
         limit = max(1, int(limit))
-        result = self._collection.query(
-            query_embeddings=[embedding],
-            n_results=limit,
-            include=["metadatas", "distances"],
-        )
+        request: dict[str, Any] = {
+            "query_embeddings": [embedding],
+            "n_results": limit,
+            "include": ["metadatas", "distances"],
+        }
+        if where:
+            request["where"] = where
+        result = self._collection.query(**request)
         ids = (result.get("ids") or [[]])[0]
         distances = (result.get("distances") or [[]])[0]
         metadatas = (result.get("metadatas") or [[]])[0]
@@ -151,6 +177,17 @@ class ChromaVectorStore:
                 )
             )
         return hits
+
+    def indexed(self) -> dict[str, dict[str, Any]]:
+        """Метаданные всех векторов: id сессии → словарь без эмбеддинга."""
+        result = self._collection.get(include=["metadatas"])
+        ids = result.get("ids") or []
+        metadatas = result.get("metadatas") or []
+        found: dict[str, dict[str, Any]] = {}
+        for position, session_id in enumerate(ids):
+            metadata = metadatas[position] if position < len(metadatas) else {}
+            found[str(session_id)] = dict(metadata or {})
+        return found
 
     def delete(self, session_id: str) -> None:
         self._collection.delete(ids=[session_id])
@@ -179,6 +216,7 @@ class MemoryService:
         min_score: float = DEFAULT_MIN_SCORE,
         min_margin: float = DEFAULT_MIN_MARGIN,
         max_chars: int = DEFAULT_MAX_CHARS,
+        index_version: int = INDEX_VERSION,
     ) -> None:
         self.embedder = embedder
         self.store = store
@@ -187,6 +225,7 @@ class MemoryService:
         self.min_score = float(min_score)
         self.min_margin = max(0.0, float(min_margin))
         self.max_chars = max(0, int(max_chars))
+        self.index_version = max(1, int(index_version))
 
     @classmethod
     def from_config(
@@ -218,6 +257,7 @@ class MemoryService:
             min_score=float(section.get("min_score", DEFAULT_MIN_SCORE)),
             min_margin=float(section.get("min_margin", DEFAULT_MIN_MARGIN)),
             max_chars=int(section.get("max_chars") or DEFAULT_MAX_CHARS),
+            index_version=int(section.get("index_version") or INDEX_VERSION),
         )
 
     # ------------------------------------------------------------------ write
@@ -231,17 +271,89 @@ class MemoryService:
             self.vectors.upsert(
                 session_id,
                 vector,
-                {
-                    "embedding_model": self.embedder.model,
-                    "dim": len(vector),
-                    "created_at": _now_iso(),
-                },
+                self._metadata(vector),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Память не обновлена для сессии %s: %s", session_id, exc)
             return False
         log.info("Память: резюме сессии %s проиндексировано", session_id)
         return True
+
+    def restore(self) -> int:
+        """Достраивает индекс по резюме из SQLite. Возвращает число векторов.
+
+        Пересчитывает только те резюме, чей вектор отсутствует или сделан
+        другой моделью/версией. Устаревшие векторы без резюме удаляются.
+        Сбой эмбеддера не роняет приложение: что успели — то пересчитали.
+        """
+        try:
+            indexed = self.vectors.indexed()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не удалось прочитать индекс: %s", exc)
+            return 0
+        try:
+            rows = self.store.summaries(limit=None)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не удалось прочитать резюме: %s", exc)
+            return 0
+
+        known = {str(row["session_id"]) for row in rows}
+        for orphan_id in sorted(set(indexed) - known):
+            self.forget(orphan_id)
+
+        stale = [row for row in rows if not self._is_current(indexed.get(str(row["session_id"])))]
+        if not stale:
+            log.info("Память: индекс актуален, резюме %s", len(rows))
+            return 0
+
+        restored = 0
+        for start in range(0, len(stale), RESTORE_BATCH):
+            batch = stale[start : start + RESTORE_BATCH]
+            texts = [str(row["summary"]) for row in batch]
+            try:
+                vectors = self.embedder.embed(texts, input_type="document")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: векторы не пересчитаны: %s", exc)
+                break
+            for row, vector in zip(batch, vectors, strict=False):
+                session_id = str(row["session_id"])
+                try:
+                    self.vectors.upsert(session_id, vector, self._metadata(vector))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Память: вектор сессии %s не сохранён: %s", session_id, exc)
+                    continue
+                restored += 1
+        log.info("Память: пересчитано резюме %s из %s", restored, len(rows))
+        return restored
+
+    def _metadata(self, vector: list[float]) -> dict[str, Any]:
+        """Пометки вектора: по ним поиск отсекает чужую модель и версию."""
+        return {
+            "embedding_model": self.embedder.model,
+            "index_version": self.index_version,
+            "dim": len(vector),
+            "created_at": _now_iso(),
+        }
+
+    def _is_current(self, metadata: dict[str, Any] | None) -> bool:
+        if not metadata:
+            return False
+        if str(metadata.get("embedding_model") or "") != self.embedder.model:
+            return False
+        try:
+            version = int(metadata.get("index_version") or 0)
+        except (TypeError, ValueError):
+            return False
+        return version == self.index_version
+
+    def _index_filter(self) -> dict[str, Any]:
+        """Фильтр Chroma: только векторы текущей модели и версии."""
+        return {
+            "$and": [
+                {"embedding_model": self.embedder.model},
+                {"index_version": self.index_version},
+            ]
+        }
 
     def forget(self, session_id: str) -> bool:
         """Убирает вектор удалённой сессии. Сбой только логируется."""
@@ -260,7 +372,7 @@ class MemoryService:
             return []
         try:
             vector = self.embedder.embed([text], input_type="query")[0]
-            hits = self.vectors.search(vector, self.top_k * 2)
+            hits = self.vectors.search(vector, self.top_k * 2, self._index_filter())
         except EmbeddingError as exc:
             log.warning("Поиск по памяти пропущен: %s", exc)
             return []

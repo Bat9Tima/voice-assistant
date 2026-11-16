@@ -59,16 +59,28 @@ class FakeVectors:
         self.hits: list[VectorHit] = []
         self.deleted: list[str] = []
         self.error: Exception | None = None
+        self.where: dict | None = None
 
     def upsert(self, session_id: str, embedding: list[float], metadata: dict) -> None:
         if self.error is not None:
             raise self.error
         self.items[session_id] = (embedding, metadata)
 
-    def search(self, embedding: list[float], limit: int) -> list[VectorHit]:
+    def search(
+        self,
+        embedding: list[float],
+        limit: int,
+        where: dict | None = None,
+    ) -> list[VectorHit]:
         if self.error is not None:
             raise self.error
+        self.where = where
         return self.hits[:limit]
+
+    def indexed(self) -> dict[str, dict]:
+        if self.error is not None:
+            raise self.error
+        return {session_id: metadata for session_id, (_, metadata) in self.items.items()}
 
     def delete(self, session_id: str) -> None:
         if self.error is not None:
@@ -141,6 +153,63 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertTrue(memory.forget("s1"))
         self.assertEqual(vectors.deleted, ["s1"])
 
+    def test_remember_stores_model_and_version(self) -> None:
+        memory, _, vectors, _ = self.make(index_version=2)
+
+        memory.remember("s1", "текст")
+
+        _, metadata = vectors.items["s1"]
+        self.assertEqual(metadata["embedding_model"], "fake-voyage")
+        self.assertEqual(metadata["index_version"], 2)
+
+    # ----------------------------------------------------------------- restore
+    def test_restore_indexes_missing_summaries(self) -> None:
+        memory, embedder, vectors, _ = self.make()
+
+        self.assertEqual(memory.restore(), 1)
+        self.assertIn("s1", vectors.items)
+        self.assertEqual(embedder.calls, [(["Пользователь изучает C++ и циклы."], "document")])
+
+        self.assertEqual(memory.restore(), 0)
+        self.assertEqual(len(embedder.calls), 1)
+
+    def test_restore_reindexes_other_model(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.items["s1"] = (
+            [0.0, 1.0, 0.0],
+            {"embedding_model": "old-model", "index_version": 1},
+        )
+
+        self.assertEqual(memory.restore(), 1)
+        self.assertEqual(vectors.items["s1"][1]["embedding_model"], "fake-voyage")
+
+    def test_restore_honors_index_version(self) -> None:
+        memory, _, vectors, _ = self.make(index_version=2)
+        vectors.items["s1"] = (
+            [1.0, 0.0, 0.0],
+            {"embedding_model": "fake-voyage", "index_version": 1},
+        )
+
+        self.assertEqual(memory.restore(), 1)
+        self.assertEqual(vectors.items["s1"][1]["index_version"], 2)
+
+    def test_restore_removes_vectors_without_summary(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.items["gone"] = (
+            [1.0, 0.0, 0.0],
+            {"embedding_model": "fake-voyage", "index_version": 1},
+        )
+
+        self.assertEqual(memory.restore(), 1)
+        self.assertIn("gone", vectors.deleted)
+
+    def test_restore_survives_vector_store_error(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.error = RuntimeError("диск")
+
+        with self.assertLogs("app.memory", level="WARNING"):
+            self.assertEqual(memory.restore(), 0)
+
     # ------------------------------------------------------------------- read
     def test_recall_joins_summary_from_sqlite(self) -> None:
         memory, embedder, vectors, _ = self.make()
@@ -160,6 +229,17 @@ class MemoryServiceTest(unittest.TestCase):
             ],
         )
         self.assertEqual(embedder.calls, [(["что я изучал?"], "query")])
+
+    def test_recall_passes_model_and_version_filter(self) -> None:
+        memory, _, vectors, _ = self.make(index_version=3)
+        vectors.hits = [VectorHit("s1", 0.8, {})]
+
+        memory.recall("вопрос")
+
+        self.assertEqual(
+            vectors.where,
+            {"$and": [{"embedding_model": "fake-voyage"}, {"index_version": 3}]},
+        )
 
     def test_recall_skips_low_scores(self) -> None:
         memory, _, vectors, _ = self.make(min_score=0.5)
@@ -297,6 +377,31 @@ class ChromaMemoryTest(unittest.TestCase):
 
         self.assertTrue(memory.forget("s1"))
         self.assertEqual(memory.recall("что я изучал?"), [])
+
+    def test_stale_model_is_hidden_until_restored(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        session = DialogSession(started_at=at(), id="s1")
+        session.add("user", "привет")
+        session.finish(at=at(9))
+        store.save(session)
+        store.save_summary("s1", "Пользователь изучает C++ и циклы.", created_at=at(10))
+        vectors = ChromaVectorStore(Path(directory.name) / "chroma")
+        memory = MemoryService(FakeEmbedder(), store, vectors, min_score=0.5)
+        self.addCleanup(memory.close)
+        vectors.upsert(
+            "s1",
+            [1.0, 0.0, 0.0],
+            {"embedding_model": "old-model", "index_version": 1},
+        )
+
+        self.assertEqual(memory.recall("что я изучал?"), [])
+        self.assertEqual(memory.restore(), 1)
+        self.assertEqual(
+            [hit.session_id for hit in memory.recall("что я изучал?")],
+            ["s1"],
+        )
 
 
 if __name__ == "__main__":

@@ -230,19 +230,19 @@ class SessionStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
-    def summaries(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Последние резюме, новые сверху."""
-        limit = max(1, int(limit))
+    def summaries(self, limit: int | None = 20) -> list[dict[str, Any]]:
+        """Последние резюме, новые сверху. ``None`` — все резюме."""
+        query = """
+            SELECT session_id, summary, created_at, model, prompt_version
+            FROM summaries
+            ORDER BY created_at DESC, rowid DESC
+        """
+        params: tuple[Any, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (max(1, int(limit)),)
         with self._connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT session_id, summary, created_at, model, prompt_version
-                FROM summaries
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def count(self) -> int:
