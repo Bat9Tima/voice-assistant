@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -32,6 +33,9 @@ class PersonaMemory:
     def __init__(self, path: Path | str | None = None, limit: int = DEFAULT_LIMIT) -> None:
         self.path = Path(path) if path else None
         self.limit = max(0, int(limit))
+        # Резюме может писать фоновый воркер и восстановление сессий;
+        # без замка два merge читают один файл и теряют факты друг друга.
+        self._lock = threading.Lock()
 
     def facts(self) -> list[str]:
         """Все факты из файла в порядке записи. Ошибки дают пустой список."""
@@ -71,6 +75,10 @@ class PersonaMemory:
         """Добавляет новые факты без точных повторов. Возвращает число новых."""
         if self.path is None:
             return 0
+        with self._lock:
+            return self._merge_locked(facts)
+
+    def _merge_locked(self, facts: Iterable[str]) -> int:
         existing = self.facts()
         known = {_key(fact) for fact in existing}
         added: list[str] = []

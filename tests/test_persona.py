@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -71,6 +72,21 @@ class PersonaMemoryTest(unittest.TestCase):
         memory = self.make()
         memory.merge(["Люблю кофе и книги."])
         self.assertIn("Люблю кофе", memory.path.read_text(encoding="utf-8"))
+
+    def test_parallel_merges_keep_all_facts(self) -> None:
+        memory = self.make()
+
+        def add(start: int) -> None:
+            for index in range(20):
+                memory.merge([f"Факт {start}-{index}."])
+
+        threads = [threading.Thread(target=add, args=(number,)) for number in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(len(memory.facts()), 100)
 
 
 class ParseFactsTest(unittest.TestCase):

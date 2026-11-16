@@ -217,6 +217,54 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in store.active()], ["live"])
         self.assertEqual(len(store.messages("live")), 2)
 
+    def test_recover_closes_crashed_session(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        first = session.add("user", "привет", at=at(1))
+        second = session.add("assistant", "здравствуй", at=at(2))
+        store.append(session, first, 0)
+        store.append(session, second, 1)
+
+        recovered = store.recover()
+
+        self.assertEqual(store.active(), [])
+        saved = store.sessions()[0]
+        self.assertEqual(saved["status"], "completed")
+        # Время окончания — последняя реплика, а не момент следующего запуска.
+        self.assertEqual(saved["ended_at"], at(2).isoformat())
+        self.assertEqual([item.id for item in recovered], ["live"])
+        self.assertEqual(recovered[0].started_at, at())
+        self.assertEqual(recovered[0].ended_at, at(2))
+        self.assertEqual(
+            [(message.role, message.content) for message in recovered[0].messages],
+            [("user", "привет"), ("assistant", "здравствуй")],
+        )
+
+    def test_recover_deletes_empty_active_session(self) -> None:
+        store = self.make()
+        store.create(DialogSession(started_at=at(), id="empty"))
+
+        self.assertEqual(store.recover(), [])
+        self.assertEqual(store.count(), 0)
+
+    def test_recover_keeps_completed_sessions(self) -> None:
+        store = self.make()
+        store.save(make_session())
+
+        self.assertEqual(store.recover(), [])
+        self.assertEqual(store.active(), [])
+        self.assertEqual(store.sessions()[0]["status"], "completed")
+
+    def test_recover_is_idempotent(self) -> None:
+        store = self.make()
+        session = DialogSession(started_at=at(), id="live")
+        store.create(session)
+        store.append(session, session.add("user", "привет", at=at(1)), 0)
+
+        self.assertEqual(len(store.recover()), 1)
+        self.assertEqual(store.recover(), [])
+
     def test_finish_of_empty_session_removes_it(self) -> None:
         store = self.make()
         session = DialogSession(started_at=at(), id="empty")

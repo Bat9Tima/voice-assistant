@@ -28,6 +28,16 @@ def make_session(messages: list[tuple[str, str]] | None = None) -> DialogSession
     return session
 
 
+def make_crashed(store: SessionStore, session_id: str = "crash") -> DialogSession:
+    """Сессия, оборванная сбоем: в базе active, finish не вызывался."""
+    session = DialogSession(started_at=at(), id=session_id)
+    store.create(session)
+    for position, (role, text) in enumerate([("user", "привет"), ("assistant", "здравствуй")]):
+        message = session.add(role, text, at=at(position + 1))
+        store.append(session, message, position)
+    return session
+
+
 class FakeLLM:
     """Клиент модели без сети: записывает вызовы и отдаёт заготовку."""
 
@@ -336,6 +346,46 @@ class SummarizerTest(unittest.TestCase):
         persona = PersonaMemory(None)
         summarizer = Summarizer.from_config(FakeLLM(), object(), persona=persona)
         self.assertIs(summarizer.persona, persona)
+
+    # ------------------------------------------------------------- recovery
+    def test_recover_summarizes_crashed_session(self) -> None:
+        summarizer, store, llm = self.make()
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.sessions()[0]["status"], "completed")
+        self.assertEqual(store.summary("crash")["summary"], "Говорили о C++ и циклах.")
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_recover_skips_session_with_summary(self) -> None:
+        summarizer, store, llm = self.make()
+        make_crashed(store)
+        store.save_summary("crash", "Резюме уже было.")
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.summary("crash")["summary"], "Резюме уже было.")
+        self.assertEqual(llm.calls, [])
+
+    def test_recover_closes_session_when_disabled(self) -> None:
+        summarizer, store, llm = self.make(enabled=False)
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.active(), [])
+        self.assertIsNone(store.summary("crash"))
+        self.assertEqual(llm.calls, [])
+
+    def test_recover_in_background_queues_summary(self) -> None:
+        summarizer, store, _ = self.make(background=True)
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+        summarizer.close(timeout=5)
+
+        self.assertIsNotNone(store.summary("crash"))
 
     def test_from_config_overrides(self) -> None:
         summarizer = Summarizer.from_config(

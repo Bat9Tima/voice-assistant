@@ -169,6 +169,7 @@ class Assistant:
                 if self.memory is not None:
                     log.info("Семантическая память включена: %s", self.memory.embedder.model)
                     self._restore_memory_async()
+                self._recover_sessions_async()
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
@@ -213,6 +214,25 @@ class Assistant:
         self._preroll: deque[bytes] = deque(maxlen=12)
 
     # ------------------------------------------------------------------ memory
+    def _recover_sessions_async(self) -> None:
+        """Закрывает разговоры, оборванные прошлым сбоем, и суммирует их."""
+        summarizer = self.summarizer
+        if summarizer is None:
+            return
+        threading.Thread(
+            target=self._recover_sessions,
+            args=(summarizer,),
+            name="dialog-recover",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _recover_sessions(summarizer: Summarizer) -> None:
+        try:
+            summarizer.recover()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось закрыть оборванные сессии")
+
     def _restore_memory_async(self) -> None:
         """Достраивает индекс памяти в фоне, не задерживая запуск."""
         memory = self.memory

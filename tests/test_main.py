@@ -833,6 +833,28 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.wake.fed, 0)
 
 
+class SessionRecoveryTest(unittest.TestCase):
+    def test_recover_sessions_calls_summarizer(self) -> None:
+        calls: list[int] = []
+
+        class FakeSummarizer:
+            def recover(self) -> int:
+                calls.append(1)
+                return 1
+
+        Assistant._recover_sessions(FakeSummarizer())
+
+        self.assertEqual(calls, [1])
+
+    def test_recover_sessions_logs_error(self) -> None:
+        class BrokenSummarizer:
+            def recover(self) -> int:
+                raise RuntimeError("база недоступна")
+
+        with self.assertLogs("app.main", level="ERROR"):
+            Assistant._recover_sessions(BrokenSummarizer())
+
+
 class FakeDialog:
     def __init__(self, answer: str = "ответ диалога", error: Exception | None = None) -> None:
         self.answer = answer

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -28,6 +29,8 @@ from pathlib import Path
 from typing import Any
 
 from .session import DialogSession, Message, SessionMemory
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -203,6 +206,61 @@ class SessionStore:
         """Незавершённые сессии: разговор идёт сейчас или оборвался сбоем."""
         return self.sessions(limit, status="active")
 
+    def recover(self) -> list[DialogSession]:
+        """Закрывает сессии, оборванные сбоем, и отдаёт их для резюме.
+
+        Сессия, оставшаяся ``active`` после падения прошлого запуска, сама
+        уже не закроется. Временем окончания считаем последнюю реплику:
+        именно тогда разговор фактически прервался. Пустые сессии
+        удаляются, как и при обычном ``finish``.
+        """
+        recovered: list[DialogSession] = []
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, started_at FROM sessions
+                WHERE status = 'active'
+                ORDER BY started_at
+                """
+            ).fetchall()
+            for row in rows:
+                messages = conn.execute(
+                    """
+                    SELECT role, content, at FROM messages
+                    WHERE session_id = ?
+                    ORDER BY position
+                    """,
+                    (row["id"],),
+                ).fetchall()
+                if not messages:
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (row["id"],))
+                    continue
+                ended_at = _parse_time(messages[-1]["at"])
+                conn.execute(
+                    """
+                    UPDATE sessions SET status = 'completed', ended_at = ?
+                    WHERE id = ?
+                    """,
+                    (ended_at.isoformat(), row["id"]),
+                )
+                session = DialogSession(
+                    id=row["id"],
+                    started_at=_parse_time(row["started_at"]),
+                    ended_at=ended_at,
+                )
+                session.messages = [
+                    Message(
+                        role=item["role"],
+                        content=item["content"],
+                        at=_parse_time(item["at"]),
+                    )
+                    for item in messages
+                ]
+                recovered.append(session)
+        if recovered:
+            log.info("SQLite: закрыто оборванных сессий: %s", len(recovered))
+        return recovered
+
     def messages(self, session_id: str) -> list[dict[str, str]]:
         """Реплики сессии в порядке разговора."""
         with self._connection() as conn:
@@ -368,3 +426,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _now() -> datetime:
     """Локальное время с часовым поясом, как в сессиях."""
     return datetime.now().astimezone()
+
+
+def _parse_time(value: str) -> datetime:
+    """Время из базы. Старые записи могли лечь без пояса — считаем локальными."""
+    moment = datetime.fromisoformat(str(value))
+    if moment.tzinfo is None:
+        return moment.astimezone()
+    return moment

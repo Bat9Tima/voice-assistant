@@ -130,6 +130,27 @@ class Summarizer:
             return
         self.summarize(session)
 
+    # ---------------------------------------------------------------- recovery
+    def recover(self) -> int:
+        """Закрывает разговоры, оборванные прошлым сбоем, и суммирует их.
+
+        Сначала база помечает такие сессии завершёнными, чтобы они не
+        копились, потом каждая уходит в обычный путь резюме: очередь,
+        память и факты о Луне. Уже посчитанные резюме не пересчитываются.
+        """
+        recover = getattr(self.store, "recover", None)
+        if recover is None:
+            return 0
+        sessions = recover()
+        for session in sessions:
+            try:
+                if self.store.summary(session.id) is not None:
+                    continue
+                self.handle(session)
+            except Exception:  # noqa: BLE001
+                log.exception("Оборванная сессия %s не суммирована", session.id)
+        return len(sessions)
+
     # ---------------------------------------------------------------- summary
     def summarize(self, session: DialogSession) -> str | None:
         """Просит у модели резюме и сохраняет его. Возвращает текст."""
