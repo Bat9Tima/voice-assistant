@@ -60,9 +60,12 @@ class Summarizer:
         min_messages: int = DEFAULT_MIN_MESSAGES,
         prompt_version: int = SUMMARY_PROMPT_VERSION,
         background: bool = True,
+        memory: Any | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
+        # Необязательный индекс: если он упал, резюме всё равно сохранено.
+        self.memory = memory
         self.enabled = bool(enabled)
         self.model = str(model or "").strip()
         self.max_input_chars = max(0, int(max_input_chars))
@@ -82,6 +85,8 @@ class Summarizer:
         llm: Any,
         store: Any,
         section: dict[str, Any] | None = None,
+        *,
+        memory: Any | None = None,
     ) -> Summarizer:
         """Собирает суммаризатор из вложенной секции ``dialog.summary``."""
         section = section or {}
@@ -97,6 +102,7 @@ class Summarizer:
             min_messages=_int(section.get("min_messages"), DEFAULT_MIN_MESSAGES),
             prompt_version=_int(section.get("prompt_version"), SUMMARY_PROMPT_VERSION),
             background=bool(section.get("background", True)),
+            memory=memory,
         )
 
     # ------------------------------------------------------------------ hooks
@@ -141,7 +147,17 @@ class Summarizer:
             prompt_version=self.prompt_version,
         )
         log.info("Резюме сессии %s сохранено: %s символов", session.id, len(summary))
+        self._remember(session.id, summary)
         return summary
+
+    def _remember(self, session_id: str, summary: str) -> None:
+        """Индексирует резюме для семантического поиска. Сбой не критичен."""
+        if self.memory is None:
+            return
+        try:
+            self.memory.remember(session_id, summary)
+        except Exception:  # noqa: BLE001
+            log.exception("Резюме сессии %s не попало в память", session_id)
 
     def transcript(self, session: DialogSession) -> str:
         """Реплики одной строкой на каждую, в пределах лимита символов.

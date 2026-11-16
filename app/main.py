@@ -20,6 +20,7 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .memory import MemoryService
 from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
@@ -130,22 +131,29 @@ class Assistant:
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
         self.summarizer: Summarizer | None = None
+        self.memory: MemoryService | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
                 dialog_cfg.get("profile_path"),
                 limit=int(dialog_cfg.get("profile_chars") or 4000),
             )
-            self.dialog = DialogService(cfg, self.llm, profile)
             db_path = str(dialog_cfg.get("db_path") or "").strip()
             if db_path:
-                self.session_store = SessionStore(db_path).attach(self.dialog.sessions)
+                self.session_store = SessionStore(db_path)
+                self.memory = MemoryService.from_config(cfg, self.session_store)
+            self.dialog = DialogService(cfg, self.llm, profile, memory=self.memory)
+            if self.session_store is not None:
+                self.session_store.attach(self.dialog.sessions)
                 self.summarizer = Summarizer.from_config(
                     self.llm,
                     self.session_store,
                     dialog_cfg.get("summary"),
+                    memory=self.memory,
                 ).attach(self.dialog.sessions)
                 log.info("Сессии диалога сохраняются в %s", db_path)
+                if self.memory is not None:
+                    log.info("Семантическая память включена: %s", self.memory.embedder.model)
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
@@ -1045,6 +1053,9 @@ class Assistant:
             # Сырая сессия уже в базе; даём фоновому резюме дописаться,
             # но не держим закрытие программы дольше десяти секунд.
             summarizer.close(timeout=10)
+        memory = getattr(self, "memory", None)
+        if memory is not None:
+            memory.close()
         if self.mic is not None:
             self.mic.stop()
         if self._hotkey_listener is not None:

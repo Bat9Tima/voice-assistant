@@ -218,6 +218,23 @@ DEFAULTS: dict[str, Any] = {
             "background": True,
         },
     },
+    # Семантическая память: резюме прошлых разговоров ищутся по смыслу.
+    # Векторы считает Voyage через ProxyAPI, хранит Chroma в path. Тексты
+    # резюме остаются в SQLite; Chroma можно пересобрать. Память работает
+    # только в режиме диалога, разовые команды её не трогают.
+    "memory": {
+        "enabled": True,
+        "model": "mongodb/voyage-4",
+        "base_url": "",
+        "api_key": "",
+        "path": "state/chroma",
+        "collection": "summaries",
+        "top_k": 3,
+        "min_score": 0.35,
+        "min_margin": 0.05,
+        "max_chars": 1200,
+        "timeout_sec": 10,
+    },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
     # через ProxyAPI. Ключ и голос задаются в config.json.
     "tts": {
@@ -272,6 +289,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         if not Path(expanded).is_absolute():
             expanded = str(ROOT / expanded)
         dialog_cfg[key] = expanded
+
+    memory_cfg = cfg.get("memory") or {}
+    memory_path = str(memory_cfg.get("path") or "").strip()
+    if memory_path:
+        expanded = _expand_path(memory_path)
+        if not Path(expanded).is_absolute():
+            expanded = str(ROOT / expanded)
+        memory_cfg["path"] = expanded
 
     for directory in (MODELS_DIR, LOGS_DIR, STATE_DIR):
         directory.mkdir(parents=True, exist_ok=True)

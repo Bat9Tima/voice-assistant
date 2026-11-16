@@ -231,6 +231,55 @@ class SummarizerTest(unittest.TestCase):
         self.assertEqual(summarizer.min_messages, 2)
         self.assertEqual(summarizer.model, "")
 
+    # ----------------------------------------------------------------- memory
+    def test_summary_is_indexed_in_memory(self) -> None:
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.saved: list[tuple[str, str]] = []
+
+            def remember(self, session_id: str, summary: str) -> bool:
+                self.saved.append((session_id, summary))
+                return True
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        memory = FakeMemory()
+        summarizer = Summarizer(FakeLLM(), store, background=False, memory=memory)
+        session = make_session()
+        store.save(session)
+
+        summarizer.summarize(session)
+
+        self.assertEqual(memory.saved, [("s1", "Говорили о C++ и циклах.")])
+
+    def test_memory_failure_does_not_block_summary(self) -> None:
+        class BrokenMemory:
+            def remember(self, session_id: str, summary: str) -> bool:
+                raise RuntimeError("Chroma умерла")
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        summarizer = Summarizer(FakeLLM(), store, background=False, memory=BrokenMemory())
+        session = make_session()
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="ERROR"):
+            text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(store.summary("s1")["summary"], text)
+
+    def test_from_config_passes_memory(self) -> None:
+        class FakeMemory:
+            def remember(self, session_id: str, summary: str) -> bool:
+                return True
+
+        memory = FakeMemory()
+        summarizer = Summarizer.from_config(FakeLLM(), object(), memory=memory)
+        self.assertIs(summarizer.memory, memory)
+
     def test_from_config_overrides(self) -> None:
         summarizer = Summarizer.from_config(
             FakeLLM(),

@@ -179,10 +179,14 @@ class DialogService:
         llm: Any,
         profile: Profile | None = None,
         sessions: SessionMemory | None = None,
+        memory: Any | None = None,
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
         self.profile = profile
+        # Эпизодическая память: резюме прошлых разговоров. Подключается
+        # только в режиме диалога — сюда не ходят разовые команды.
+        self.memory = memory
         self.entry_phrases = self._phrases(section.get("entry_phrases"), DEFAULT_ENTRY_PHRASES)
         self.exit_phrases = self._phrases(section.get("exit_phrases"), DEFAULT_EXIT_PHRASES)
         self.idle_timeout = max(1.0, float(section.get("idle_timeout_sec") or 60))
@@ -247,15 +251,21 @@ class DialogService:
         """Один ход: окно истории + текущая реплика.
 
         Реплики попадают в сессию только после успешного ответа, чтобы
-        неудачный ход не отравлял контекст следующих вопросов.
+        неудачный ход не отравлял контекст следующих вопросов. Перед
+        запросом к модели подмешиваются резюме прошлых разговоров, если
+        память включена и нашлось что-то по смыслу.
         """
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
         messages = [*self.sessions.history(), {"role": "user", "content": text}]
+        system = self.system_prompt()
+        block = self._memory_block(text)
+        if block:
+            system = f"{system}\n\n{block}"
         answer = self.llm.chat(
             messages,
-            system=self.system_prompt(),
+            system=system,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout,
@@ -266,3 +276,12 @@ class DialogService:
         self.sessions.add("user", text)
         self.sessions.add("assistant", answer)
         return answer
+
+    def _memory_block(self, text: str) -> str:
+        """Воспоминания для промпта. Любой сбой памяти — просто без блока."""
+        if self.memory is None:
+            return ""
+        try:
+            return str(self.memory.block(text) or "")
+        except Exception:  # noqa: BLE001
+            return ""

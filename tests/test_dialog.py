@@ -310,6 +310,40 @@ class DialogServiceTest(unittest.TestCase):
         service = DialogService({"dialog": {}}, FakeLLM(), sessions=memory)
         self.assertIs(service.sessions, memory)
 
+    def test_memory_block_is_added_to_system_prompt(self) -> None:
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            def block(self, query: str) -> str:
+                self.queries.append(query)
+                return "Эпизодическая память: любит C++."
+
+        memory = FakeMemory()
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, memory=memory)
+
+        service.reply("что я изучал?")
+
+        self.assertEqual(memory.queries, ["что я изучал?"])
+        self.assertIn("Эпизодическая память: любит C++.", llm.calls[0][1]["system"])
+
+    def test_memory_failure_does_not_break_reply(self) -> None:
+        class BrokenMemory:
+            def block(self, query: str) -> str:
+                raise RuntimeError("Chroma умерла")
+
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm, memory=BrokenMemory())
+
+        self.assertEqual(service.reply("привет"), "Ответ")
+        self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_without_memory_no_block(self) -> None:
+        llm = FakeLLM()
+        DialogService({"dialog": {}}, llm).reply("привет")
+        self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
 
 class ProfileTest(unittest.TestCase):
     def make(self, text: str | None = None, limit: int = 4000) -> Profile:
