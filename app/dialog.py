@@ -5,6 +5,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .context_builder import (
+    DEFAULT_BUDGET_TOKENS,
+    DEFAULT_CHARS_PER_TOKEN,
+    ContextBuilder,
+    ContextPart,
+)
 from .datetime_answer import datetime_context
 from .persona import PersonaMemory
 from .profile import Profile
@@ -204,6 +210,12 @@ class DialogService:
         self.timeout = float(section.get("timeout_sec") or 60)
         self.history_messages = _limit(section.get("history_messages"), DEFAULT_HISTORY_MESSAGES)
         self.history_chars = _limit(section.get("history_chars"), DEFAULT_HISTORY_CHARS)
+        context_cfg = section.get("context") or {}
+        budget = context_cfg.get("budget_tokens")
+        self.context = ContextBuilder(
+            max_tokens=DEFAULT_BUDGET_TOKENS if budget is None else int(budget),
+            chars_per_token=float(context_cfg.get("chars_per_token") or DEFAULT_CHARS_PER_TOKEN),
+        )
         self.sessions = sessions or SessionMemory(
             self.history_messages,
             self.history_chars,
@@ -235,18 +247,25 @@ class DialogService:
                 candidates.append(candidate)
         return any(candidate in phrases for candidate in candidates)
 
-    def system_prompt(self) -> str:
-        """Правила + дата и время + профиль пользователя + факты Луны."""
-        parts = [DIALOG_SYSTEM.strip(), datetime_context()]
+    def system_parts(self) -> list[ContextPart]:
+        """Блоки системного промпта по важности: от обязательных к памяти."""
+        parts = [
+            ContextPart("rules", DIALOG_SYSTEM.strip(), required=True),
+            ContextPart("datetime", datetime_context(), required=True),
+        ]
         if self.profile is not None:
             block = self.profile.block()
             if block:
-                parts.append(block)
+                parts.append(ContextPart("profile", block))
         if self.persona is not None:
             block = self.persona.block()
             if block:
-                parts.append(block)
-        return "\n\n".join(parts)
+                parts.append(ContextPart("persona", block, keep_tail=True))
+        return parts
+
+    def system_prompt(self) -> str:
+        """Правила + дата и время + профиль пользователя + факты Луны."""
+        return "\n\n".join(part.text for part in self.system_parts())
 
     def start(self) -> None:
         """Начинает разговор с чистого листа: прошлая сессия закрывается."""
@@ -267,14 +286,15 @@ class DialogService:
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
-        messages = [*self.sessions.history(), {"role": "user", "content": text}]
-        system = self.system_prompt()
-        block = self._memory_block(text)
-        if block:
-            system = f"{system}\n\n{block}"
+        built = self.context.build(
+            parts=self.system_parts(),
+            history=self.sessions.history(),
+            user_text=text,
+            memory=self._memory_block(text),
+        )
         answer = self.llm.chat(
-            messages,
-            system=system,
+            built.messages,
+            system=built.system,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout,

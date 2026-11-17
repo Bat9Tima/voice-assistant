@@ -130,6 +130,10 @@
     "max_errors": 2,
     "history_messages": 12,
     "history_chars": 4000,
+    "context": {
+      "budget_tokens": 6000,
+      "chars_per_token": 2.5
+    },
     "profile_path": "state/profile.txt",
     "profile_chars": 4000,
     "persona_path": "state/luna.txt",

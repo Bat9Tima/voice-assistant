@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.context_builder import ContextBuilder
 from app.dialog import DialogContext, DialogService, NewsItem, clip_text
 from app.persona import PersonaMemory
 from app.profile import Profile
@@ -344,6 +345,40 @@ class DialogServiceTest(unittest.TestCase):
         llm = FakeLLM()
         DialogService({"dialog": {}}, llm).reply("привет")
         self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_context_budget_drops_memory_before_rules(self) -> None:
+        class FakeMemory:
+            def block(self, query: str) -> str:
+                return "Эпизодическая память: " + "факт " * 100
+
+        llm = FakeLLM()
+        service = DialogService(
+            {"dialog": {"context": {"budget_tokens": 100000, "chars_per_token": 1.0}}},
+            llm,
+            memory=FakeMemory(),
+        )
+        required = sum(len(item.text) for item in service.system_parts()) + len("привет")
+        service.context = ContextBuilder(max_tokens=required + 30, chars_per_token=1.0)
+
+        service.reply("привет")
+
+        system = llm.calls[0][1]["system"]
+        self.assertIn("голосовой ассистент", system)
+        self.assertNotIn("Эпизодическая", system)
+
+    def test_context_keeps_current_message_with_tiny_budget(self) -> None:
+        llm = FakeLLM()
+        service = DialogService(
+            {"dialog": {"context": {"budget_tokens": 1, "chars_per_token": 1.0}}},
+            llm,
+        )
+
+        with self.assertLogs("app.context_builder", level="WARNING"):
+            service.reply("привет")
+
+        messages, kwargs = llm.calls[0]
+        self.assertEqual(messages[-1], {"role": "user", "content": "привет"})
+        self.assertIn("голосовой ассистент", kwargs["system"])
 
     def test_persona_block_is_added_to_system_prompt(self) -> None:
         directory = tempfile.TemporaryDirectory()
