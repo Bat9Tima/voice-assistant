@@ -165,7 +165,7 @@
       "enabled": true,
       "model": "",
       "max_input_chars": 6000,
-      "max_tokens": 300,
+      "max_tokens": 700,
       "temperature": 0.2,
       "timeout_sec": 45,
       "min_messages": 2,
@@ -183,7 +183,10 @@
     "top_k": 3,
     "min_score": 0.35,
     "min_margin": 0.05,
-    "max_chars": 1200,
+    "max_chars": 2400,
+    "digest_min_messages": 6,
+    "digest_limit": 3,
+    "digest_item_chars": 320,
     "timeout_sec": 10,
     "index_version": 1
   }

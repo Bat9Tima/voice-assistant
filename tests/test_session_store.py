@@ -332,8 +332,96 @@ class SummaryStoreTest(unittest.TestCase):
                 "created_at": at(10).isoformat(),
                 "model": "test-model",
                 "prompt_version": 2,
+                "data": {},
             },
         )
+
+    def test_structured_data_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        data = {
+            "facts": [
+                {"text": "Пользователь устал", "evidence": "я устал"},
+            ],
+            "topics": ["самочувствие"],
+            "summary": "Короткий разговор.",
+        }
+        store.save_summary("s1", "Факты о пользователе:\n- Пользователь устал", data=data)
+
+        self.assertEqual(store.summary("s1")["data"], data)
+        self.assertEqual(store.summaries()[0]["data"], data)
+
+    def test_invalid_data_json_is_read_as_empty(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        store.save_summary("s1", "Текст")
+        conn = sqlite3.connect(store.path)
+        try:
+            conn.execute("UPDATE summaries SET data = 'не json' WHERE session_id = 's1'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(store.summary("s1")["data"], {})
+
+    def test_summaries_with_sessions_join_session_metadata(self) -> None:
+        store = self.make()
+        store.save(make_session("old", minute=0))
+        store.save(make_session("new", minute=10))
+        store.save_summary("old", "старое", created_at=at(20))
+        store.save_summary("new", "новое", created_at=at(30))
+
+        rows = store.summaries_with_sessions()
+
+        self.assertEqual([row["session_id"] for row in rows], ["new", "old"])
+        self.assertEqual(rows[0]["messages_count"], 2)
+        self.assertEqual(rows[0]["status"], "completed")
+        self.assertEqual(rows[0]["started_at"], at(10).isoformat())
+        self.assertEqual(rows[0]["data"], {})
+
+    def test_old_summaries_table_is_migrated(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "dialog.db"
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    messages_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'completed'
+                );
+                CREATE TABLE summaries (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                    summary TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_version INTEGER NOT NULL DEFAULT 1
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, started_at, messages_count, status) "
+                "VALUES ('s1', ?, 2, 'completed')",
+                (at().isoformat(),),
+            )
+            conn.execute(
+                "INSERT INTO summaries "
+                "(session_id, summary, created_at, model, prompt_version) "
+                "VALUES ('s1', 'старое', ?, 'test', 1)",
+                (at(10).isoformat(),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = SessionStore(path)
+
+        self.assertEqual(store.summary("s1")["summary"], "старое")
+        self.assertEqual(store.summary("s1")["data"], {})
 
     def test_summary_is_replaced(self) -> None:
         store = self.make()

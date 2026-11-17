@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -61,7 +62,8 @@ CREATE TABLE IF NOT EXISTS summaries (
     summary TEXT NOT NULL,
     created_at TEXT NOT NULL,
     model TEXT NOT NULL,
-    prompt_version INTEGER NOT NULL DEFAULT 1
+    prompt_version INTEGER NOT NULL DEFAULT 1,
+    data TEXT NOT NULL DEFAULT '{}'
 );
 """
 
@@ -158,22 +160,30 @@ class SessionStore:
         model: str = "",
         prompt_version: int = 1,
         created_at: datetime | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
-        """Сохраняет резюме сессии. Повторная запись заменяет прошлое."""
+        """Сохраняет резюме сессии. Повторная запись заменяет прошлое.
+
+        ``summary`` — обычный текст для поиска и чтения, ``data`` —
+        структурированные поля промпта v2. Старые записи получают ``{}``.
+        """
         text = (summary or "").strip()
         if not text:
             raise ValueError("пустое резюме")
         moment = created_at or _now()
+        payload = json.dumps(data or {}, ensure_ascii=False, sort_keys=True)
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT INTO summaries (session_id, summary, created_at, model, prompt_version)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO summaries
+                    (session_id, summary, created_at, model, prompt_version, data)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     summary = excluded.summary,
                     created_at = excluded.created_at,
                     model = excluded.model,
-                    prompt_version = excluded.prompt_version
+                    prompt_version = excluded.prompt_version,
+                    data = excluded.data
                 """,
                 (
                     session_id,
@@ -181,6 +191,7 @@ class SessionStore:
                     moment.isoformat(),
                     str(model or ""),
                     max(1, int(prompt_version)),
+                    payload,
                 ),
             )
 
@@ -280,18 +291,18 @@ class SessionStore:
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT session_id, summary, created_at, model, prompt_version
+                SELECT session_id, summary, created_at, model, prompt_version, data
                 FROM summaries
                 WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
-        return dict(row) if row is not None else None
+        return _summary_row(row) if row is not None else None
 
     def summaries(self, limit: int | None = 20) -> list[dict[str, Any]]:
         """Последние резюме, новые сверху. ``None`` — все резюме."""
         query = """
-            SELECT session_id, summary, created_at, model, prompt_version
+            SELECT session_id, summary, created_at, model, prompt_version, data
             FROM summaries
             ORDER BY created_at DESC, rowid DESC
         """
@@ -301,7 +312,25 @@ class SessionStore:
             params = (max(1, int(limit)),)
         with self._connection() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return [_summary_row(row) for row in rows]
+
+    def summaries_with_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Резюме вместе с временем и размером сессии: для дневного дайджеста."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    m.session_id, m.summary, m.created_at, m.model,
+                    m.prompt_version, m.data,
+                    s.started_at, s.ended_at, s.messages_count, s.status
+                FROM summaries m
+                JOIN sessions s ON s.id = m.session_id
+                ORDER BY s.started_at DESC, m.rowid DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [_summary_row(row) for row in rows]
 
     def count(self) -> int:
         """Сколько сессий лежит в базе."""
@@ -414,6 +443,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "status" not in columns:
         # Сессии, записанные до этого изменения, все завершены.
         conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+    summary_columns = {row["name"] for row in conn.execute("PRAGMA table_info(summaries)")}
+    if summary_columns and "data" not in summary_columns:
+        # Резюме до промпта v2 хранят только текст; структуры у них нет.
+        conn.execute("ALTER TABLE summaries ADD COLUMN data TEXT NOT NULL DEFAULT '{}'")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
@@ -421,6 +454,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP INDEX IF EXISTS idx_messages_session")
+
+
+def _summary_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Строка резюме с разобранным JSON в ``data``. Битый JSON — пустой словарь."""
+    result = dict(row)
+    result["data"] = _parse_data(result.get("data"))
+    return result
+
+
+def _parse_data(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _now() -> datetime:
