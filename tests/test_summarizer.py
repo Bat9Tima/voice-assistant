@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.cloud_llm import LLMError
 from app.persona import PersonaMemory
@@ -62,7 +63,7 @@ class SummarizerTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         store = SessionStore(Path(directory.name) / "dialog.db")
-        llm = FakeLLM()
+        llm = kwargs.pop("llm", None) or FakeLLM()
         kwargs.setdefault("background", False)
         return Summarizer(llm, store, **kwargs), store, llm
 
@@ -82,12 +83,13 @@ class SummarizerTest(unittest.TestCase):
                 "summary": "Говорили о C++ и циклах.",
                 "created_at": store.summary("s1")["created_at"],
                 "model": "fake-model",
-                "prompt_version": 1,
+                "prompt_version": 2,
+                "data": {},
             },
         )
         call = llm.calls[0]
         self.assertEqual(call["system"], SUMMARY_SYSTEM)
-        self.assertEqual(call["max_tokens"], 300)
+        self.assertEqual(call["max_tokens"], 700)
         self.assertEqual(call["temperature"], 0.2)
         self.assertEqual(call["timeout"], 45.0)
         self.assertIsNone(call["model"])
@@ -111,6 +113,81 @@ class SummarizerTest(unittest.TestCase):
         saved = store.summary("s1")
         self.assertEqual(saved["model"], "summary-model")
         self.assertEqual(saved["prompt_version"], 3)
+
+    def test_structured_summary_is_validated_and_rendered(self) -> None:
+        class StructuredLLM(FakeLLM):
+            def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+                self.calls.append({"messages": messages, **kwargs})
+                if kwargs.get("system") == SUMMARY_SYSTEM:
+                    return (
+                        '{"facts": ['
+                        '{"text": "Пользователю очень плохо", "evidence": "мне очень плохо"},'
+                        '{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}'
+                        '], "topics": ["самочувствие"], '
+                        '"summary": "Говорили о самочувствии."}'
+                    )
+                return "нет фактов"
+
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.saved: list[tuple[str, str]] = []
+
+            def remember(self, session_id: str, summary: str) -> bool:
+                self.saved.append((session_id, summary))
+                return True
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        memory = FakeMemory()
+        summarizer = Summarizer(StructuredLLM(), store, background=False, memory=memory)
+        session = make_session(
+            [
+                ("user", "мне очень плохо"),
+                ("assistant", "сочувствую"),
+                ("user", "обожаю кофе"),
+            ]
+        )
+        store.save(session)
+
+        text = summarizer.summarize(session)
+
+        self.assertEqual(
+            text,
+            "Факты о пользователе:\n"
+            "- Пользователю очень плохо\n"
+            "- Пользователь любит кофе\n"
+            "Темы: самочувствие\n"
+            "Говорили о самочувствии.",
+        )
+        saved = store.summary("s1")
+        self.assertEqual(saved["summary"], text)
+        self.assertEqual(saved["prompt_version"], 2)
+        self.assertEqual(
+            saved["data"]["facts"],
+            [
+                {"text": "Пользователю очень плохо", "evidence": "мне очень плохо"},
+                {"text": "Пользователь любит кофе", "evidence": "обожаю кофе"},
+            ],
+        )
+        self.assertEqual(memory.saved, [("s1", text)])
+
+    def test_unconfirmed_fact_is_not_saved(self) -> None:
+        answer = (
+            '{"facts": [{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}],'
+            ' "summary": "Короткий разговор."}'
+        )
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        summarizer = Summarizer(FakeLLM(answer=answer), store, background=False)
+        session = make_session()
+        store.save(session)
+
+        text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Короткий разговор.")
+        self.assertEqual(store.summary("s1")["data"]["facts"], [])
 
     def test_short_session_is_skipped(self) -> None:
         summarizer, store, llm = self.make()
@@ -159,7 +236,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertIsNone(store.summary("s1"))
 
     # -------------------------------------------------------------- transcript
-    def test_long_transcript_keeps_tail(self) -> None:
+    def test_long_transcript_keeps_head_and_tail(self) -> None:
         summarizer, _, _ = self.make(max_input_chars=45)
         session = make_session(
             [
@@ -171,10 +248,25 @@ class SummarizerTest(unittest.TestCase):
 
         text = summarizer.transcript(session)
 
-        self.assertTrue(text.startswith("…\n"))
+        self.assertIn("\n…\n", text)
+        self.assertTrue(text.startswith("Пользователь:"))
         self.assertIn("новая реплика", text)
         self.assertNotIn("погоду", text)
-        self.assertLessEqual(len(text), 45 + 2)
+        self.assertLessEqual(len(text), 45)
+
+    def test_short_transcript_is_not_cut(self) -> None:
+        summarizer, _, _ = self.make(max_input_chars=200)
+        session = make_session(
+            [
+                ("user", "привет"),
+                ("assistant", "здравствуй"),
+            ]
+        )
+
+        self.assertEqual(
+            summarizer.transcript(session),
+            "Пользователь: привет\nАссистент: здравствуй",
+        )
 
     def test_transcript_without_limit_keeps_everything(self) -> None:
         summarizer, _, _ = self.make(max_input_chars=0)
@@ -237,7 +329,7 @@ class SummarizerTest(unittest.TestCase):
         self.assertTrue(summarizer.enabled)
         self.assertTrue(summarizer.background)
         self.assertEqual(summarizer.max_input_chars, 6000)
-        self.assertEqual(summarizer.max_tokens, 300)
+        self.assertEqual(summarizer.max_tokens, 700)
         self.assertEqual(summarizer.timeout, 45.0)
         self.assertEqual(summarizer.min_messages, 2)
         self.assertEqual(summarizer.model, "")
@@ -346,6 +438,96 @@ class SummarizerTest(unittest.TestCase):
         persona = PersonaMemory(None)
         summarizer = Summarizer.from_config(FakeLLM(), object(), persona=persona)
         self.assertIs(summarizer.persona, persona)
+
+    def test_prose_summary_does_not_touch_manager(self) -> None:
+        class FakeManager:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def ingest(self, session_id, summary) -> None:
+                self.calls.append((session_id, summary))
+
+        manager = FakeManager()
+        summarizer, store, _ = self.make(manager=manager)
+        session = make_session()
+        store.save(session)
+
+        text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(manager.calls, [])
+
+    def test_manager_receives_confirmed_items(self) -> None:
+        class FakeManager:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def ingest(self, session_id, summary):
+                self.calls.append((session_id, summary))
+                return SimpleNamespace(added=1, merged=0, superseded=0, resolved=0, review=0)
+
+        answer = (
+            '{"facts": [{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}],'
+            ' "decisions": [{"text": "Пользователь решил завести кота",'
+            ' "evidence": "решил завести кота"}],'
+            ' "summary": "Говорили о кофе."}'
+        )
+        manager = FakeManager()
+        summarizer, store, _ = self.make(manager=manager, llm=FakeLLM(answer=answer))
+        session = make_session(
+            [
+                ("user", "обожаю кофе"),
+                ("assistant", "здорово"),
+                ("user", "решил завести кота"),
+            ]
+        )
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="INFO"):
+            summarizer.summarize(session)
+
+        session_id, structured = manager.calls[0]
+        self.assertEqual(session_id, "s1")
+        self.assertEqual([item.text for item in structured.facts], ["Пользователь любит кофе"])
+        self.assertEqual(
+            [item.text for item in structured.decisions],
+            ["Пользователь решил завести кота"],
+        )
+
+    def test_manager_failure_does_not_block_summary(self) -> None:
+        class BrokenManager:
+            def ingest(self, session_id, summary) -> None:
+                raise RuntimeError("база занята")
+
+        answer = (
+            '{"facts": [{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}],'
+            ' "summary": "Говорили о кофе."}'
+        )
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        summarizer = Summarizer(
+            FakeLLM(answer=answer),
+            store,
+            background=False,
+            manager=BrokenManager(),
+        )
+        session = make_session([("user", "обожаю кофе")])
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="ERROR"):
+            text = summarizer.summarize(session)
+
+        self.assertEqual(
+            text,
+            "Факты о пользователе:\n- Пользователь любит кофе\nГоворили о кофе.",
+        )
+        self.assertEqual(store.summary("s1")["summary"], text)
+
+    def test_from_config_passes_manager(self) -> None:
+        manager = object()
+        summarizer = Summarizer.from_config(FakeLLM(), object(), manager=manager)
+        self.assertIs(summarizer.manager, manager)
 
     # ------------------------------------------------------------- recovery
     def test_recover_summarizes_crashed_session(self) -> None:

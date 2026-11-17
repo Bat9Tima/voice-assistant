@@ -92,6 +92,21 @@ class FakeVectors:
         return len(self.items)
 
 
+class FakeManager:
+    """Менеджер фактов без базы: отдаёт заготовленный блок или ошибку."""
+
+    def __init__(self, block: str = "", error: Exception | None = None) -> None:
+        self.value = block
+        self.error = error
+        self.queries: list[str] = []
+
+    def block(self, query: str = "") -> str:
+        self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
 class MemoryServiceTest(unittest.TestCase):
     def make(self, **kwargs) -> tuple[MemoryService, FakeEmbedder, FakeVectors, SessionStore]:
         directory = tempfile.TemporaryDirectory()
@@ -111,6 +126,31 @@ class MemoryServiceTest(unittest.TestCase):
         vectors = FakeVectors()
         memory = MemoryService(embedder, store, vectors, **kwargs)
         return memory, embedder, vectors, store
+
+    def add_session(
+        self,
+        store: SessionStore,
+        session_id: str,
+        messages: int,
+        text: str,
+        *,
+        minute: int = 1,
+        started_at: datetime | None = None,
+    ) -> None:
+        session = DialogSession(started_at=started_at or at(minute), id=session_id)
+        for index in range(messages):
+            session.add(
+                "user" if index % 2 == 0 else "assistant",
+                f"реплика {index}",
+                at=at(minute + 1) if started_at is None else started_at,
+            )
+        session.finish(at=at(minute + 2) if started_at is None else started_at)
+        store.save(session)
+        store.save_summary(
+            session_id,
+            text,
+            created_at=at(minute + 3) if started_at is None else started_at,
+        )
 
     # ------------------------------------------------------------------ write
     def test_remember_embeds_document(self) -> None:
@@ -305,6 +345,101 @@ class MemoryServiceTest(unittest.TestCase):
         vectors.hits = [VectorHit("s1", 0.8, {})]
         self.assertEqual(memory.block("вопрос"), "")
 
+    def test_block_puts_facts_before_memory_header(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.hits = [VectorHit("s1", 0.8, {})]
+        memory.manager = FakeManager("Ключевые факты:\n- любит кофе")
+
+        block = memory.block("что я люблю?")
+
+        self.assertTrue(block.startswith("Ключевые факты:"))
+        self.assertLess(block.index("Ключевые факты:"), block.index(MEMORY_HEADER))
+
+    def test_block_returns_facts_without_summaries(self) -> None:
+        memory, _, _, _ = self.make()
+        memory.manager = FakeManager("Ключевые факты:\n- любит кофе")
+
+        self.assertEqual(memory.block("вопрос"), "Ключевые факты:\n- любит кофе")
+
+    def test_manager_error_does_not_break_memory(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.hits = [VectorHit("s1", 0.8, {})]
+        memory.manager = FakeManager(error=RuntimeError("база занята"))
+
+        with self.assertLogs("app.memory", level="WARNING"):
+            block = memory.block("что я изучал?")
+
+        self.assertTrue(block.startswith(MEMORY_HEADER))
+        self.assertIn("Пользователь изучает C++ и циклы.", block)
+
+    # ----------------------------------------------------------------- digest
+    def test_digest_includes_today_long_sessions_only(self) -> None:
+        memory, _, _, store = self.make(digest_min_messages=6)
+        self.add_session(store, "long", 6, "Сегодняшний длинный разговор.")
+        self.add_session(store, "short", 4, "Сегодняшний короткий разговор.", minute=5)
+        yesterday = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+        self.add_session(
+            store,
+            "old",
+            8,
+            "Вчерашний разговор.",
+            started_at=yesterday,
+        )
+
+        digest = memory.digest(now=at(20))
+
+        self.assertEqual([hit.session_id for hit in digest], ["long"])
+        self.assertEqual(digest[0].summary, "Сегодняшний длинный разговор.")
+
+    def test_digest_respects_limit(self) -> None:
+        memory, _, _, store = self.make(digest_min_messages=6, digest_limit=1)
+        self.add_session(store, "first", 6, "Первый разговор.", minute=1)
+        self.add_session(store, "second", 6, "Второй разговор.", minute=5)
+
+        digest = memory.digest(now=at(20))
+
+        self.assertEqual([hit.session_id for hit in digest], ["second"])
+
+    def test_digest_can_be_disabled(self) -> None:
+        memory, _, _, store = self.make(digest_min_messages=6, digest_limit=0)
+        self.add_session(store, "long", 6, "Сегодняшний разговор.")
+
+        self.assertEqual(memory.digest(now=at(20)), [])
+
+    def test_digest_clips_long_summary(self) -> None:
+        memory, _, _, store = self.make(
+            digest_min_messages=6,
+            digest_item_chars=20,
+        )
+        self.add_session(
+            store,
+            "long",
+            6,
+            "Первое предложение. Второе предложение.",
+        )
+
+        digest = memory.digest(now=at(20))
+
+        self.assertTrue(digest[0].summary.endswith("…"))
+        self.assertLessEqual(len(digest[0].summary), 21)
+
+    def test_block_puts_digest_before_semantic_hits_and_deduplicates(self) -> None:
+        memory, _, vectors, store = self.make(digest_min_messages=6)
+        self.add_session(store, "long", 6, "Сегодняшний разговор.")
+        vectors.hits = [VectorHit("s1", 0.8, {}), VectorHit("long", 0.9, {})]
+
+        block = memory.block("вопрос", now=at(20))
+
+        lines = block.splitlines()
+        self.assertTrue(lines[0].startswith("Эпизодическая память"))
+        self.assertIn("- Сегодня, 12:01: Сегодняшний разговор.", lines)
+        self.assertIn("- 16.11.2026 12:10: Пользователь изучает C++ и циклы.", lines)
+        self.assertLess(
+            lines.index("- Сегодня, 12:01: Сегодняшний разговор."),
+            lines.index("- 16.11.2026 12:10: Пользователь изучает C++ и циклы."),
+        )
+        self.assertEqual(block.count("Сегодняшний разговор."), 1)
+
     # ----------------------------------------------------------------- config
     def test_from_config_disabled(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -347,6 +482,10 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertIsNotNone(memory)
         self.assertEqual(memory.embedder.model, "mongodb/voyage-4")
         self.assertIsInstance(memory.vectors, ChromaVectorStore)
+        self.assertEqual(memory.max_chars, 2400)
+        self.assertEqual(memory.digest_min_messages, 6)
+        self.assertEqual(memory.digest_limit, 3)
+        self.assertEqual(memory.digest_item_chars, 320)
 
 
 @unittest.skipUnless(HAS_CHROMA, "chromadb не установлен")

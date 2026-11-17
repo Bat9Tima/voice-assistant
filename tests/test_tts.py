@@ -71,6 +71,9 @@ def make_service(directory: Path, **overrides) -> TTSService:
         "cache_dir": str(directory / "cache"),
         "phrases_dir": str(directory),
         "workers": 2,
+        # Буфер проверяется отдельно, остальным тестам он только добавил бы
+        # ожидание.
+        "prebuffer_sec": 0,
     }
     section.update(overrides)
     return TTSService({"tts": section})
@@ -108,6 +111,22 @@ class SplitSentencesTest(unittest.TestCase):
         chunks = split_sentences(text, limit=100)
         self.assertGreaterEqual(len(chunks), 3)
         self.assertTrue(all(len(chunk) <= 100 for chunk in chunks))
+
+    def test_short_sentence_with_comma_stays_whole(self) -> None:
+        text = "Небо кажется голубым потому, что свет рассеивается."
+        self.assertEqual(split_sentences(text), [text])
+
+    def test_long_sentence_prefers_comma(self) -> None:
+        text = (
+            "Первая часть предложения, которая уже длинная, "
+            "вторая часть предложения, которая тоже длинная, "
+            "третья часть предложения, которая завершает мысль."
+        )
+        chunks = split_sentences(text, limit=60)
+        self.assertGreaterEqual(len(chunks), 3)
+        self.assertTrue(chunks[0].endswith(","))
+        self.assertLessEqual(len(chunks[0]), 60)
+        self.assertTrue(chunks[1].startswith("вторая"))
 
     def test_empty(self) -> None:
         self.assertEqual(split_sentences(""), [])
@@ -364,6 +383,475 @@ class TTSServiceTest(unittest.TestCase):
                 self.assertFalse(service._play(np.zeros(10, dtype=np.float32)))
             self.assertEqual(len(chunks), 1)
             self.assertTrue(stream.aborted)
+
+
+class TTSStreamTest(unittest.TestCase):
+    def test_stream_is_none_when_disabled(self) -> None:
+        self.assertIsNone(TTSService({"tts": {"enabled": False}}).stream())
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(make_service(Path(tmp), api_key="").stream())
+
+    def test_stream_speaks_sentences_as_they_arrive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[str] = []
+            requested: list[str] = []
+
+            def fake_request(text: str) -> bytes:
+                requested.append(text)
+                return make_pcm()
+
+            with (
+                patch.object(service, "_request", side_effect=fake_request),
+                patch.object(
+                    service,
+                    "_play",
+                    side_effect=lambda data, job=None: played.append("play") or True,
+                ),
+            ):
+                stream = service.stream()
+                self.assertIsNotNone(stream)
+                stream.feed("Первое предложение. Вто")
+                deadline = time.monotonic() + 2
+                while not played and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                # Пока поток открыт, уже звучит только первое предложение.
+                self.assertEqual(played, ["play"])
+                self.assertEqual(requested, ["Первое предложение."])
+
+                stream.feed("рое предложение.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(played, ["play", "play"])
+            self.assertEqual(requested, ["Первое предложение.", "Второе предложение."])
+
+    def test_stream_flushes_remainder_on_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed("Без точки в конце")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, ["Без точки в конце"])
+
+    def test_stream_respects_max_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), max_chars=40)
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed("Первое длинное предложение здесь. Второе предложение тоже здесь.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, ["Первое длинное предложение здесь."])
+            self.assertLessEqual(sum(len(text) for text in requested), 40)
+
+    def test_stop_drops_stream_chunks_fed_after_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            playing = threading.Event()
+            played: list[str] = []
+
+            def blocking_play(data, job=None) -> bool:
+                played.append("play")
+                playing.set()
+                if job is None:
+                    return True
+                return not job.cancelled.wait(timeout=2)
+
+            with (
+                patch.object(service, "_request", return_value=make_pcm()),
+                patch.object(service, "_play", side_effect=blocking_play),
+            ):
+                stream = service.stream()
+                stream.feed("Первое предложение здесь. ")
+                self.assertTrue(playing.wait(2))
+                service.stop()
+                stream.feed("Второе предложение здесь.")
+                stream.close()
+                self.assertTrue(service.wait(2))
+            self.assertEqual(len(played), 1)
+
+    def test_stream_does_not_cut_short_sentence_at_comma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                text = "Небо кажется голубым потому, что свет рассеивается."
+                stream.feed(text)
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, [text])
+
+    def test_stream_does_not_start_on_comma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed("Привет, как дела")
+                time.sleep(0.2)
+                self.assertEqual(requested, [])
+                stream.feed("?")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, ["Привет, как дела?"])
+
+    def test_stream_long_sentence_falls_back_to_comma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Первая часть предложения, которая уже длинная, "
+                    "вторая часть предложения, которая тоже длинная, "
+                    "третья часть предложения, которая добавляет детали, "
+                    "четвёртая часть предложения, которая завершает мысль."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertGreaterEqual(len(requested), 2)
+            self.assertTrue(requested[0].endswith(","))
+            self.assertLessEqual(len(requested[0]), 180)
+
+    def test_stream_short_first_sentence_stays_whole(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Привет. Дальше идёт длинное предложение, "
+                    "которое целиком уйдёт в озвучку вторым фрагментом."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested[0], "Привет.")
+
+    def test_stream_job_waits_for_more_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            with (
+                patch.object(service, "_request", return_value=make_pcm()) as request,
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed("Привет")
+                # Точки нет: предложение ещё не готово, синтеза нет.
+                time.sleep(0.2)
+                request.assert_not_called()
+                stream.close()
+                self.assertTrue(service.wait(5))
+
+    def test_sealed_job_plays_tail_missed_by_first_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            job = _SpeechJob(generation=service._generation)
+            played: list[str] = []
+            calls = {"count": 0}
+            real_snapshot = job.snapshot
+
+            def snapshot() -> list[str]:
+                # Первый снимок — до добавления хвоста, дальше как есть.
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return []
+                return real_snapshot()
+
+            with (
+                patch.object(job, "snapshot", side_effect=snapshot),
+                patch.object(service, "_request", return_value=make_pcm()),
+                patch.object(
+                    service,
+                    "_play",
+                    side_effect=lambda data, job=None: played.append("play") or True,
+                ),
+            ):
+                job.add(["Хвост после закрытия."])
+                job.seal()
+                service._run_job(job)
+            self.assertEqual(played, ["play"])
+
+    def test_stream_skips_failed_chunk_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[float] = []
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                if text == "Второе предложение здесь.":
+                    raise RuntimeError("boom")
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                played.append(float(data[0]))
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Первое предложение здесь. Второе предложение здесь. Третье предложение здесь."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(played, [1.0, 3.0])
+
+    def test_stream_skips_playback_error_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[float] = []
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                value = float(data[0])
+                if value == 1.0:
+                    return False
+                played.append(value)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Первое предложение здесь. Второе предложение здесь. Третье предложение здесь."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(played, [2.0, 3.0])
+
+    def test_stream_skips_chunk_that_takes_too_long(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), chunk_wait_sec=1.0)
+            played: list[float] = []
+            release = threading.Event()
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                if text == "Второе предложение здесь.":
+                    release.wait(timeout=5)
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                played.append(float(data[0]))
+                return True
+
+            try:
+                with (
+                    patch.object(service, "_synth_cached", side_effect=fake_synth),
+                    patch.object(service, "_play", side_effect=fake_play),
+                ):
+                    stream = service.stream()
+                    stream.feed(
+                        "Первое предложение здесь. "
+                        "Второе предложение здесь. "
+                        "Третье предложение здесь."
+                    )
+                    stream.close()
+                    self.assertTrue(service.wait(5))
+            finally:
+                release.set()
+            self.assertEqual(played, [1.0, 3.0])
+
+    def test_stream_buffers_next_chunk_before_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), prebuffer_sec=1.0)
+            started: dict[float, float] = {}
+
+            def fake_synth(text: str) -> np.ndarray:
+                value = 1.0 if "Первое" in text else 2.0
+                if value == 2.0:
+                    # Второй фрагмент синтезируется дольше первого.
+                    time.sleep(0.3)
+                return np.array([value], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                started[float(data[0])] = time.monotonic()
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed("Первое предложение здесь. Второе предложение здесь.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            gap = started[2.0] - started[1.0]
+            self.assertLess(gap, 0.1)
+
+    def test_stream_synthesizes_new_chunk_while_current_plays(self) -> None:
+        """Новый текст уходит в синтез, не дожидаясь конца текущей фразы."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), workers=2)
+            requested: list[str] = []
+            playing = threading.Event()
+            release = threading.Event()
+
+            def fake_synth(text: str) -> np.ndarray:
+                requested.append(text)
+                return np.zeros(10, dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                playing.set()
+                release.wait(timeout=5)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                try:
+                    stream.feed("Первое предложение здесь. ")
+                    self.assertTrue(playing.wait(2))
+                    stream.feed("Второе предложение здесь. ")
+                    deadline = time.monotonic() + 2
+                    while len(requested) < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(
+                        requested,
+                        [
+                            "Первое предложение здесь.",
+                            "Второе предложение здесь.",
+                        ],
+                    )
+                finally:
+                    stream.close()
+                    release.set()
+            self.assertTrue(service.wait(5))
+
+    def test_stream_without_buffer_has_gap_on_slow_next_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), prebuffer_sec=0)
+            started: dict[float, float] = {}
+
+            def fake_synth(text: str) -> np.ndarray:
+                value = 1.0 if "Первое" in text else 2.0
+                if value == 2.0:
+                    time.sleep(0.3)
+                return np.array([value], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                started[float(data[0])] = time.monotonic()
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed("Первое предложение здесь. Второе предложение здесь.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            gap = started[2.0] - started[1.0]
+            self.assertGreaterEqual(gap, 0.2)
+
+    def test_stream_prefetches_next_chunk_while_current_plays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            playing = threading.Event()
+            release = threading.Event()
+
+            def fake_synth(text: str) -> np.ndarray:
+                requested.append(text)
+                return np.zeros(10, dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                playing.set()
+                release.wait(timeout=5)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                try:
+                    # Пробел в конце нужен, чтобы вторая точка стала границей
+                    # предложения ещё до close().
+                    stream.feed("Первое предложение здесь. Второе предложение здесь. ")
+                    self.assertTrue(playing.wait(2))
+                    deadline = time.monotonic() + 2
+                    while len(requested) < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(
+                        requested,
+                        [
+                            "Первое предложение здесь.",
+                            "Второе предложение здесь.",
+                        ],
+                    )
+                finally:
+                    stream.close()
+                    release.set()
+            self.assertTrue(service.wait(5))
 
 
 if __name__ == "__main__":

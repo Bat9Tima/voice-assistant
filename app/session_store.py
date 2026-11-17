@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -28,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .durability import PERMANENT
 from .session import DialogSession, Message, SessionMemory
 
 log = logging.getLogger(__name__)
@@ -61,9 +63,49 @@ CREATE TABLE IF NOT EXISTS summaries (
     summary TEXT NOT NULL,
     created_at TEXT NOT NULL,
     model TEXT NOT NULL,
-    prompt_version INTEGER NOT NULL DEFAULT 1
+    prompt_version INTEGER NOT NULL DEFAULT 1,
+    data TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    durability TEXT NOT NULL DEFAULT 'permanent',
+    fact_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    importance TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    replaced_by INTEGER,
+    conflict_with INTEGER,
+    resolved_by INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_facts_status
+    ON memory_facts(status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_facts_session
+    ON memory_facts(session_id);
 """
+
+FACT_FIELDS = (
+    "kind",
+    "durability",
+    "fact_key",
+    "text",
+    "evidence",
+    "importance",
+    "confidence",
+    "status",
+    "updated_at",
+    "replaced_by",
+    "conflict_with",
+    "resolved_by",
+)
 
 
 class SessionStore:
@@ -158,22 +200,30 @@ class SessionStore:
         model: str = "",
         prompt_version: int = 1,
         created_at: datetime | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
-        """Сохраняет резюме сессии. Повторная запись заменяет прошлое."""
+        """Сохраняет резюме сессии. Повторная запись заменяет прошлое.
+
+        ``summary`` — обычный текст для поиска и чтения, ``data`` —
+        структурированные поля промпта v2. Старые записи получают ``{}``.
+        """
         text = (summary or "").strip()
         if not text:
             raise ValueError("пустое резюме")
         moment = created_at or _now()
+        payload = json.dumps(data or {}, ensure_ascii=False, sort_keys=True)
         with self._connection() as conn:
             conn.execute(
                 """
-                INSERT INTO summaries (session_id, summary, created_at, model, prompt_version)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO summaries
+                    (session_id, summary, created_at, model, prompt_version, data)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     summary = excluded.summary,
                     created_at = excluded.created_at,
                     model = excluded.model,
-                    prompt_version = excluded.prompt_version
+                    prompt_version = excluded.prompt_version,
+                    data = excluded.data
                 """,
                 (
                     session_id,
@@ -181,8 +231,132 @@ class SessionStore:
                     moment.isoformat(),
                     str(model or ""),
                     max(1, int(prompt_version)),
+                    payload,
                 ),
             )
+
+    # --------------------------------------------------------------- facts
+    def add_memory_fact(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        durability: str = PERMANENT,
+        fact_key: str,
+        text: str,
+        evidence: str,
+        importance: str,
+        confidence: float,
+        status: str = "active",
+        created_at: str,
+        updated_at: str,
+        replaced_by: int | None = None,
+        conflict_with: int | None = None,
+        resolved_by: int | None = None,
+    ) -> int:
+        """Добавляет факт памяти и возвращает его id.
+
+        Факты живут отдельно от резюме: один факт может быть обновлён,
+        вытеснен или закрыт, не переписывая исходный разговор.
+        """
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO memory_facts
+                    (session_id, kind, durability, fact_key, text, evidence,
+                     importance, confidence, status, created_at, updated_at,
+                     replaced_by, conflict_with, resolved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    kind,
+                    durability,
+                    fact_key,
+                    text,
+                    evidence,
+                    importance,
+                    float(confidence),
+                    status,
+                    created_at,
+                    updated_at,
+                    replaced_by,
+                    conflict_with,
+                    resolved_by,
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def update_memory_fact(self, fact_id: int, **fields: Any) -> bool:
+        """Меняет поля факта. Неизвестные поля игнорируются.
+
+        ``True``, если запись нашлась. Так менеджер помечает объединение,
+        конфликт и закрытие задачи, не удаляя историю.
+        """
+        updates = {key: value for key, value in fields.items() if key in FACT_FIELDS}
+        if not updates:
+            return False
+        columns = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values())
+        values.append(int(fact_id))
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE memory_facts SET {columns} WHERE id = ?",
+                values,
+            )
+        return cursor.rowcount > 0
+
+    def delete_memory_facts(self, session_id: str) -> int:
+        """Удаляет все факты сессии: пересчёт резюме не должен плодить дубли."""
+        with self._connection() as conn:
+            cursor = conn.execute("DELETE FROM memory_facts WHERE session_id = ?", (session_id,))
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------- read
+    def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        """Факты памяти, свежие сверху. ``status`` фильтрует active/superseded."""
+        query = """
+            SELECT id, session_id, kind, durability, fact_key, text, evidence,
+                   importance, confidence, status, created_at, updated_at,
+                   replaced_by, conflict_with, resolved_by
+            FROM memory_facts
+        """
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def memory_fact(self, fact_id: int) -> dict[str, Any] | None:
+        """Один факт по id или ``None``. Нужен для пары конфликта."""
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, session_id, kind, durability, fact_key, text, evidence,
+                       importance, confidence, status, created_at, updated_at,
+                       replaced_by, conflict_with, resolved_by
+                FROM memory_facts
+                WHERE id = ?
+                """,
+                (int(fact_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def memory_fact_count(self, *, status: str = "active") -> int:
+        """Сколько фактов в выбранном состоянии."""
+        with self._connection() as conn:
+            if status:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM memory_facts WHERE status = ?",
+                    (status,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS total FROM memory_facts").fetchone()
+        return int(row["total"])
 
     # ------------------------------------------------------------------- read
     def sessions(self, limit: int = 20, *, status: str = "") -> list[dict[str, Any]]:
@@ -280,18 +454,18 @@ class SessionStore:
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT session_id, summary, created_at, model, prompt_version
+                SELECT session_id, summary, created_at, model, prompt_version, data
                 FROM summaries
                 WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
-        return dict(row) if row is not None else None
+        return _summary_row(row) if row is not None else None
 
     def summaries(self, limit: int | None = 20) -> list[dict[str, Any]]:
         """Последние резюме, новые сверху. ``None`` — все резюме."""
         query = """
-            SELECT session_id, summary, created_at, model, prompt_version
+            SELECT session_id, summary, created_at, model, prompt_version, data
             FROM summaries
             ORDER BY created_at DESC, rowid DESC
         """
@@ -301,7 +475,25 @@ class SessionStore:
             params = (max(1, int(limit)),)
         with self._connection() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        return [_summary_row(row) for row in rows]
+
+    def summaries_with_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Резюме вместе с временем и размером сессии: для дневного дайджеста."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    m.session_id, m.summary, m.created_at, m.model,
+                    m.prompt_version, m.data,
+                    s.started_at, s.ended_at, s.messages_count, s.status
+                FROM summaries m
+                JOIN sessions s ON s.id = m.session_id
+                ORDER BY s.started_at DESC, m.rowid DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [_summary_row(row) for row in rows]
 
     def count(self) -> int:
         """Сколько сессий лежит в базе."""
@@ -414,6 +606,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "status" not in columns:
         # Сессии, записанные до этого изменения, все завершены.
         conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+    summary_columns = {row["name"] for row in conn.execute("PRAGMA table_info(summaries)")}
+    if summary_columns and "data" not in summary_columns:
+        # Резюме до промпта v2 хранят только текст; структуры у них нет.
+        conn.execute("ALTER TABLE summaries ADD COLUMN data TEXT NOT NULL DEFAULT '{}'")
+    fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(memory_facts)")}
+    if fact_columns and "durability" not in fact_columns:
+        # Старые факты не классифицированы. Постоянные безопаснее:
+        # конфликт уйдёт на проверку, а не заменит запись молча.
+        conn.execute(
+            "ALTER TABLE memory_facts ADD COLUMN durability TEXT NOT NULL DEFAULT 'permanent'"
+        )
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
@@ -421,6 +624,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP INDEX IF EXISTS idx_messages_session")
+
+
+def _summary_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Строка резюме с разобранным JSON в ``data``. Битый JSON — пустой словарь."""
+    result = dict(row)
+    result["data"] = _parse_data(result.get("data"))
+    return result
+
+
+def _parse_data(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _now() -> datetime:

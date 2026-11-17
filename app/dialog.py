@@ -1,20 +1,31 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .context_builder import (
+    DEFAULT_BUDGET_TOKENS,
+    DEFAULT_CHARS_PER_TOKEN,
+    BuiltContext,
+    ContextBuilder,
+    ContextPart,
+)
 from .datetime_answer import datetime_context
 from .persona import PersonaMemory
 from .profile import Profile
 from .prompts import DIALOG_SYSTEM
+from .rolling_summary import RollingSummary
 from .session import (
     DEFAULT_HISTORY_CHARS,
     DEFAULT_HISTORY_MESSAGES,
     SessionMemory,
 )
 from .text import normalize
+
+log = logging.getLogger(__name__)
 
 DEFAULT_TURN_TTL_SEC = 180.0
 DEFAULT_NEWS_TTL_SEC = 900.0
@@ -202,8 +213,21 @@ class DialogService:
         self.max_tokens = max(1, int(section.get("max_tokens") or 400))
         self.temperature = float(section.get("temperature", 0.5))
         self.timeout = float(section.get("timeout_sec") or 60)
+        self.streaming = bool((section.get("streaming") or {}).get("enabled", True))
         self.history_messages = _limit(section.get("history_messages"), DEFAULT_HISTORY_MESSAGES)
         self.history_chars = _limit(section.get("history_chars"), DEFAULT_HISTORY_CHARS)
+        context_cfg = section.get("context") or {}
+        budget = context_cfg.get("budget_tokens")
+        self.context = ContextBuilder(
+            max_tokens=DEFAULT_BUDGET_TOKENS if budget is None else int(budget),
+            chars_per_token=float(context_cfg.get("chars_per_token") or DEFAULT_CHARS_PER_TOKEN),
+        )
+        # Скользящее резюме: выпавшие из окна реплики сжимаются в фоне,
+        # чтобы разговор не терял начало на длинной дистанции.
+        self.rolling = RollingSummary.from_config(
+            self.llm,
+            context_cfg.get("rolling_summary") or {},
+        )
         self.sessions = sessions or SessionMemory(
             self.history_messages,
             self.history_chars,
@@ -235,55 +259,101 @@ class DialogService:
                 candidates.append(candidate)
         return any(candidate in phrases for candidate in candidates)
 
-    def system_prompt(self) -> str:
-        """Правила + дата и время + профиль пользователя + факты Луны."""
-        parts = [DIALOG_SYSTEM.strip(), datetime_context()]
+    def system_parts(self) -> list[ContextPart]:
+        """Блоки системного промпта по важности: от обязательных к памяти."""
+        parts = [
+            ContextPart("rules", DIALOG_SYSTEM.strip(), required=True),
+            ContextPart("datetime", datetime_context(), required=True),
+        ]
         if self.profile is not None:
             block = self.profile.block()
             if block:
-                parts.append(block)
+                parts.append(ContextPart("profile", block))
         if self.persona is not None:
             block = self.persona.block()
             if block:
-                parts.append(block)
-        return "\n\n".join(parts)
+                parts.append(ContextPart("persona", block, keep_tail=True))
+        block = self.rolling.block()
+        if block:
+            parts.append(ContextPart("dialog", block))
+        return parts
+
+    def system_prompt(self) -> str:
+        """Правила + дата и время + профиль пользователя + факты Луны."""
+        return "\n\n".join(part.text for part in self.system_parts())
 
     def start(self) -> None:
         """Начинает разговор с чистого листа: прошлая сессия закрывается."""
+        self.rolling.reset()
         self.sessions.start()
 
     def stop(self) -> None:
         """Закрывает сессию. Сейчас она просто уходит в ``on_finish``."""
         self.sessions.finish()
+        self.rolling.reset()
 
-    def reply(self, text: str) -> str:
+    def reply(self, text: str, on_chunk: Callable[[str], None] | None = None) -> str:
         """Один ход: окно истории + текущая реплика.
 
         Реплики попадают в сессию только после успешного ответа, чтобы
         неудачный ход не отравлял контекст следующих вопросов. Перед
         запросом к модели подмешиваются резюме прошлых разговоров, если
         память включена и нашлось что-то по смыслу.
+
+        ``on_chunk`` включает потоковый путь: куски ответа сразу отдаются
+        в озвучку, а в историю попадает весь текст после завершения.
         """
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
-        messages = [*self.sessions.history(), {"role": "user", "content": text}]
-        system = self.system_prompt()
-        block = self._memory_block(text)
-        if block:
-            system = f"{system}\n\n{block}"
-        answer = self.llm.chat(
-            messages,
-            system=system,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            timeout=self.timeout,
+        built = self.context.build(
+            parts=self.system_parts(),
+            history=self.sessions.history(),
+            user_text=text,
+            memory=self._memory_block(text),
         )
-        answer = " ".join((answer or "").split())
-        if not answer:
-            raise ValueError("модель вернула пустой ответ")
+        if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
+            answer = self._reply_stream(built, on_chunk)
+        else:
+            answer = self.llm.chat(
+                built.messages,
+                system=built.system,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout=self.timeout,
+            )
+            answer = " ".join((answer or "").split())
+            if not answer:
+                raise ValueError("модель вернула пустой ответ")
         self.sessions.add("user", text)
         self.sessions.add("assistant", answer)
+        self.rolling.observe(self.sessions.current, self.sessions.window_start())
+        return answer
+
+    def _reply_stream(self, built: BuiltContext, on_chunk: Callable[[str], None]) -> str:
+        """Читает поток модели и сразу отдаёт куски в озвучку."""
+        pieces: list[str] = []
+        try:
+            for piece in self.llm.chat_stream(
+                built.messages,
+                system=built.system,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout=self.timeout,
+            ):
+                # Сначала озвучка: если она сломается, ответ лучше не
+                # записывать в историю как сказанный.
+                on_chunk(piece)
+                pieces.append(piece)
+        except Exception:  # noqa: BLE001
+            if not pieces:
+                raise
+            # Часть ответа уже прозвучала: обрываем его молча, а не
+            # заменяем ошибкой поверх сказанного.
+            log.warning("Поток ответа оборвался, отдаю сказанную часть", exc_info=True)
+        answer = " ".join("".join(pieces).split())
+        if not answer:
+            raise ValueError("модель вернула пустой ответ")
         return answer
 
     def _memory_block(self, text: str) -> str:

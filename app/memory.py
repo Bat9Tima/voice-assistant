@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .embeddings import EmbeddingError, VoyageEmbedder
+from .memory_manager import MemoryManager
 from .session_store import SessionStore
 
 log = logging.getLogger(__name__)
@@ -35,8 +36,13 @@ log = logging.getLogger(__name__)
 DEFAULT_TOP_K = 3
 DEFAULT_MIN_SCORE = 0.35
 DEFAULT_MIN_MARGIN = 0.05
-DEFAULT_MAX_CHARS = 1200
+DEFAULT_MAX_CHARS = 2400
 DEFAULT_COLLECTION = "summaries"
+# Дневной дайджест: сегодняшние содержательные сессии добавляются к
+# семантическим находкам, даже если поиск их не выбрал.
+DEFAULT_DIGEST_MIN_MESSAGES = 6
+DEFAULT_DIGEST_LIMIT = 3
+DEFAULT_DIGEST_ITEM_CHARS = 320
 # Версия раскладки индекса. Меняйте, если изменился способ подготовки
 # текста или модель: старые векторы перестанут участвовать в поиске,
 # а restore пересчитает их из резюме в SQLite.
@@ -49,7 +55,9 @@ MEMORY_HEADER = (
     "Эпизодическая память: краткие резюме прошлых разговоров, не текущего.\n"
     "Это не факты из профиля. Если воспоминание противоречит профилю, "
     "верь профилю.\n"
-    "Используй воспоминания, только если они помогают ответить."
+    "Используй воспоминания, только если они помогают ответить. Не "
+    "пересказывай извинения Луны и её слова о том, что она чего-то не "
+    "помнит: это не факт о разговоре."
 )
 
 
@@ -216,15 +224,25 @@ class MemoryService:
         min_score: float = DEFAULT_MIN_SCORE,
         min_margin: float = DEFAULT_MIN_MARGIN,
         max_chars: int = DEFAULT_MAX_CHARS,
+        digest_min_messages: int = DEFAULT_DIGEST_MIN_MESSAGES,
+        digest_limit: int = DEFAULT_DIGEST_LIMIT,
+        digest_item_chars: int = DEFAULT_DIGEST_ITEM_CHARS,
         index_version: int = INDEX_VERSION,
+        manager: MemoryManager | None = None,
     ) -> None:
         self.embedder = embedder
         self.store = store
         self.vectors = vectors
+        # Факты менеджера идут первыми: это уже проверенные утверждения,
+        # а не пересказ целой сессии.
+        self.manager = manager
         self.top_k = max(1, int(top_k))
         self.min_score = float(min_score)
         self.min_margin = max(0.0, float(min_margin))
         self.max_chars = max(0, int(max_chars))
+        self.digest_min_messages = max(1, int(digest_min_messages))
+        self.digest_limit = max(0, int(digest_limit))
+        self.digest_item_chars = max(0, int(digest_item_chars))
         self.index_version = max(1, int(index_version))
 
     @classmethod
@@ -232,6 +250,8 @@ class MemoryService:
         cls,
         cfg: dict[str, Any],
         store: SessionStore,
+        *,
+        manager: MemoryManager | None = None,
     ) -> MemoryService | None:
         """Собирает память из секции ``memory``. ``None`` — память выключена."""
         section = (cfg or {}).get("memory") or {}
@@ -257,7 +277,15 @@ class MemoryService:
             min_score=float(section.get("min_score", DEFAULT_MIN_SCORE)),
             min_margin=float(section.get("min_margin", DEFAULT_MIN_MARGIN)),
             max_chars=int(section.get("max_chars") or DEFAULT_MAX_CHARS),
+            digest_min_messages=_int_setting(
+                section.get("digest_min_messages"), DEFAULT_DIGEST_MIN_MESSAGES
+            ),
+            digest_limit=_int_setting(section.get("digest_limit"), DEFAULT_DIGEST_LIMIT),
+            digest_item_chars=_int_setting(
+                section.get("digest_item_chars"), DEFAULT_DIGEST_ITEM_CHARS
+            ),
             index_version=int(section.get("index_version") or INDEX_VERSION),
+            manager=manager,
         )
 
     # ------------------------------------------------------------------ write
@@ -415,21 +443,94 @@ class MemoryService:
         gap = score - second
         return score >= self.min_score - MARGIN_WINDOW and gap >= self.min_margin
 
-    def block(self, query: str) -> str:
-        """Готовый блок для системного промпта или пустая строка."""
+    def block(self, query: str, *, now: datetime | None = None) -> str:
+        """Готовый блок для системного промпта или пустая строка.
+
+        Сначала идут отдельные факты менеджера: это проверенные факты,
+        уже очищенные от повторов и противоречий. Потом — сегодняшние
+        содержательные сессии, затем семантические находки без повторов.
+        """
+        facts = self.facts_block(query)
         hits = self.recall(query)
-        if not hits:
+        digest = self.digest(now=now)
+        if not facts and not hits and not digest:
             return ""
-        lines = [MEMORY_HEADER]
-        total = len(MEMORY_HEADER)
-        for hit in hits:
-            moment = _short_date(hit.created_at)
-            line = f"- {moment}{hit.summary}" if moment else f"- {hit.summary}"
-            if self.max_chars and total + len(line) > self.max_chars:
+        lines: list[str] = []
+        total = 0
+        if facts:
+            lines.append(facts)
+            total = len(facts) + 1
+        if hits or digest:
+            lines.append(MEMORY_HEADER)
+            total += len(MEMORY_HEADER) + 1
+        seen: set[str] = set()
+        for hit in digest:
+            line = f"- Сегодня, {_clock(hit.created_at)}: {hit.summary}"
+            if self.max_chars and total + len(line) + 1 > self.max_chars:
                 break
             lines.append(line)
-            total += len(line)
-        return "\n".join(lines) if len(lines) > 1 else ""
+            total += len(line) + 1
+            seen.add(hit.session_id)
+        for hit in hits:
+            if hit.session_id in seen:
+                continue
+            moment = _short_date(hit.created_at)
+            line = f"- {moment}{hit.summary}" if moment else f"- {hit.summary}"
+            if self.max_chars and total + len(line) + 1 > self.max_chars:
+                break
+            lines.append(line)
+            total += len(line) + 1
+            seen.add(hit.session_id)
+        return "\n".join(lines) if len(lines) > 1 or facts else ""
+
+    def facts_block(self, query: str = "") -> str:
+        """Факты менеджера. Сбой чтения не должен ломать системный промпт."""
+        if self.manager is None:
+            return ""
+        try:
+            return self.manager.block(query)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: факты недоступны: %s", exc)
+            return ""
+
+    def digest(self, *, now: datetime | None = None) -> list[MemoryHit]:
+        """Сегодняшние завершённые сессии с достаточным числом реплик.
+
+        Нужен как страховка от чистого semantic search: мета-вопрос
+        «что мы обсуждали» плохо совпадает с длинным резюме, зато свежая
+        сессия важна сама по себе. Ошибка чтения базы не ломает диалог.
+        """
+        if self.digest_limit <= 0:
+            return []
+        try:
+            rows = self.store.summaries_with_sessions(limit=max(20, self.digest_limit * 5))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: дневной дайджест недоступен: %s", exc)
+            return []
+        today = _as_local(now).date()
+        found: list[MemoryHit] = []
+        for row in rows:
+            if str(row.get("status") or "") != "completed":
+                continue
+            if int(row.get("messages_count") or 0) < self.digest_min_messages:
+                continue
+            started = _parse_moment(str(row.get("started_at") or ""))
+            if started is None or started.date() != today:
+                continue
+            text = str(row.get("summary") or "").strip()
+            if not text:
+                continue
+            found.append(
+                MemoryHit(
+                    session_id=str(row["session_id"]),
+                    summary=_clip(text, self.digest_item_chars),
+                    score=0.0,
+                    created_at=str(row.get("started_at") or ""),
+                )
+            )
+            if len(found) >= self.digest_limit:
+                break
+        return found
 
     def close(self) -> None:
         """Освобождает ресурсы индекса при выходе программы."""
@@ -444,6 +545,54 @@ class MemoryService:
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
+
+
+def _int_setting(value: Any, default: int) -> int:
+    """Целое из конфига: ``None`` — значение по умолчанию, ноль разрешён."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_local(moment: datetime | None) -> datetime:
+    if moment is None:
+        return datetime.now().astimezone()
+    if moment.tzinfo is None:
+        return moment.astimezone()
+    return moment
+
+
+def _parse_moment(value: str) -> datetime | None:
+    try:
+        return _as_local(datetime.fromisoformat(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _clock(value: str) -> str:
+    """«17:18» из ISO-строки; мусор не роняет строку памяти."""
+    moment = _parse_moment(value)
+    return moment.strftime("%H:%M") if moment is not None else "--:--"
+
+
+def _clip(text: str, limit: int) -> str:
+    """Сжимает резюме до лимита по границе предложения или слова."""
+    flat = " ".join((text or "").split())
+    if not limit or len(flat) <= limit:
+        return flat
+    cut = flat[:limit]
+    floor = limit // 2
+    for marker in (". ", "! ", "? ", "; ", ", "):
+        position = cut.rfind(marker)
+        if position >= floor:
+            return cut[: position + len(marker)].rstrip() + "…"
+    position = cut.rfind(" ")
+    if position >= floor:
+        cut = cut[:position]
+    return cut.rstrip(" ,;:") + "…"
 
 
 def _short_date(value: str) -> str:

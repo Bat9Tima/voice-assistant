@@ -82,6 +82,17 @@
     "ttl_sec": 180
   },
 
+  "intent": {
+    "enabled": true,
+    "mode": "shadow",
+    "base_url": "https://api.proxyapi.ru/v1",
+    "api_key": "",
+    "model": "openai/gpt-6-luna-decisions",
+    "threshold": 0.6,
+    "timeout_sec": 4.0,
+    "answer_ttl_sec": 120
+  },
+
   "opencode": {
     "enabled": true,
     "agent": "voice",
@@ -130,6 +141,21 @@
     "max_errors": 2,
     "history_messages": 12,
     "history_chars": 4000,
+    "streaming": {
+      "enabled": true
+    },
+    "context": {
+      "budget_tokens": 6000,
+      "chars_per_token": 2.5,
+      "rolling_summary": {
+        "enabled": true,
+        "min_messages": 4,
+        "max_chars": 1200,
+        "max_input_chars": 4000,
+        "max_tokens": 250,
+        "timeout_sec": 30
+      }
+    },
     "profile_path": "state/profile.txt",
     "profile_chars": 4000,
     "persona_path": "state/luna.txt",
@@ -139,7 +165,7 @@
       "enabled": true,
       "model": "",
       "max_input_chars": 6000,
-      "max_tokens": 300,
+      "max_tokens": 700,
       "temperature": 0.2,
       "timeout_sec": 45,
       "min_messages": 2,
@@ -157,7 +183,12 @@
     "top_k": 3,
     "min_score": 0.35,
     "min_margin": 0.05,
-    "max_chars": 1200,
+    "max_chars": 2400,
+    "digest_min_messages": 6,
+    "digest_limit": 3,
+    "digest_item_chars": 320,
+    "facts_limit": 6,
+    "facts_max_chars": 900,
     "timeout_sec": 10,
     "index_version": 1
   }

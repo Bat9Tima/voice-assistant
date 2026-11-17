@@ -24,14 +24,23 @@ from typing import Any
 from .persona import PersonaMemory, parse_facts
 from .prompts import SELF_FACTS_SYSTEM, SUMMARY_PROMPT_VERSION, SUMMARY_SYSTEM
 from .session import DialogSession, SessionMemory
+from .summary_schema import (
+    StructuredSummary,
+    SummaryFormatError,
+    parse_summary,
+    render_summary,
+)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_MAX_INPUT_CHARS = 6000
-DEFAULT_MAX_TOKENS = 300
+DEFAULT_MAX_TOKENS = 700
 DEFAULT_TIMEOUT_SEC = 45.0
 DEFAULT_MIN_MESSAGES = 2
 DEFAULT_TEMPERATURE = 0.2
+# Доля лимита, которая остаётся началу разговора. Хвост важнее, но и
+# начало содержит факты о пользователе, которые иначе терялись.
+HEAD_SHARE = 0.4
 ROLE_NAMES = {"user": "Пользователь", "assistant": "Ассистент"}
 
 
@@ -43,6 +52,31 @@ def _int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _user_text(session: DialogSession) -> str:
+    """Только реплики пользователя: по ним проверяются цитаты-подтверждения."""
+    return "\n".join(message.content for message in session.messages if message.role == "user")
+
+
+def _cut_head(text: str, size: int) -> str:
+    """Начало транскрипта по границе строки или слова, не длиннее ``size``."""
+    chunk = text[:size]
+    for marker in ("\n", " "):
+        position = chunk.rfind(marker)
+        if position > 0:
+            return chunk[:position]
+    return chunk
+
+
+def _cut_tail(text: str, size: int) -> str:
+    """Хвост транскрипта по границе строки или слова, не длиннее ``size``."""
+    chunk = text[-size:]
+    for marker in ("\n", " "):
+        position = chunk.find(marker)
+        if position != -1:
+            return chunk[position + 1 :]
+    return chunk
 
 
 class Summarizer:
@@ -64,6 +98,7 @@ class Summarizer:
         background: bool = True,
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
+        manager: Any | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
@@ -71,6 +106,8 @@ class Summarizer:
         self.memory = memory
         # Факты Луны о себе: отдельный файл, отдельный запрос к модели.
         self.persona = persona
+        # Менеджер фактов: после резюме обновляет отдельную таблицу памяти.
+        self.manager = manager
         self.enabled = bool(enabled)
         self.model = str(model or "").strip()
         self.max_input_chars = max(0, int(max_input_chars))
@@ -93,6 +130,7 @@ class Summarizer:
         *,
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
+        manager: Any | None = None,
     ) -> Summarizer:
         """Собирает суммаризатор из вложенной секции ``dialog.summary``."""
         section = section or {}
@@ -110,6 +148,7 @@ class Summarizer:
             background=bool(section.get("background", True)),
             memory=memory,
             persona=persona,
+            manager=manager,
         )
 
     # ------------------------------------------------------------------ hooks
@@ -165,19 +204,55 @@ class Summarizer:
             timeout=self.timeout,
             model=self.model or None,
         )
-        summary = (answer or "").strip()
-        if not summary:
+        raw = (answer or "").strip()
+        if not raw:
             raise ValueError("модель вернула пустое резюме")
+        data: dict[str, Any] = {}
+        structured: StructuredSummary | None = None
+        try:
+            structured = parse_summary(raw, _user_text(session))
+        except SummaryFormatError:
+            # Модель ответила прозой вместо JSON: не теряем разговор,
+            # но структуры и подтверждённых фактов у такой записи нет.
+            log.warning("Резюме сессии %s не JSON, сохраняю текстом", session.id)
+            summary = raw
+        else:
+            summary = render_summary(structured)
+            data = structured.to_dict()
+            if not summary:
+                raise ValueError("модель вернула пустое резюме")
         self.store.save_summary(
             session.id,
             summary,
             model=self.model_name(),
             prompt_version=self.prompt_version,
+            data=data,
         )
         log.info("Резюме сессии %s сохранено: %s символов", session.id, len(summary))
+        if structured is not None:
+            self._update_facts(session.id, structured)
         self._remember(session.id, summary)
         self._remember_self(session, transcript)
         return summary
+
+    def _update_facts(self, session_id: str, summary: StructuredSummary) -> None:
+        """Передаёт подтверждённые пункты менеджеру памяти. Сбой не критичен."""
+        if self.manager is None:
+            return
+        try:
+            result = self.manager.ingest(session_id, summary)
+        except Exception:  # noqa: BLE001
+            log.exception("Факты сессии %s не обновлены", session_id)
+            return
+        log.info(
+            "Факты сессии %s: +%s, объединено %s, обновлено %s, на проверку %s, закрыто %s",
+            session_id,
+            result.added,
+            result.merged,
+            result.superseded,
+            result.review,
+            result.resolved,
+        )
 
     def _remember(self, session_id: str, summary: str) -> None:
         """Индексирует резюме для семантического поиска. Сбой не критичен."""
@@ -212,22 +287,23 @@ class Summarizer:
     def transcript(self, session: DialogSession) -> str:
         """Реплики одной строкой на каждую, в пределах лимита символов.
 
-        Длинная сессия обрезается с начала: для резюме важнее, чем
-        закончился разговор, а не с чего начался. Резка идёт по границе
-        строки, чтобы не начинать с половины реплики.
+        Длинная сессия обрезается с двух сторон: начало содержит факты,
+        с которых разговор начался, хвост — чем он закончился. Середина
+        при этом теряется. Резка идёт по границе строки, чтобы не
+        начинать с половины реплики.
         """
         lines = [
             f"{ROLE_NAMES.get(message.role, message.role)}: {message.content}"
             for message in session.messages
         ]
         text = "\n".join(lines)
-        if self.max_input_chars and len(text) > self.max_input_chars:
-            tail = text[-self.max_input_chars :]
-            boundary = tail.find("\n")
-            if boundary != -1:
-                tail = tail[boundary + 1 :]
-            text = "…\n" + tail
-        return text
+        if not self.max_input_chars or len(text) <= self.max_input_chars:
+            return text
+        if self.max_input_chars <= len("\n…\n"):
+            return text[: self.max_input_chars]
+        head_size = max(1, int(self.max_input_chars * HEAD_SHARE))
+        tail_size = max(1, self.max_input_chars - head_size - len("\n…\n"))
+        return f"{_cut_head(text, head_size)}\n…\n{_cut_tail(text, tail_size)}"
 
     def model_name(self) -> str:
         """Модель для записи в базу: своя из конфига или модель клиента."""

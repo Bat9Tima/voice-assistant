@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 from collections import deque
 from types import SimpleNamespace
@@ -8,6 +9,18 @@ from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
+from app.intent_classifier import (
+    ANSWER,
+    DIALOG,
+    INFO,
+    MODE_ACTIVE,
+    MODE_SHADOW,
+    SOURCE_FALLBACK,
+    SOURCE_MODEL,
+    UNKNOWN,
+    DialogState,
+    IntentDecision,
+)
 from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
 from app.qa import QAAnswer, QAService, Route
@@ -96,7 +109,7 @@ class FakeQA:
         self.answered: list[str] = []
         self.shown: list[QAAnswer] = []
 
-    def route(self, text: str) -> Route:
+    def route(self, text: str, *, in_dialog: bool = False) -> Route:
         self.routed.append(text)
         return Route(self.kind)
 
@@ -107,6 +120,42 @@ class FakeQA:
     def show(self, answer: QAAnswer) -> bool:
         self.shown.append(answer)
         return True
+
+
+class FakeIntent:
+    def __init__(
+        self,
+        mode: str = MODE_SHADOW,
+        decision: IntentDecision | None = None,
+    ) -> None:
+        self.mode = mode
+        self.decision = decision or IntentDecision(
+            DIALOG,
+            confidence=0.9,
+            raw=DIALOG,
+            source=SOURCE_MODEL,
+        )
+        self.state = DialogState()
+        self.observed: list[tuple[str, bool]] = []
+        self.classified: list[tuple[str, bool]] = []
+
+    def observe(self, text: str, *, in_dialog: bool) -> None:
+        self.observed.append((text, in_dialog))
+
+    def classify(self, text: str, *, in_dialog: bool) -> IntentDecision:
+        self.classified.append((text, in_dialog))
+        return self.decision
+
+    def blocks_lookup(self, decision: IntentDecision) -> bool:
+        return decision.source == SOURCE_MODEL and decision.intent in {
+            ANSWER,
+            DIALOG,
+            "clarify",
+            UNKNOWN,
+        }
+
+    def blocks_search(self, decision: IntentDecision) -> bool:
+        return self.blocks_lookup(decision)
 
 
 class TrayStatusTest(unittest.TestCase):
@@ -672,6 +721,126 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(assistant.tts.phrases, ["ack", "unknown"])
         beep.assert_called_once_with(320, 120)
 
+    def test_shadow_observes_dialog_search_and_keeps_it(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(MODE_SHADOW)
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+        self.assertEqual(assistant.intent.observed, [("курс доллара", True)])
+        self.assertEqual(assistant.intent.classified, [])
+
+    def test_active_blocks_false_search_in_dialog(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.intent.classified, [("курс доллара", True)])
+        self.assertEqual(assistant.intent.observed, [])
+
+    def test_active_blocks_false_news_in_dialog(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="news")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("новости")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.intent.classified, [("новости", True)])
+
+    def test_active_keeps_real_news(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="news")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(INFO, confidence=0.99, raw=INFO, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("новости")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["новости"])
+        self.assertEqual(assistant.intent.classified, [("новости", True)])
+
+    def test_active_does_not_gate_datetime(self) -> None:
+        assistant = self.make()
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("который час")
+
+        self.assertTrue(message.startswith("Сейчас "))
+        self.assertEqual(assistant.intent.classified, [])
+        self.assertEqual(assistant.intent.observed, [("который час", True)])
+
+    def test_active_keeps_real_info_search(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(INFO, confidence=0.99, raw=INFO, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+        self.assertEqual(assistant.intent.classified, [("курс доллара", True)])
+
+    def test_active_keeps_search_on_classifier_fallback(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(
+                UNKNOWN,
+                confidence=0.0,
+                raw="",
+                source=SOURCE_FALLBACK,
+            ),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+
+    def test_unknown_outside_dialog_is_observed(self) -> None:
+        assistant = self.make()
+        assistant.intent = FakeIntent(MODE_SHADOW)
+
+        with patch("app.main.beep"):
+            message = assistant.run_text("сделай что-нибудь странное")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(
+            assistant.intent.observed,
+            [("сделай что нибудь странное", False)],
+        )
+
     def test_new_command_interrupts_previous_speech(self) -> None:
         assistant = self.make()
         assistant.tts.speaking = True
@@ -887,6 +1056,54 @@ class FakeDialog:
         return self.answer
 
 
+class StreamingFakeStream:
+    def __init__(self) -> None:
+        self.fed: list[str] = []
+        self.closed = 0
+
+    def feed(self, piece: str) -> None:
+        self.fed.append(piece)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class StreamingFakeTTS(FakeTTS):
+    def __init__(self) -> None:
+        super().__init__(enabled=True)
+        self.streams: list[StreamingFakeStream] = []
+
+    def stream(self) -> StreamingFakeStream:
+        stream = StreamingFakeStream()
+        self.streams.append(stream)
+        return stream
+
+
+class StreamingFakeDialog(FakeDialog):
+    """Диалог, который отдаёт ответ кусками через on_chunk."""
+
+    streaming = True
+
+    def __init__(
+        self,
+        answer: str = "ответ диалога",
+        pieces: list[str] | None = None,
+        error_after: Exception | None = None,
+    ) -> None:
+        super().__init__(answer)
+        self.pieces = pieces if pieces is not None else [answer]
+        self.error_after = error_after
+
+    def reply(self, text: str, on_chunk=None) -> str:  # noqa: ANN001
+        self.replied.append(text)
+        for piece in self.pieces:
+            if on_chunk is not None:
+                on_chunk(piece)
+        if self.error_after is not None:
+            raise self.error_after
+        return self.answer
+
+
 class DialogModeTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
@@ -970,6 +1187,53 @@ class DialogModeTest(unittest.TestCase):
         self.assertFalse(assistant._dialog_active)
         self.assertEqual(len(assistant.dialog.replied), 2)
         self.assertEqual(assistant.dialog.stopped, 1)
+
+    def test_streaming_dialog_feeds_chunks_and_does_not_repeat_answer(self) -> None:
+        assistant = self.make()
+        assistant.tts = StreamingFakeTTS()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет. Как дела?",
+            pieces=["Привет. ", "Как дела?"],
+        )
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+
+        message = assistant.run_text("привет")
+
+        self.assertEqual(message, "Привет. Как дела?")
+        self.assertEqual(len(assistant.tts.streams), 1)
+        self.assertEqual(assistant.tts.streams[0].fed, ["Привет. ", "Как дела?"])
+        self.assertEqual(assistant.tts.streams[0].closed, 1)
+        self.assertEqual(assistant.tts.said, [])
+
+    def test_streaming_without_tts_speaks_answer_at_end(self) -> None:
+        assistant = self.make()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет.",
+            pieces=["Привет."],
+        )
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+
+        assistant.run_text("привет")
+
+        self.assertEqual(assistant.tts.said, ["Привет."])
+
+    def test_streaming_error_after_chunks_closes_stream(self) -> None:
+        assistant = self.make()
+        assistant.tts = StreamingFakeTTS()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет.",
+            pieces=["При"],
+            error_after=RuntimeError("обрыв"),
+        )
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_active = True
+        with patch("app.main.log.exception"):
+            message = assistant.run_text("привет")
+        self.assertEqual(message, "Не получилось ответить.")
+        self.assertEqual(assistant.tts.streams[0].closed, 1)
+        self.assertEqual(assistant.tts.said, ["Не получилось ответить."])
 
     def test_cleanup_closes_dialog_session(self) -> None:
         assistant = self.make()

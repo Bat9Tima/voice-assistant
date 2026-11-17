@@ -13,7 +13,8 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from http.client import HTTPException
 from typing import Any
 
 from .datetime_answer import datetime_context
@@ -42,6 +43,28 @@ class LLMError(RuntimeError):
     def __init__(self, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+def _prepare_messages(
+    messages: list[dict[str, str]],
+    system: str,
+) -> list[dict[str, str]]:
+    """Чистит сообщения и ставит системный промпт первым."""
+    cleaned: list[dict[str, str]] = []
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        content = item.get("content")
+        if role not in {"system", "user", "assistant"}:
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        cleaned.append({"role": role, "content": content.strip()})
+    system = (system or "").strip()
+    if system:
+        cleaned.insert(0, {"role": "system", "content": system})
+    return cleaned
 
 
 class CloudLLM:
@@ -154,34 +177,11 @@ class CloudLLM:
         timeout: float | None = None,
         model: str | None = None,
     ) -> str:
-        """Ответ на список сообщений в формате OpenAI.
-
-        Сервис диалога пока передаёт одну реплику: история не хранится.
-        Формат списка оставлен, чтобы позже добавить память без переделки.
-        """
-        cleaned: list[dict[str, str]] = []
-        for item in messages or []:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role") or "").strip()
-            content = item.get("content")
-            if role not in {"system", "user", "assistant"}:
-                continue
-            if not isinstance(content, str) or not content.strip():
-                continue
-            cleaned.append({"role": role, "content": content.strip()})
+        """Ответ на список сообщений в формате OpenAI."""
+        cleaned = _prepare_messages(messages, system)
         if not cleaned:
             raise LLMError("пустой диалог")
-        system = (system or "").strip()
-        if system:
-            cleaned.insert(0, {"role": "system", "content": system})
-
-        if not self.enabled:
-            raise LLMError("облачная LLM выключена")
-        if not self.model:
-            raise LLMError("не задана модель cloud_llm.model")
-        if not self.api_key:
-            raise LLMError("не задан ключ cloud_llm.api_key")
+        self._ensure_ready()
 
         limit = max(int(max_tokens or 0), self.max_completion_tokens)
         temperature = self.temperature if temperature is None else float(temperature)
@@ -197,6 +197,46 @@ class CloudLLM:
             preferred=model or "",
         )
 
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str = "",
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout: float | None = None,
+        model: str | None = None,
+    ) -> Iterator[str]:
+        """Отдаёт ответ кусками по мере генерации (SSE).
+
+        Запасная модель включается, только пока не пришёл первый кусок:
+        после начала речи переключаться уже нельзя.
+        """
+        cleaned = _prepare_messages(messages, system)
+        if not cleaned:
+            raise LLMError("пустой диалог")
+        self._ensure_ready()
+
+        limit = max(int(max_tokens or 0), self.max_completion_tokens)
+        temperature = self.temperature if temperature is None else float(temperature)
+        timeout = self.timeout if timeout is None else float(timeout)
+        return self._stream_with_fallback(
+            cleaned,
+            max_tokens=limit,
+            temperature=temperature,
+            timeout=timeout,
+            preferred=model or "",
+        )
+
+    def _ensure_ready(self) -> None:
+        """Проверяет, что клиент вообще может идти в сеть."""
+        if not self.enabled:
+            raise LLMError("облачная LLM выключена")
+        if not self.model:
+            raise LLMError("не задана модель cloud_llm.model")
+        if not self.api_key:
+            raise LLMError("не задан ключ cloud_llm.api_key")
+
     def _with_fallback(self, send: Callable[[str], str], *, preferred: str = "") -> str:
         """Повторяет запрос и перебирает запасные модели."""
         candidates = [preferred or self.model]
@@ -209,6 +249,70 @@ class CloudLLM:
                     return send(candidate)
                 except LLMError as exc:
                     errors.append(f"{candidate}: {exc}")
+                    log.warning(
+                        "CloudLLM: %s, попытка %s: %s",
+                        candidate,
+                        attempt,
+                        exc,
+                    )
+                    if not exc.retryable or attempt > self.retries:
+                        break
+                    time.sleep(min(0.5 * attempt, 2.0))
+
+        detail = "; ".join(errors[-2:]) if errors else "нет ответа"
+        raise LLMError(f"модель не ответила: {detail}")
+
+    def _stream_with_fallback(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: float,
+        preferred: str = "",
+    ) -> Iterator[str]:
+        """Поток с перебором моделей, пока не пришёл первый кусок."""
+        candidates = [preferred or self.model]
+        candidates.extend(item for item in self.fallback_models if item not in candidates)
+
+        errors: list[str] = []
+        for candidate in candidates:
+            for attempt in range(1, self.retries + 2):
+                started = time.monotonic()
+                first = 0.0  # время до первого куска
+                yielded = False
+                try:
+                    for piece in self._post_stream(
+                        candidate,
+                        messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        timeout=timeout,
+                    ):
+                        if not yielded:
+                            first = time.monotonic() - started
+                        yielded = True
+                        yield piece
+                    if not yielded:
+                        raise LLMError("пустой ответ модели")
+                    log.info(
+                        "CloudLLM: поток %s за %.2f с (первый кусок %.2f с)",
+                        candidate,
+                        time.monotonic() - started,
+                        first,
+                    )
+                    return
+                except LLMError as exc:
+                    errors.append(f"{candidate}: {exc}")
+                    if yielded:
+                        # Часть ответа уже прозвучала: тихо начинать заново
+                        # нельзя, иначе пользователь услышит два начала.
+                        log.warning(
+                            "CloudLLM: поток %s оборвался после начала ответа: %s",
+                            candidate,
+                            exc,
+                        )
+                        raise LLMError(f"поток прерван: {exc}") from exc
                     log.warning(
                         "CloudLLM: %s, попытка %s: %s",
                         candidate,
@@ -316,3 +420,62 @@ class CloudLLM:
             details.get("reasoning_tokens"),
         )
         return content
+
+    def _post_stream(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+        timeout: float,
+    ) -> Iterator[str]:
+        """Читает SSE-поток и отдаёт только текстовые куски ответа."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": int(max_tokens),
+            "temperature": float(temperature),
+            "stream": True,
+        }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        request = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                for raw in response:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        # Служебные и битые строки не должны рвать ответ.
+                        continue
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = (choices[0] or {}).get("delta") or {}
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        yield content
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            raise LLMError(f"HTTP {exc.code}: {detail}", retryable=retryable) from exc
+        except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
+            raise LLMError(f"сервер недоступен: {exc}") from exc

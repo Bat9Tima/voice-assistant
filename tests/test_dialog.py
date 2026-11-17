@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.context_builder import ContextBuilder
 from app.dialog import DialogContext, DialogService, NewsItem, clip_text
 from app.persona import PersonaMemory
 from app.profile import Profile
@@ -156,6 +157,26 @@ class FakeLLM:
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
+
+
+class StreamLLM(FakeLLM):
+    """Модель с потоком: исключение в pieces обрывает ответ на этом месте."""
+
+    def __init__(self, pieces: list[str | Exception]) -> None:
+        super().__init__("Ответ")
+        self.pieces = pieces
+        self.stream_calls: list[tuple[list[dict[str, str]], dict]] = []
+
+    def chat_stream(self, messages: list[dict[str, str]], **kwargs):
+        self.stream_calls.append((messages, kwargs))
+
+        def generate():
+            for piece in self.pieces:
+                if isinstance(piece, Exception):
+                    raise piece
+                yield piece
+
+        return generate()
 
 
 class DialogServiceTest(unittest.TestCase):
@@ -344,6 +365,121 @@ class DialogServiceTest(unittest.TestCase):
         llm = FakeLLM()
         DialogService({"dialog": {}}, llm).reply("привет")
         self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_context_budget_drops_memory_before_rules(self) -> None:
+        class FakeMemory:
+            def block(self, query: str) -> str:
+                return "Эпизодическая память: " + "факт " * 100
+
+        llm = FakeLLM()
+        service = DialogService(
+            {"dialog": {"context": {"budget_tokens": 100000, "chars_per_token": 1.0}}},
+            llm,
+            memory=FakeMemory(),
+        )
+        required = sum(len(item.text) for item in service.system_parts()) + len("привет")
+        service.context = ContextBuilder(max_tokens=required + 30, chars_per_token=1.0)
+
+        service.reply("привет")
+
+        system = llm.calls[0][1]["system"]
+        self.assertIn("голосовой ассистент", system)
+        self.assertNotIn("Эпизодическая", system)
+
+    def test_context_keeps_current_message_with_tiny_budget(self) -> None:
+        llm = FakeLLM()
+        service = DialogService(
+            {"dialog": {"context": {"budget_tokens": 1, "chars_per_token": 1.0}}},
+            llm,
+        )
+
+        with self.assertLogs("app.context_builder", level="WARNING"):
+            service.reply("привет")
+
+        messages, kwargs = llm.calls[0]
+        self.assertEqual(messages[-1], {"role": "user", "content": "привет"})
+        self.assertIn("голосовой ассистент", kwargs["system"])
+
+    def test_rolling_summary_goes_to_next_context(self) -> None:
+        llm = FakeLLM("Понятно.")
+        service = DialogService(
+            {
+                "dialog": {
+                    "history_messages": 2,
+                    "context": {"rolling_summary": {"min_messages": 2}},
+                }
+            },
+            llm,
+        )
+        self.addCleanup(service.rolling.close, 5)
+
+        service.reply("первый вопрос")
+        service.reply("второй вопрос")
+        service.rolling.close(timeout=5)
+        self.assertIn("Краткое содержание начала", service.rolling.block())
+
+        service.reply("третий вопрос")
+        dialog_calls = [
+            kwargs
+            for messages, kwargs in llm.calls
+            if messages[-1] == {"role": "user", "content": "третий вопрос"}
+        ]
+        self.assertTrue(dialog_calls)
+        self.assertIn("Краткое содержание начала", dialog_calls[-1]["system"])
+
+    def test_streaming_reply_feeds_chunks_and_records_answer(self) -> None:
+        llm = StreamLLM(["При", "вет. ", "Как дела?"])
+        service = DialogService({"dialog": {}}, llm)
+        chunks: list[str] = []
+
+        answer = service.reply("привет", on_chunk=chunks.append)
+
+        self.assertEqual(answer, "Привет. Как дела?")
+        self.assertEqual("".join(chunks), "Привет. Как дела?")
+        self.assertEqual(
+            service.sessions.history()[-1],
+            {"role": "assistant", "content": "Привет. Как дела?"},
+        )
+        self.assertEqual(len(llm.stream_calls), 1)
+        self.assertEqual(llm.calls, [])
+
+    def test_streaming_disabled_uses_regular_chat(self) -> None:
+        llm = StreamLLM(["При"])
+        service = DialogService({"dialog": {"streaming": {"enabled": False}}}, llm)
+
+        answer = service.reply("привет", on_chunk=lambda piece: None)
+
+        self.assertEqual(answer, "Ответ")
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(llm.stream_calls, [])
+
+    def test_streaming_without_callback_uses_regular_chat(self) -> None:
+        llm = StreamLLM(["При"])
+        service = DialogService({"dialog": {}}, llm)
+
+        self.assertEqual(service.reply("привет"), "Ответ")
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(llm.stream_calls, [])
+
+    def test_streaming_partial_error_keeps_said_text(self) -> None:
+        llm = StreamLLM(["При", RuntimeError("обрыв")])
+        service = DialogService({"dialog": {}}, llm)
+        chunks: list[str] = []
+
+        with self.assertLogs("app.dialog", level="WARNING"):
+            answer = service.reply("привет", on_chunk=chunks.append)
+
+        self.assertEqual(answer, "При")
+        self.assertEqual("".join(chunks), "При")
+        self.assertEqual(service.sessions.history()[-1]["content"], "При")
+
+    def test_streaming_error_before_first_chunk_raises(self) -> None:
+        llm = StreamLLM([RuntimeError("нет связи")])
+        service = DialogService({"dialog": {}}, llm)
+
+        with self.assertRaises(RuntimeError):
+            service.reply("привет", on_chunk=lambda piece: None)
+        self.assertEqual(service.sessions.history(), [])
 
     def test_persona_block_is_added_to_system_prompt(self) -> None:
         directory = tempfile.TemporaryDirectory()

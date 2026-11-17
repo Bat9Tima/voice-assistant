@@ -20,7 +20,9 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
+from .memory_manager import MemoryManager
 from .persona import PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
@@ -39,7 +41,10 @@ log = logging.getLogger(__name__)
 
 # Внутри разговора эти фразы обслуживают быстрые сервисы, остальное уходит
 # в чат с историей. Уточнения и общие вопросы — тоже чат.
-DIALOG_INTENT_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
+DIALOG_QA_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
+# Из них классификатор может отменить только те, что требуют внешних
+# данных. Дата считается локально, а уточнения держатся за контекст.
+GATED_QA_KINDS = frozenset({"weather", "news", "search"})
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -128,11 +133,13 @@ class Assistant:
             self.planner = LocalPlanner(cfg)
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
+        self.intent = IntentClassifier(cfg)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
         self.summarizer: Summarizer | None = None
         self.memory: MemoryService | None = None
+        self.memory_manager: MemoryManager | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
@@ -146,7 +153,12 @@ class Assistant:
             )
             if db_path:
                 self.session_store = SessionStore(db_path)
-                self.memory = MemoryService.from_config(cfg, self.session_store)
+                self.memory_manager = MemoryManager.from_config(
+                    self.session_store, cfg.get("memory")
+                )
+                self.memory = MemoryService.from_config(
+                    cfg, self.session_store, manager=self.memory_manager
+                )
             self.dialog = DialogService(
                 cfg,
                 self.llm,
@@ -162,6 +174,7 @@ class Assistant:
                     dialog_cfg.get("summary"),
                     memory=self.memory,
                     persona=persona,
+                    manager=self.memory_manager,
                 ).attach(self.dialog.sessions)
                 log.info("Сессии диалога сохраняются в %s", db_path)
                 if persona.path is not None:
@@ -930,6 +943,9 @@ class Assistant:
         self._dialog_last = time.monotonic()
         self.set_state("idle")
         message = "Слушаю. О чём поговорим?"
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.note_question(message)
         self.notify(message)
         if not self.tts.say(message):
             beep(880, 80)
@@ -943,6 +959,9 @@ class Assistant:
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.clear()
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
@@ -962,9 +981,31 @@ class Assistant:
         if dialog is None:
             return "Не понял команду"
         started = time.monotonic()
+        stream = None
+        streamed = False
+
+        def on_chunk(piece: str) -> None:
+            """Заводит озвучку с первого куска: без TTS задача не нужна."""
+            nonlocal stream, streamed
+            if stream is None:
+                starter = getattr(self.tts, "stream", None)
+                if starter is None:
+                    return
+                stream = starter()
+                if stream is None:
+                    return
+            streamed = True
+            stream.feed(piece)
+
         try:
-            answer = dialog.reply(text)
+            if getattr(dialog, "streaming", False):
+                answer = dialog.reply(text, on_chunk=on_chunk)
+            else:
+                answer = dialog.reply(text)
         except Exception:  # noqa: BLE001
+            if stream is not None:
+                stream.close()
+                stream = None
             log.exception("Ошибка ответа в диалоге")
             self._dialog_errors = int(getattr(self, "_dialog_errors", 0)) + 1
             message = "Не получилось ответить."
@@ -973,16 +1014,48 @@ class Assistant:
                 return self._stop_dialog("errors")
             self.tts.say(message)
             return message
+        finally:
+            if stream is not None:
+                stream.close()
         self._dialog_errors = 0
         self._dialog_last = time.monotonic()
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.note_reply(answer)
         self.notify(answer[:250])
-        self.tts.say(answer)
+        if not streamed:
+            self.tts.say(answer)
         log.info(
             "Диалог: ответ за %.2f с, символов %s",
             time.monotonic() - started,
             len(answer),
         )
         return answer
+
+    def _dialog_route(self, text: str, route: Route | None) -> Route | None:
+        """Классификатор поверх правил внутри разговора.
+
+        В shadow он только пишет статистику в фоне. В active перед
+        маршрутом к внешним данным ждёт решение: если модель уверена, что
+        это разговор, ответ или уточнение, маршрут отменяется. Дата и
+        уточнения к прошлому ответу классификатор не трогает.
+        """
+        advisor = getattr(self, "intent", None)
+        if advisor is None:
+            return route
+        if route is not None and route.kind in GATED_QA_KINDS and advisor.mode == MODE_ACTIVE:
+            decision = advisor.classify(text, in_dialog=True)
+            if advisor.blocks_lookup(decision):
+                log.info(
+                    "Маршрут %s отменён: реплика похожа на разговор (%s, %.2f)",
+                    route.kind,
+                    decision.intent,
+                    decision.confidence,
+                )
+                return None
+            return route
+        advisor.observe(text, in_dialog=True)
+        return route
 
     def _process(self, text: str) -> str:
         text = canonicalize(normalize(text))
@@ -1004,7 +1077,9 @@ class Assistant:
             qa = getattr(self, "qa", None)
             # Разбираем фразу один раз: и для подводки, и для ответа.
             route = qa.route(text) if qa is not None else None
-            if in_dialog and route is not None and route.kind not in DIALOG_INTENT_KINDS:
+            if in_dialog:
+                route = self._dialog_route(text, route)
+            if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
@@ -1089,6 +1164,11 @@ class Assistant:
                     self.tts.phrase("error")
                 return message
 
+            # Вне разговора классификатор пока только наблюдает: ответ
+            # остаётся прежним, но в лог попадает, что это была за фраза.
+            advisor = getattr(self, "intent", None)
+            if advisor is not None:
+                advisor.observe(text, in_dialog=False)
             message = "Не понял команду"
             self.notify(message)
             beep(320, 120)

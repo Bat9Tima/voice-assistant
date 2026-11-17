@@ -213,14 +213,39 @@ class SessionMemory:
         session = self._current
         if session is None or not session.messages:
             return []
+        start = self.window_start(max_messages=max_messages, max_chars=max_chars)
+        return [{"role": item.role, "content": item.content} for item in session.messages[start:]]
+
+    def window_start(
+        self,
+        *,
+        max_messages: int | None = None,
+        max_chars: int | None = None,
+    ) -> int:
+        """Индекс первой реплики, которая ещё попадает в окно истории.
+
+        Всё до него в модель не уходит: именно эти реплики сжимает
+        скользящее резюме текущего разговора.
+        """
+        session = self._current
+        if session is None or not session.messages:
+            return 0
         messages = session.messages
         limit = self.max_messages if max_messages is None else max(0, int(max_messages))
         chars = self.max_chars if max_chars is None else max(0, int(max_chars))
-        if limit:
-            messages = messages[-limit:]
+        start = max(0, len(messages) - limit) if limit else 0
         if chars:
-            messages = _fit_chars(messages, chars)
-        return [{"role": item.role, "content": item.content} for item in messages]
+            total = 0
+            index = len(messages)
+            while index > start:
+                size = len(messages[index - 1].content)
+                # Самая свежая реплика попадает в окно всегда.
+                if index < len(messages) and total + size > chars:
+                    break
+                total += size
+                index -= 1
+            start = index
+        return start
 
     # ---------------------------------------------------------------- private
     def _remember(self, session: DialogSession) -> None:
@@ -257,21 +282,3 @@ class SessionMemory:
                 position,
                 session.id,
             )
-
-
-def _fit_chars(messages: list[Message], limit: int) -> list[Message]:
-    """Оставляет самые свежие реплики в пределах бюджета символов.
-
-    Самая свежая реплика попадает в окно всегда, даже если она длиннее
-    лимита: иначе окно осталось бы пустым.
-    """
-    selected: list[Message] = []
-    total = 0
-    for message in reversed(messages):
-        size = len(message.content)
-        if selected and total + size > limit:
-            break
-        selected.append(message)
-        total += size
-    selected.reverse()
-    return selected

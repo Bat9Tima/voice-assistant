@@ -332,8 +332,96 @@ class SummaryStoreTest(unittest.TestCase):
                 "created_at": at(10).isoformat(),
                 "model": "test-model",
                 "prompt_version": 2,
+                "data": {},
             },
         )
+
+    def test_structured_data_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        data = {
+            "facts": [
+                {"text": "Пользователь устал", "evidence": "я устал"},
+            ],
+            "topics": ["самочувствие"],
+            "summary": "Короткий разговор.",
+        }
+        store.save_summary("s1", "Факты о пользователе:\n- Пользователь устал", data=data)
+
+        self.assertEqual(store.summary("s1")["data"], data)
+        self.assertEqual(store.summaries()[0]["data"], data)
+
+    def test_invalid_data_json_is_read_as_empty(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        store.save_summary("s1", "Текст")
+        conn = sqlite3.connect(store.path)
+        try:
+            conn.execute("UPDATE summaries SET data = 'не json' WHERE session_id = 's1'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(store.summary("s1")["data"], {})
+
+    def test_summaries_with_sessions_join_session_metadata(self) -> None:
+        store = self.make()
+        store.save(make_session("old", minute=0))
+        store.save(make_session("new", minute=10))
+        store.save_summary("old", "старое", created_at=at(20))
+        store.save_summary("new", "новое", created_at=at(30))
+
+        rows = store.summaries_with_sessions()
+
+        self.assertEqual([row["session_id"] for row in rows], ["new", "old"])
+        self.assertEqual(rows[0]["messages_count"], 2)
+        self.assertEqual(rows[0]["status"], "completed")
+        self.assertEqual(rows[0]["started_at"], at(10).isoformat())
+        self.assertEqual(rows[0]["data"], {})
+
+    def test_old_summaries_table_is_migrated(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "dialog.db"
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    messages_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'completed'
+                );
+                CREATE TABLE summaries (
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                    summary TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt_version INTEGER NOT NULL DEFAULT 1
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, started_at, messages_count, status) "
+                "VALUES ('s1', ?, 2, 'completed')",
+                (at().isoformat(),),
+            )
+            conn.execute(
+                "INSERT INTO summaries "
+                "(session_id, summary, created_at, model, prompt_version) "
+                "VALUES ('s1', 'старое', ?, 'test', 1)",
+                (at(10).isoformat(),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = SessionStore(path)
+
+        self.assertEqual(store.summary("s1")["summary"], "старое")
+        self.assertEqual(store.summary("s1")["data"], {})
 
     def test_summary_is_replaced(self) -> None:
         store = self.make()
@@ -385,6 +473,183 @@ class SummaryStoreTest(unittest.TestCase):
         self.assertTrue(store.delete("s1"))
         self.assertIsNone(store.summary("s1"))
         self.assertEqual(store.summaries(), [])
+
+
+class MemoryFactsStoreTest(unittest.TestCase):
+    def make(self) -> SessionStore:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return SessionStore(Path(directory.name) / "dialog.db")
+
+    def add(self, store: SessionStore, **fields) -> int:
+        values = {
+            "session_id": "s1",
+            "kind": "fact",
+            "fact_key": "preference",
+            "text": "Пользователь любит кофе",
+            "evidence": "обожаю кофе",
+            "importance": "high",
+            "confidence": 0.9,
+            "created_at": at(1).isoformat(),
+            "updated_at": at(1).isoformat(),
+        }
+        values.update(fields)
+        return store.add_memory_fact(**values)
+
+    def test_add_and_read_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        rows = store.memory_facts()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], fact_id)
+        self.assertEqual(rows[0]["status"], "active")
+        self.assertEqual(rows[0]["confidence"], 0.9)
+        self.assertEqual(store.memory_fact(fact_id)["text"], "Пользователь любит кофе")
+        self.assertIsNone(store.memory_fact(fact_id + 100))
+        self.assertEqual(store.memory_fact_count(), 1)
+
+    def test_durability_defaults_and_roundtrips(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        default_id = self.add(store)
+        temporary_id = self.add(
+            store,
+            fact_key="health",
+            text="Пользователь болеет",
+            durability="temporary",
+        )
+
+        self.assertEqual(store.memory_fact(default_id)["durability"], "permanent")
+        self.assertEqual(store.memory_fact(temporary_id)["durability"], "temporary")
+
+    def test_status_filter_and_newest_first(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        first = self.add(store)
+        second = self.add(
+            store,
+            kind="decision",
+            fact_key="decision:курс",
+            text="Пользователь решил бросить курс",
+            created_at=at(2).isoformat(),
+            updated_at=at(2).isoformat(),
+        )
+        store.update_memory_fact(first, status="superseded")
+
+        active = store.memory_facts(status="active")
+        all_rows = store.memory_facts(status="", limit=10)
+
+        self.assertEqual([row["id"] for row in active], [second])
+        self.assertEqual([row["id"] for row in all_rows], [second, first])
+        self.assertEqual(store.memory_fact_count(), 1)
+        self.assertEqual(store.memory_fact_count(status="superseded"), 1)
+
+    def test_update_changes_allowed_fields_only(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        self.assertTrue(
+            store.update_memory_fact(
+                fact_id,
+                text="Пользователь обожает кофе",
+                status="superseded",
+                replaced_by=42,
+                unknown="игнор",
+            )
+        )
+        row = store.memory_facts()[0]
+        self.assertEqual(row["text"], "Пользователь обожает кофе")
+        self.assertEqual(row["status"], "superseded")
+        self.assertEqual(row["replaced_by"], 42)
+        self.assertFalse(store.update_memory_fact(fact_id))
+        self.assertFalse(store.update_memory_fact(9999, text="нет"))
+
+    def test_old_facts_table_gets_durability(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "dialog.db"
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    messages_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'completed'
+                );
+                CREATE TABLE memory_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    fact_key TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    importance TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    replaced_by INTEGER,
+                    conflict_with INTEGER,
+                    resolved_by INTEGER
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, started_at, messages_count, status) "
+                "VALUES ('s1', ?, 2, 'completed')",
+                (at().isoformat(),),
+            )
+            conn.execute(
+                "INSERT INTO memory_facts "
+                "(session_id, kind, fact_key, text, evidence, importance, "
+                "confidence, status, created_at, updated_at) "
+                "VALUES ('s1', 'fact', 'preference', 'Пользователь любит кофе', "
+                "'обожаю кофе', 'high', 0.9, 'active', ?, ?)",
+                (at().isoformat(), at().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = SessionStore(path)
+
+        self.assertEqual(store.memory_facts()[0]["durability"], "permanent")
+
+    def test_delete_by_session(self) -> None:
+        store = self.make()
+        store.save(make_session("s1"))
+        store.save(make_session("s2", minute=10))
+        self.add(store, session_id="s1")
+        self.add(store, session_id="s2")
+
+        self.assertEqual(store.delete_memory_facts("s1"), 1)
+        self.assertEqual([row["session_id"] for row in store.memory_facts()], ["s2"])
+
+    def test_delete_session_cascades_to_facts(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        self.add(store)
+
+        self.assertTrue(store.delete("s1"))
+        self.assertEqual(store.memory_facts(), [])
+
+    def test_fact_requires_session(self) -> None:
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.add(self.make(), session_id="нет-такой")
+
+    def test_unknown_fact_fields_are_ignored(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        self.assertFalse(store.update_memory_fact(fact_id, entirely_unknown="x"))
 
 
 if __name__ == "__main__":
