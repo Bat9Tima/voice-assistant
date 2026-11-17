@@ -7,10 +7,16 @@
 их состоянием:
 
 * похожий факт обновляется, а не дублируется;
-* противоположный по смыслу факт вытесняет старый и помечается
-  конфликтом;
+* явная смена состояния («выздоровел», «больше не») вытесняет старый
+  факт;
+* временное состояние (здоровье, настроение) может устареть само:
+  более позднее противоположное утверждение заменяет его без маркера;
+* постоянное предпочтение без явной смены не переписывается: спор уходит
+  в ``needs_review`` до уточнения;
 * незавершённая задача закрывается, когда в резюме появляется
   подходящее решение.
+
+Длительность факта определяет ``app.durability`` по словам, а не модель.
 
 Факты хранятся в SQLite (``memory_facts``), поэтому переживают
 перезапуск и не зависят от Chroma. Важность и уверенность считает
@@ -24,6 +30,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
+from .durability import PERMANENT, TEMPORARY, classify_durability
 from .importance import HIGH, MEDIUM, WEIGHT, classify
 from .summary_schema import StructuredSummary, SummaryItem
 
@@ -292,6 +299,7 @@ _POSITIVE = (
     "нормально",
     "отлично",
     "выздоров",
+    "здоров",
     "справил",
     "рад",
     "счастлив",
@@ -382,9 +390,10 @@ class MemoryManager:
                     # а не сообщённый пользователем факт.
                     continue
                 importance, confidence = classify(kind, item)
+                durability = classify_durability(item.text)
                 key = memory_key(kind, item.text)
                 merged = self._merge(
-                    active, kind, key, item, importance, confidence, stamp
+                    active, kind, key, item, importance, confidence, durability, stamp
                 )
                 if merged is not None:
                     result.merged += 1
@@ -393,7 +402,7 @@ class MemoryManager:
                     continue
                 conflict = self._conflict(active, kind, key, item.text)
                 if conflict is not None:
-                    if _is_update(item.text):
+                    if _is_update(item.text) or _expires(conflict, durability, stamp):
                         new_id = self._add(
                             session_id,
                             kind,
@@ -401,6 +410,7 @@ class MemoryManager:
                             item,
                             importance,
                             confidence,
+                            durability,
                             stamp,
                             conflict_with=conflict["id"],
                         )
@@ -423,12 +433,13 @@ class MemoryManager:
                             item,
                             importance,
                             confidence,
+                            durability,
                             stamp,
                             conflict["id"],
                         )
                         self._dismiss_reviews(kind, key, stamp)
                     else:
-                        # Противоположное без маркера времени: не выбираем
+                        # Противоположное без явной смены: не выбираем
                         # сами, а прячем оба факта до уточнения.
                         new_id = self._add(
                             session_id,
@@ -437,6 +448,7 @@ class MemoryManager:
                             item,
                             importance,
                             confidence,
+                            durability,
                             stamp,
                             status=NEEDS_REVIEW,
                             conflict_with=conflict["id"],
@@ -459,6 +471,7 @@ class MemoryManager:
                             item,
                             importance,
                             confidence,
+                            durability,
                             stamp,
                             conflict["id"],
                             status=NEEDS_REVIEW,
@@ -471,6 +484,7 @@ class MemoryManager:
                     item,
                     importance,
                     confidence,
+                    durability,
                     stamp,
                 )
                 result.added += 1
@@ -483,6 +497,7 @@ class MemoryManager:
                     item,
                     importance,
                     confidence,
+                    durability,
                     stamp,
                 )
                 # Новое активное утверждение важнее незакрытого спора.
@@ -634,6 +649,7 @@ class MemoryManager:
         item: SummaryItem,
         importance: str,
         confidence: float,
+        durability: str,
         stamp: str,
     ) -> dict | None:
         best: dict | None = None
@@ -656,12 +672,14 @@ class MemoryManager:
         evidence = item.evidence if choose_new else best["evidence"]
         merged_importance = _higher(best["importance"], importance)
         merged_confidence = max(float(best["confidence"]), confidence)
+        merged_durability = _stricter(best["durability"], durability)
         self.store.update_memory_fact(
             best["id"],
             text=text,
             evidence=evidence,
             importance=merged_importance,
             confidence=merged_confidence,
+            durability=merged_durability,
             updated_at=stamp,
         )
         best.update(
@@ -669,6 +687,7 @@ class MemoryManager:
             evidence=evidence,
             importance=merged_importance,
             confidence=merged_confidence,
+            durability=merged_durability,
             updated_at=stamp,
         )
         return best
@@ -697,6 +716,7 @@ class MemoryManager:
         item: SummaryItem,
         importance: str,
         confidence: float,
+        durability: str,
         stamp: str,
         *,
         status: str = "active",
@@ -705,6 +725,7 @@ class MemoryManager:
         return self.store.add_memory_fact(
             session_id=session_id,
             kind=kind,
+            durability=durability,
             fact_key=key,
             text=item.text,
             evidence=item.evidence,
@@ -726,6 +747,7 @@ class MemoryManager:
         item: SummaryItem,
         importance: str,
         confidence: float,
+        durability: str,
         stamp: str,
         conflict_with: int | None = None,
         status: str = "active",
@@ -734,6 +756,7 @@ class MemoryManager:
             "id": fact_id,
             "session_id": session_id,
             "kind": kind,
+            "durability": durability,
             "fact_key": key,
             "text": item.text,
             "evidence": item.evidence,
@@ -802,6 +825,31 @@ def _is_update(text: str) -> bool:
     """Есть ли явный маркер смены состояния, а не просто отрицание."""
     flat = _flat(text)
     return any(marker in flat for marker in _UPDATE_MARKERS)
+
+
+def _expires(conflict: dict, durability: str, stamp: str) -> bool:
+    """Можно ли заменить старое состояние более поздним утверждением.
+
+    Так устроены только временные состояния: здоровье и настроение
+    устаревают сами. Постоянное предпочтение без явного маркера не
+    переписывается — ему нужна проверка. Факты из одного резюме
+    одновременны, поэтому спор между ними тоже уходит на проверку.
+    """
+    if durability != TEMPORARY or conflict.get("durability") != TEMPORARY:
+        return False
+    return _is_later(str(conflict.get("updated_at") or ""), stamp)
+
+
+def _is_later(previous: str, current: str) -> bool:
+    try:
+        return datetime.fromisoformat(current) > datetime.fromisoformat(previous)
+    except (TypeError, ValueError):
+        return False
+
+
+def _stricter(left: str, right: str) -> str:
+    """Постоянное предпочтение осторожнее временного состояния."""
+    return TEMPORARY if left == TEMPORARY and right == TEMPORARY else PERMANENT
 
 
 def _opposes(left: str, right: str) -> bool:

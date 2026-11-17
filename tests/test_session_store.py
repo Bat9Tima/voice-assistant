@@ -511,6 +511,20 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertIsNone(store.memory_fact(fact_id + 100))
         self.assertEqual(store.memory_fact_count(), 1)
 
+    def test_durability_defaults_and_roundtrips(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        default_id = self.add(store)
+        temporary_id = self.add(
+            store,
+            fact_key="health",
+            text="Пользователь болеет",
+            durability="temporary",
+        )
+
+        self.assertEqual(store.memory_fact(default_id)["durability"], "permanent")
+        self.assertEqual(store.memory_fact(temporary_id)["durability"], "temporary")
+
     def test_status_filter_and_newest_first(self) -> None:
         store = self.make()
         store.save(make_session())
@@ -553,6 +567,60 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertEqual(row["replaced_by"], 42)
         self.assertFalse(store.update_memory_fact(fact_id))
         self.assertFalse(store.update_memory_fact(9999, text="нет"))
+
+    def test_old_facts_table_gets_durability(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "dialog.db"
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    messages_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'completed'
+                );
+                CREATE TABLE memory_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    fact_key TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    evidence TEXT NOT NULL,
+                    importance TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    replaced_by INTEGER,
+                    conflict_with INTEGER,
+                    resolved_by INTEGER
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, started_at, messages_count, status) "
+                "VALUES ('s1', ?, 2, 'completed')",
+                (at().isoformat(),),
+            )
+            conn.execute(
+                "INSERT INTO memory_facts "
+                "(session_id, kind, fact_key, text, evidence, importance, "
+                "confidence, status, created_at, updated_at) "
+                "VALUES ('s1', 'fact', 'preference', 'Пользователь любит кофе', "
+                "'обожаю кофе', 'high', 0.9, 'active', ?, ?)",
+                (at().isoformat(), at().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        store = SessionStore(path)
+
+        self.assertEqual(store.memory_facts()[0]["durability"], "permanent")
 
     def test_delete_by_session(self) -> None:
         store = self.make()

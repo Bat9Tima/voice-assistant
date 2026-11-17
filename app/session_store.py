@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .durability import PERMANENT
 from .session import DialogSession, Message, SessionMemory
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
+    durability TEXT NOT NULL DEFAULT 'permanent',
     fact_key TEXT NOT NULL,
     text TEXT NOT NULL,
     evidence TEXT NOT NULL,
@@ -92,6 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_facts_session
 
 FACT_FIELDS = (
     "kind",
+    "durability",
     "fact_key",
     "text",
     "evidence",
@@ -238,6 +241,7 @@ class SessionStore:
         *,
         session_id: str,
         kind: str,
+        durability: str = PERMANENT,
         fact_key: str,
         text: str,
         evidence: str,
@@ -259,14 +263,15 @@ class SessionStore:
             cursor = conn.execute(
                 """
                 INSERT INTO memory_facts
-                    (session_id, kind, fact_key, text, evidence, importance,
-                     confidence, status, created_at, updated_at, replaced_by,
-                     conflict_with, resolved_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (session_id, kind, durability, fact_key, text, evidence,
+                     importance, confidence, status, created_at, updated_at,
+                     replaced_by, conflict_with, resolved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
                     kind,
+                    durability,
                     fact_key,
                     text,
                     evidence,
@@ -313,9 +318,9 @@ class SessionStore:
     def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
         """Факты памяти, свежие сверху. ``status`` фильтрует active/superseded."""
         query = """
-            SELECT id, session_id, kind, fact_key, text, evidence, importance,
-                   confidence, status, created_at, updated_at, replaced_by,
-                   conflict_with, resolved_by
+            SELECT id, session_id, kind, durability, fact_key, text, evidence,
+                   importance, confidence, status, created_at, updated_at,
+                   replaced_by, conflict_with, resolved_by
             FROM memory_facts
         """
         params: list[Any] = []
@@ -333,9 +338,9 @@ class SessionStore:
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT id, session_id, kind, fact_key, text, evidence, importance,
-                       confidence, status, created_at, updated_at, replaced_by,
-                       conflict_with, resolved_by
+                SELECT id, session_id, kind, durability, fact_key, text, evidence,
+                       importance, confidence, status, created_at, updated_at,
+                       replaced_by, conflict_with, resolved_by
                 FROM memory_facts
                 WHERE id = ?
                 """,
@@ -607,6 +612,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if summary_columns and "data" not in summary_columns:
         # Резюме до промпта v2 хранят только текст; структуры у них нет.
         conn.execute("ALTER TABLE summaries ADD COLUMN data TEXT NOT NULL DEFAULT '{}'")
+    fact_columns = {row["name"] for row in conn.execute("PRAGMA table_info(memory_facts)")}
+    if fact_columns and "durability" not in fact_columns:
+        # Старые факты не классифицированы. Постоянные безопаснее:
+        # конфликт уйдёт на проверку, а не заменит запись молча.
+        conn.execute(
+            "ALTER TABLE memory_facts ADD COLUMN durability TEXT NOT NULL DEFAULT 'permanent'"
+        )
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
