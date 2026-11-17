@@ -120,19 +120,44 @@ def clean_for_speech(text: str) -> str:
 
 
 SENTENCE_RE = re.compile(r"(?<=[.!?…])\s+")
+# Запятая и родственные знаки — только для очень длинных предложений:
+# короткую фразу TTS должен получить целиком, иначе теряется интонация.
+SOFT_BREAK_RE = re.compile(r"[,;:—](?=\s)")
+SOFT_BREAK_MIN = 40
+
+
+def _cut_long(text: str, limit: int) -> int:
+    """Выбирает границу длинной фразы: запятая, пробел, жёсткий предел."""
+    window = text[:limit]
+    soft = None
+    for match in SOFT_BREAK_RE.finditer(window):
+        soft = match.end()
+    if soft is not None and soft >= SOFT_BREAK_MIN:
+        return soft
+    space = window.rfind(" ")
+    if space >= limit // 3:
+        return space
+    # Слова не рвём: если в окне нет пробела, ищем следующий.
+    following = text.find(" ", limit)
+    if following != -1:
+        return following
+    return limit
 
 
 def split_sentences(text: str, limit: int = 180) -> list[str]:
-    """Режет текст на предложения, длинные предложения — по границам слов."""
+    """Режет текст на предложения, длинные — по запятым, потом по словам.
+
+    Запятая используется только когда предложение не помещается в
+    ``limit``: короткие фразы уходят в TTS целиком, чтобы не терять
+    интонацию. Если запятой нет, граница ищется по пробелу.
+    """
     chunks: list[str] = []
     for part in SENTENCE_RE.split(text or ""):
         part = part.strip()
         if not part:
             continue
         while len(part) > limit:
-            cut = part.rfind(" ", 0, limit)
-            if cut < limit // 3:
-                cut = limit
+            cut = _cut_long(part, limit)
             chunks.append(part[:cut].strip())
             part = part[cut:].strip()
         if part:
@@ -140,7 +165,7 @@ def split_sentences(text: str, limit: int = 180) -> list[str]:
 
     merged: list[str] = []
     for chunk in chunks:
-        if merged and len(chunk) < 25:
+        if merged and len(chunk) < 25 and len(merged[-1]) + 1 + len(chunk) <= limit:
             merged[-1] = f"{merged[-1]} {chunk}"
         else:
             merged.append(chunk)
@@ -252,12 +277,6 @@ class _SpeechJob:
 # сокращение или число.
 STREAM_BOUNDARY_RE = re.compile(r"[.!?…]+(?=\s)|\n")
 STREAM_CHUNK_LIMIT = 180
-# Первый фрагмент режем короче: синтез идёт примерно в темпе речи, и на
-# длинном первом фрагменте пользователь ждал бы молчания. Запятая в начале
-# предложения даёт естественную паузу.
-STREAM_FIRST_LIMIT = 70
-STREAM_FIRST_MIN = 15
-STREAM_FIRST_BREAK_RE = re.compile(r"[,;:—](?=\s)")
 
 
 class _SpeechStream:
@@ -308,50 +327,24 @@ class _SpeechStream:
     # ---------------------------------------------------------------- private
     def _take_sentences(self) -> list[str]:
         ready: list[str] = []
-        # Самый первый фрагмент — короткий, чтобы озвучка началась раньше.
-        cut = self._first_cut()
-        if cut:
-            ready.append(self._pending[:cut].strip())
-            self._pending = self._pending[cut:].lstrip()
         while True:
             match = STREAM_BOUNDARY_RE.search(self._pending)
-            if match is None:
+            if match is not None and match.end() <= STREAM_CHUNK_LIMIT:
+                sentence = self._pending[: match.end()].strip()
+                self._pending = self._pending[match.end() :].lstrip()
+                if sentence:
+                    ready.append(sentence)
+                continue
+            if len(self._pending) <= STREAM_CHUNK_LIMIT:
                 break
-            sentence = self._pending[: match.end()].strip()
-            self._pending = self._pending[match.end() :].lstrip()
-            if sentence:
-                ready.append(sentence)
-        # Без знаков конца фразы режем по словам, чтобы не ждать конца абзаца.
-        while len(self._pending) > STREAM_CHUNK_LIMIT:
-            cut = self._pending.rfind(" ", 0, STREAM_CHUNK_LIMIT)
-            if cut < STREAM_CHUNK_LIMIT // 2:
-                cut = STREAM_CHUNK_LIMIT
+            # Предложение не помещается в лимит: режем по запятой, а если
+            # её нет — по пробелу. Короткие фразы целиком не трогаем.
+            cut = _cut_long(self._pending, STREAM_CHUNK_LIMIT)
             sentence = self._pending[:cut].strip()
             self._pending = self._pending[cut:].lstrip()
             if sentence:
                 ready.append(sentence)
         return ready
-
-    def _first_cut(self) -> int:
-        """Где оборвать первый фрагмент, пока ничего ещё не сказано."""
-        if self._added:
-            return 0
-        pending = self._pending
-        if len(pending) <= STREAM_FIRST_LIMIT:
-            return 0
-        # Готовое короткое предложение режем по нему, а не по середине.
-        sentence = STREAM_BOUNDARY_RE.search(pending)
-        if sentence is not None and sentence.end() <= STREAM_FIRST_LIMIT:
-            return 0
-        window = pending[:STREAM_FIRST_LIMIT]
-        for match in STREAM_FIRST_BREAK_RE.finditer(window):
-            if match.end() >= STREAM_FIRST_MIN:
-                return match.end()
-        # Запятой нет — режем по последнему пробелу в окне.
-        space = window.rfind(" ")
-        if space >= STREAM_FIRST_MIN:
-            return space
-        return STREAM_FIRST_LIMIT
 
     def _accept(self, sentence: str) -> list[str]:
         """Чистит предложение и делит его на куски в пределах лимита озвучки."""
@@ -383,6 +376,9 @@ class TTSService:
         self.volume = float(section.get("volume", 1.0))
         self.speed = float(section.get("speed", 1.0))
         self.workers = max(1, int(section.get("workers") or 3))
+        # Сколько ждать готовности фрагмента, когда предыдущий уже доиграл.
+        # 0 отключает предел: очередь будет ждать синтез сколько угодно.
+        self.chunk_wait = max(0.0, float(section.get("chunk_wait_sec", 30) or 0))
         self.cache_dir = Path(section.get("cache_dir") or (DATA_DIR / "tts-cache"))
         self.bank = PhraseBank(section.get("phrases_dir") or (ROOT / "assets" / "phrases"))
         if self.enabled:
@@ -560,12 +556,18 @@ class TTSService:
         futures: dict[int, Future] = {}
         index = 0
         submitted = 0
+        synth_failures = 0
+        play_failures = 0
         try:
             while True:
                 if not self._job_alive(job):
                     return
                 chunks = job.snapshot()
-                while submitted < len(chunks):
+                # Держим впереди ограниченное окно: пока играет текущий
+                # фрагмент, следующие уже синтезируются, но текст, который
+                # может не прозвучать, не отправляем в API целиком.
+                window = index + self.workers + 1
+                while submitted < len(chunks) and submitted < window:
                     futures[submitted] = pool.submit(self._synth_cached, chunks[submitted])
                     submitted += 1
 
@@ -582,27 +584,76 @@ class TTSService:
                     continue
 
                 future = futures.pop(index)
-                # Синтез идёт по сети: проверяем отмену, не дожидаясь
-                # полного ответа ProxyAPI.
-                while not future.done():
-                    if not self._job_alive(job):
+                if not self._wait_future(future, job):
+                    return
+                if not future.done():
+                    log.warning(
+                        "TTS: фрагмент %d не готов за %.1f с, пропускаю",
+                        index + 1,
+                        self.chunk_wait,
+                    )
+                    future.cancel()
+                    synth_failures += 1
+                    if synth_failures >= 3:
+                        log.warning("TTS: синтез не успевает, остаток ответа пропущен")
                         return
-                    time.sleep(0.05)
+                    index += 1
+                    continue
+
                 try:
                     data = future.result()
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("TTS: фрагмент не синтезирован: %s", exc)
+                    log.warning("TTS: фрагмент %d не синтезирован: %s", index + 1, exc)
                     data = None
-                if data is not None:
+                if data is None:
+                    synth_failures += 1
+                    if synth_failures >= 3:
+                        log.warning(
+                            "TTS: три фрагмента подряд без синтеза, остаток ответа пропущен"
+                        )
+                        return
+                else:
+                    synth_failures = 0
                     with self._job_lock:
                         self._current_text = chunks[index]
                     if not self._play(data, job):
-                        return
+                        with self._job_lock:
+                            self._current_text = ""
+                        if not self._job_alive(job):
+                            return
+                        play_failures += 1
+                        log.warning("TTS: фрагмент %d не воспроизведён", index + 1)
+                        if play_failures >= 2:
+                            log.warning("TTS: воспроизведение недоступно, остаток ответа пропущен")
+                            return
+                    else:
+                        play_failures = 0
                 index += 1
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
             with self._job_lock:
                 self._current_text = ""
+
+    def _wait_future(self, future: Future, job: _SpeechJob) -> bool:
+        """Ждёт фрагмент не дольше ``chunk_wait``.
+
+        Возвращает False, если задачу отменили. Если время вышло, а future
+        ещё не готова, возвращает True: вызывающий пропустит фрагмент.
+        """
+        if self.chunk_wait <= 0:
+            while not future.done():
+                if not self._job_alive(job):
+                    return False
+                time.sleep(0.05)
+            return True
+        deadline = time.monotonic() + self.chunk_wait
+        while not future.done():
+            if not self._job_alive(job):
+                return False
+            if time.monotonic() >= deadline:
+                return True
+            time.sleep(0.05)
+        return True
 
     def _job_alive(self, job: _SpeechJob) -> bool:
         with self._job_lock:

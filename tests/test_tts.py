@@ -109,6 +109,22 @@ class SplitSentencesTest(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 3)
         self.assertTrue(all(len(chunk) <= 100 for chunk in chunks))
 
+    def test_short_sentence_with_comma_stays_whole(self) -> None:
+        text = "Небо кажется голубым потому, что свет рассеивается."
+        self.assertEqual(split_sentences(text), [text])
+
+    def test_long_sentence_prefers_comma(self) -> None:
+        text = (
+            "Первая часть предложения, которая уже длинная, "
+            "вторая часть предложения, которая тоже длинная, "
+            "третья часть предложения, которая завершает мысль."
+        )
+        chunks = split_sentences(text, limit=60)
+        self.assertGreaterEqual(len(chunks), 3)
+        self.assertTrue(chunks[0].endswith(","))
+        self.assertLessEqual(len(chunks[0]), 60)
+        self.assertTrue(chunks[1].startswith("вторая"))
+
     def test_empty(self) -> None:
         self.assertEqual(split_sentences(""), [])
 
@@ -469,7 +485,47 @@ class TTSStreamTest(unittest.TestCase):
                 self.assertTrue(service.wait(2))
             self.assertEqual(len(played), 1)
 
-    def test_stream_first_fragment_is_cut_at_comma(self) -> None:
+    def test_stream_does_not_cut_short_sentence_at_comma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                text = "Небо кажется голубым потому, что свет рассеивается."
+                stream.feed(text)
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, [text])
+
+    def test_stream_does_not_start_on_comma(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            with (
+                patch.object(
+                    service,
+                    "_request",
+                    side_effect=lambda text: requested.append(text) or make_pcm(),
+                ),
+                patch.object(service, "_play", return_value=True),
+            ):
+                stream = service.stream()
+                stream.feed("Привет, как дела")
+                time.sleep(0.2)
+                self.assertEqual(requested, [])
+                stream.feed("?")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(requested, ["Привет, как дела?"])
+
+    def test_stream_long_sentence_falls_back_to_comma(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = make_service(Path(tmp))
             requested: list[str] = []
@@ -483,16 +539,16 @@ class TTSStreamTest(unittest.TestCase):
             ):
                 stream = service.stream()
                 stream.feed(
-                    "Небо кажется голубым потому, что свет рассеивается, "
-                    "и поэтому мы видим синий цвет."
+                    "Первая часть предложения, которая уже длинная, "
+                    "вторая часть предложения, которая тоже длинная, "
+                    "третья часть предложения, которая добавляет детали, "
+                    "четвёртая часть предложения, которая завершает мысль."
                 )
                 stream.close()
                 self.assertTrue(service.wait(5))
-            self.assertEqual(requested[0], "Небо кажется голубым потому,")
-            self.assertEqual(
-                requested[1],
-                "что свет рассеивается, и поэтому мы видим синий цвет.",
-            )
+            self.assertGreaterEqual(len(requested), 2)
+            self.assertTrue(requested[0].endswith(","))
+            self.assertLessEqual(len(requested[0]), 180)
 
     def test_stream_short_first_sentence_stays_whole(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -558,6 +614,147 @@ class TTSStreamTest(unittest.TestCase):
                 job.seal()
                 service._run_job(job)
             self.assertEqual(played, ["play"])
+
+    def test_stream_skips_failed_chunk_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[float] = []
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                if text == "Второе предложение здесь.":
+                    raise RuntimeError("boom")
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                played.append(float(data[0]))
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Первое предложение здесь. Второе предложение здесь. Третье предложение здесь."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(played, [1.0, 3.0])
+
+    def test_stream_skips_playback_error_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            played: list[float] = []
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                value = float(data[0])
+                if value == 1.0:
+                    return False
+                played.append(value)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed(
+                    "Первое предложение здесь. Второе предложение здесь. Третье предложение здесь."
+                )
+                stream.close()
+                self.assertTrue(service.wait(5))
+            self.assertEqual(played, [2.0, 3.0])
+
+    def test_stream_skips_chunk_that_takes_too_long(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), chunk_wait_sec=1.0)
+            played: list[float] = []
+            release = threading.Event()
+            values = {
+                "Первое предложение здесь.": 1.0,
+                "Второе предложение здесь.": 2.0,
+                "Третье предложение здесь.": 3.0,
+            }
+
+            def fake_synth(text: str) -> np.ndarray:
+                if text == "Второе предложение здесь.":
+                    release.wait(timeout=5)
+                return np.array([values[text]], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                played.append(float(data[0]))
+                return True
+
+            try:
+                with (
+                    patch.object(service, "_synth_cached", side_effect=fake_synth),
+                    patch.object(service, "_play", side_effect=fake_play),
+                ):
+                    stream = service.stream()
+                    stream.feed(
+                        "Первое предложение здесь. "
+                        "Второе предложение здесь. "
+                        "Третье предложение здесь."
+                    )
+                    stream.close()
+                    self.assertTrue(service.wait(5))
+            finally:
+                release.set()
+            self.assertEqual(played, [1.0, 3.0])
+
+    def test_stream_prefetches_next_chunk_while_current_plays(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            requested: list[str] = []
+            playing = threading.Event()
+            release = threading.Event()
+
+            def fake_synth(text: str) -> np.ndarray:
+                requested.append(text)
+                return np.zeros(10, dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                playing.set()
+                release.wait(timeout=5)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                try:
+                    # Пробел в конце нужен, чтобы вторая точка стала границей
+                    # предложения ещё до close().
+                    stream.feed("Первое предложение здесь. Второе предложение здесь. ")
+                    self.assertTrue(playing.wait(2))
+                    deadline = time.monotonic() + 2
+                    while len(requested) < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(
+                        requested,
+                        [
+                            "Первое предложение здесь.",
+                            "Второе предложение здесь.",
+                        ],
+                    )
+                finally:
+                    stream.close()
+                    release.set()
+            self.assertTrue(service.wait(5))
 
 
 if __name__ == "__main__":
