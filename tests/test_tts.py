@@ -34,6 +34,35 @@ def make_pcm(
     return np.concatenate([silence_head, tone, silence_tail]).tobytes()
 
 
+class FakeStream:
+    """Подмена sounddevice.OutputStream: без звука, но с журналом вызовов."""
+
+    def __init__(self, on_write=None) -> None:  # noqa: ANN001
+        self.on_write = on_write
+        self.writes: list[int] = []
+        self.started = False
+        self.aborted = False
+        self.stopped = False
+        self.closed = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def write(self, data) -> None:  # noqa: ANN001
+        self.writes.append(len(data))
+        if self.on_write is not None:
+            self.on_write()
+
+    def abort(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self.aborted = True
+
+    def stop(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self.stopped = True
+
+    def close(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self.closed = True
+
+
 def make_service(directory: Path, **overrides) -> TTSService:
     section = {
         "enabled": True,
@@ -275,38 +304,66 @@ class TTSServiceTest(unittest.TestCase):
             service = make_service(Path(tmp))
             job = _SpeechJob(chunks=["текст"], generation=service._generation)
             job.cancelled.set()
-            with patch("sounddevice.play") as play:
+            with patch("sounddevice.OutputStream") as stream:
                 self.assertFalse(service._play(np.zeros(100, dtype=np.float32), job))
-            play.assert_not_called()
+            stream.assert_not_called()
 
     def test_playing_marks_service_busy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = make_service(Path(tmp))
             job = _SpeechJob(chunks=["текст"], generation=service._generation)
             seen: list[bool] = []
+            stream = FakeStream(on_write=lambda: seen.append(service.speaking))
 
-            def fake_play(data, samplerate, blocking) -> None:
-                seen.append(service.speaking)
-
-            with patch("sounddevice.play", side_effect=fake_play):
+            with patch("sounddevice.OutputStream", return_value=stream):
                 self.assertTrue(service._play(np.zeros(100, dtype=np.float32), job))
+
             self.assertEqual(seen, [True])
             self.assertFalse(service.speaking)
+            self.assertTrue(stream.started)
+            self.assertTrue(stream.stopped)
+            self.assertTrue(stream.closed)
+            self.assertFalse(stream.aborted)
 
-    def test_stop_during_playback_returns_false(self) -> None:
+    def test_stop_during_playback_aborts_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             service = make_service(Path(tmp))
             job = _SpeechJob(chunks=["текст"], generation=service._generation)
-
-            def fake_play(data, samplerate, blocking) -> None:
-                service.stop()
+            stream = FakeStream(on_write=service.stop)
 
             with (
-                patch("sounddevice.play", side_effect=fake_play),
-                patch("sounddevice.stop") as stop,
+                patch("sounddevice.OutputStream", return_value=stream),
+                patch("sounddevice.stop") as legacy_stop,
             ):
                 self.assertFalse(service._play(np.zeros(100, dtype=np.float32), job))
-            stop.assert_called_once()
+
+            # PortAudio из чужого потока не останавливаем: это роняло процесс.
+            legacy_stop.assert_not_called()
+            self.assertTrue(stream.aborted)
+            self.assertTrue(stream.closed)
+
+    def test_stop_does_not_touch_portaudio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            with patch("sounddevice.stop") as legacy_stop:
+                service.stop()
+            legacy_stop.assert_not_called()
+
+    def test_phrase_is_cut_by_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp))
+            chunks: list[int] = []
+
+            def on_write() -> None:
+                chunks.append(1)
+                service.stop()
+
+            stream = FakeStream(on_write=on_write)
+            with patch("sounddevice.OutputStream", return_value=stream):
+                # Фраза идёт без job: отмена ловится по смене поколения.
+                self.assertFalse(service._play(np.zeros(10, dtype=np.float32)))
+            self.assertEqual(len(chunks), 1)
+            self.assertTrue(stream.aborted)
 
 
 if __name__ == "__main__":

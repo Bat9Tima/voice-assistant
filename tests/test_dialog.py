@@ -6,7 +6,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.dialog import DialogContext, DialogService, NewsItem, clip_text
+from app.persona import PersonaMemory
 from app.profile import Profile
+from app.session import SessionMemory
 
 
 class FakeClock:
@@ -232,6 +234,130 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(service.no_speech_timeout, 3)
         self.assertEqual(service.silence_ms, 900)
         self.assertEqual(service.max_errors, 3)
+
+    def test_history_is_sent_to_model(self) -> None:
+        llm = FakeLLM("Первый ответ")
+        service = DialogService({"dialog": {}}, llm)
+        service.reply("привет")
+        llm.answer = "Второй ответ"
+        service.reply("как дела")
+        messages, _ = llm.calls[1]
+        self.assertEqual(
+            messages,
+            [
+                {"role": "user", "content": "привет"},
+                {"role": "assistant", "content": "Первый ответ"},
+                {"role": "user", "content": "как дела"},
+            ],
+        )
+
+    def test_failed_turn_is_not_saved(self) -> None:
+        llm = FakeLLM(RuntimeError("нет сети"))
+        service = DialogService({"dialog": {}}, llm)
+        with self.assertRaises(RuntimeError):
+            service.reply("привет")
+        self.assertEqual(service.sessions.history(), [])
+
+    def test_empty_model_answer_is_not_saved(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM("   "))
+        with self.assertRaises(ValueError):
+            service.reply("привет")
+        self.assertEqual(service.sessions.history(), [])
+
+    def test_start_and_stop_close_session(self) -> None:
+        saved: list = []
+        service = DialogService({"dialog": {}}, FakeLLM("Ответ"))
+        service.sessions.on_finish = saved.append
+        service.start()
+        service.reply("привет")
+        service.stop()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(
+            [message.role for message in saved[0].messages],
+            ["user", "assistant"],
+        )
+        self.assertIsNone(service.sessions.current)
+
+    def test_new_dialog_starts_with_clean_history(self) -> None:
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm)
+        service.start()
+        service.reply("старая тема")
+        service.stop()
+        service.start()
+        service.reply("новая тема")
+        self.assertEqual(
+            llm.calls[-1][0],
+            [{"role": "user", "content": "новая тема"}],
+        )
+
+    def test_history_limits_from_config(self) -> None:
+        service = DialogService(
+            {"dialog": {"history_messages": 1, "history_chars": 0}},
+            FakeLLM(),
+        )
+        self.assertEqual(service.history_messages, 1)
+        self.assertEqual(service.history_chars, 0)
+        self.assertEqual(service.sessions.max_messages, 1)
+        self.assertEqual(service.sessions.max_chars, 0)
+
+    def test_history_defaults(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+        self.assertEqual(service.history_messages, 12)
+        self.assertEqual(service.history_chars, 4000)
+
+    def test_custom_session_memory_is_used(self) -> None:
+        memory = SessionMemory()
+        service = DialogService({"dialog": {}}, FakeLLM(), sessions=memory)
+        self.assertIs(service.sessions, memory)
+
+    def test_memory_block_is_added_to_system_prompt(self) -> None:
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            def block(self, query: str) -> str:
+                self.queries.append(query)
+                return "Эпизодическая память: любит C++."
+
+        memory = FakeMemory()
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, memory=memory)
+
+        service.reply("что я изучал?")
+
+        self.assertEqual(memory.queries, ["что я изучал?"])
+        self.assertIn("Эпизодическая память: любит C++.", llm.calls[0][1]["system"])
+
+    def test_memory_failure_does_not_break_reply(self) -> None:
+        class BrokenMemory:
+            def block(self, query: str) -> str:
+                raise RuntimeError("Chroma умерла")
+
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm, memory=BrokenMemory())
+
+        self.assertEqual(service.reply("привет"), "Ответ")
+        self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_without_memory_no_block(self) -> None:
+        llm = FakeLLM()
+        DialogService({"dialog": {}}, llm).reply("привет")
+        self.assertNotIn("Эпизодическая", llm.calls[0][1]["system"])
+
+    def test_persona_block_is_added_to_system_prompt(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "luna.txt"
+        path.write_text("Люблю кофе.\n", encoding="utf-8")
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, persona=PersonaMemory(path))
+
+        service.reply("привет")
+
+        system = llm.calls[0][1]["system"]
+        self.assertIn("Твои собственные факты", system)
+        self.assertIn("Люблю кофе.", system)
 
 
 class ProfileTest(unittest.TestCase):

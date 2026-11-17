@@ -6,8 +6,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from .datetime_answer import datetime_context
+from .persona import PersonaMemory
 from .profile import Profile
 from .prompts import DIALOG_SYSTEM
+from .session import (
+    DEFAULT_HISTORY_CHARS,
+    DEFAULT_HISTORY_MESSAGES,
+    SessionMemory,
+)
 from .text import normalize
 
 DEFAULT_TURN_TTL_SEC = 180.0
@@ -22,6 +28,14 @@ DEFAULT_EXIT_PHRASES = (
 )
 # Вводные слова, с которых начинается устная фраза: «ну давай поговорим».
 _ENTRY_FILLERS = ("ну", "ладно", "окей", "ок", "так", "хорошо", "давай")
+
+
+def _limit(value: Any, default: int) -> int:
+    """Лимит из конфига: ноль — без ограничения, мусор — значение по умолчанию."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
@@ -152,10 +166,12 @@ class DialogContext:
 
 
 class DialogService:
-    """Режим непрерывного разговора без хранения истории реплик.
+    """Режим непрерывного разговора с историей текущей сессии.
 
-    Контекст задаёт текстовый файл профиля, который пользователь пишет сам.
-    Задача сервиса — распознать вход/выход и отправить реплику модели.
+    История живёт только в памяти: начали разговор — она пустая, вышли —
+    сессия уходит в ``SessionMemory.on_finish`` и из диалога пропадает.
+    Постоянный контекст задаёт текстовый файл профиля, который пишет сам
+    пользователь.
     """
 
     def __init__(
@@ -163,10 +179,19 @@ class DialogService:
         cfg: dict[str, Any],
         llm: Any,
         profile: Profile | None = None,
+        sessions: SessionMemory | None = None,
+        memory: Any | None = None,
+        persona: PersonaMemory | None = None,
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
         self.profile = profile
+        # Факты Луны о себе: отдельный блок, не смешивается с профилем
+        # пользователя и эпизодической памятью.
+        self.persona = persona
+        # Эпизодическая память: резюме прошлых разговоров. Подключается
+        # только в режиме диалога — сюда не ходят разовые команды.
+        self.memory = memory
         self.entry_phrases = self._phrases(section.get("entry_phrases"), DEFAULT_ENTRY_PHRASES)
         self.exit_phrases = self._phrases(section.get("exit_phrases"), DEFAULT_EXIT_PHRASES)
         self.idle_timeout = max(1.0, float(section.get("idle_timeout_sec") or 60))
@@ -177,6 +202,12 @@ class DialogService:
         self.max_tokens = max(1, int(section.get("max_tokens") or 400))
         self.temperature = float(section.get("temperature", 0.5))
         self.timeout = float(section.get("timeout_sec") or 60)
+        self.history_messages = _limit(section.get("history_messages"), DEFAULT_HISTORY_MESSAGES)
+        self.history_chars = _limit(section.get("history_chars"), DEFAULT_HISTORY_CHARS)
+        self.sessions = sessions or SessionMemory(
+            self.history_messages,
+            self.history_chars,
+        )
 
     @staticmethod
     def _phrases(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -205,22 +236,45 @@ class DialogService:
         return any(candidate in phrases for candidate in candidates)
 
     def system_prompt(self) -> str:
-        """Правила + дата и время + пользовательский контекст из файла."""
+        """Правила + дата и время + профиль пользователя + факты Луны."""
         parts = [DIALOG_SYSTEM.strip(), datetime_context()]
         if self.profile is not None:
             block = self.profile.block()
             if block:
                 parts.append(block)
+        if self.persona is not None:
+            block = self.persona.block()
+            if block:
+                parts.append(block)
         return "\n\n".join(parts)
 
+    def start(self) -> None:
+        """Начинает разговор с чистого листа: прошлая сессия закрывается."""
+        self.sessions.start()
+
+    def stop(self) -> None:
+        """Закрывает сессию. Сейчас она просто уходит в ``on_finish``."""
+        self.sessions.finish()
+
     def reply(self, text: str) -> str:
-        """Один ход разговора. Историю не ведём: только текущая реплика."""
+        """Один ход: окно истории + текущая реплика.
+
+        Реплики попадают в сессию только после успешного ответа, чтобы
+        неудачный ход не отравлял контекст следующих вопросов. Перед
+        запросом к модели подмешиваются резюме прошлых разговоров, если
+        память включена и нашлось что-то по смыслу.
+        """
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
+        messages = [*self.sessions.history(), {"role": "user", "content": text}]
+        system = self.system_prompt()
+        block = self._memory_block(text)
+        if block:
+            system = f"{system}\n\n{block}"
         answer = self.llm.chat(
-            [{"role": "user", "content": text}],
-            system=self.system_prompt(),
+            messages,
+            system=system,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             timeout=self.timeout,
@@ -228,4 +282,15 @@ class DialogService:
         answer = " ".join((answer or "").split())
         if not answer:
             raise ValueError("модель вернула пустой ответ")
+        self.sessions.add("user", text)
+        self.sessions.add("assistant", answer)
         return answer
+
+    def _memory_block(self, text: str) -> str:
+        """Воспоминания для промпта. Любой сбой памяти — просто без блока."""
+        if self.memory is None:
+            return ""
+        try:
+            return str(self.memory.block(text) or "")
+        except Exception:  # noqa: BLE001
+            return ""

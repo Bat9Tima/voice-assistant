@@ -20,11 +20,15 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .memory import MemoryService
+from .persona import PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
+from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
+from .summarizer import Summarizer
 from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
@@ -34,7 +38,7 @@ from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordD
 log = logging.getLogger(__name__)
 
 # Внутри разговора эти фразы обслуживают быстрые сервисы, остальное уходит
-# в чат. Уточнения и общие вопросы — тоже чат: истории пока нет.
+# в чат с историей. Уточнения и общие вопросы — тоже чат.
 DIALOG_INTENT_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
 
 
@@ -126,13 +130,46 @@ class Assistant:
         self.qa = QAService(cfg, self.llm, self.browser)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
+        self.session_store: SessionStore | None = None
+        self.summarizer: Summarizer | None = None
+        self.memory: MemoryService | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
                 dialog_cfg.get("profile_path"),
                 limit=int(dialog_cfg.get("profile_chars") or 4000),
             )
-            self.dialog = DialogService(cfg, self.llm, profile)
+            db_path = str(dialog_cfg.get("db_path") or "").strip()
+            persona = PersonaMemory(
+                dialog_cfg.get("persona_path"),
+                limit=int(dialog_cfg.get("persona_chars") or 2000),
+            )
+            if db_path:
+                self.session_store = SessionStore(db_path)
+                self.memory = MemoryService.from_config(cfg, self.session_store)
+            self.dialog = DialogService(
+                cfg,
+                self.llm,
+                profile,
+                memory=self.memory,
+                persona=persona,
+            )
+            if self.session_store is not None:
+                self.session_store.attach(self.dialog.sessions)
+                self.summarizer = Summarizer.from_config(
+                    self.llm,
+                    self.session_store,
+                    dialog_cfg.get("summary"),
+                    memory=self.memory,
+                    persona=persona,
+                ).attach(self.dialog.sessions)
+                log.info("Сессии диалога сохраняются в %s", db_path)
+                if persona.path is not None:
+                    log.info("Память личности: %s", persona.path)
+                if self.memory is not None:
+                    log.info("Семантическая память включена: %s", self.memory.embedder.model)
+                    self._restore_memory_async()
+                self._recover_sessions_async()
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
@@ -175,6 +212,48 @@ class Assistant:
         # Последние ~1-3 секунды звука: чтобы не потерять начало команды,
         # если пользователь заговорил сразу после ключевой фразы.
         self._preroll: deque[bytes] = deque(maxlen=12)
+
+    # ------------------------------------------------------------------ memory
+    def _recover_sessions_async(self) -> None:
+        """Закрывает разговоры, оборванные прошлым сбоем, и суммирует их."""
+        summarizer = self.summarizer
+        if summarizer is None:
+            return
+        threading.Thread(
+            target=self._recover_sessions,
+            args=(summarizer,),
+            name="dialog-recover",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _recover_sessions(summarizer: Summarizer) -> None:
+        try:
+            summarizer.recover()
+        except Exception:  # noqa: BLE001
+            log.exception("Не удалось закрыть оборванные сессии")
+
+    def _restore_memory_async(self) -> None:
+        """Достраивает индекс памяти в фоне, не задерживая запуск."""
+        memory = self.memory
+        if memory is None:
+            return
+        threading.Thread(
+            target=self._restore_memory,
+            args=(memory,),
+            name="memory-restore",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _restore_memory(memory: MemoryService) -> None:
+        try:
+            restored = memory.restore()
+        except Exception:  # noqa: BLE001
+            log.exception("Память: восстановление индекса упало")
+            return
+        if restored:
+            log.info("Память: восстановлено резюме %s", restored)
 
     # ------------------------------------------------------------------- state
     @property
@@ -461,8 +540,21 @@ class Assistant:
         self._preroll.append(chunk)
         if self.barge is None:
             return
+        try:
+            self._barge_in(self.barge, chunk)
+        except Exception:  # noqa: BLE001
+            # Сбой детектора не должен завершать ассистента: приводим
+            # детекторы в чистое состояние и продолжаем слушать.
+            log.exception("Ошибка обработки перебивания")
+            try:
+                self.barge.reset()
+                if self.wake is not None:
+                    self.wake.reset()
+            except Exception:  # noqa: BLE001
+                log.exception("Не удалось сбросить детекторы после ошибки")
 
-        match = self.barge.feed(chunk)
+    def _barge_in(self, barge: BargeInDetector, chunk: bytes) -> None:
+        match = barge.feed(chunk)
         if match is None and self.wake is not None:
             # Свободное распознавание часто теряет первое слово wake-фразы
             # («элвина», «коммуна», «сити»). Грамматический детектор на том
@@ -483,12 +575,12 @@ class Assistant:
             spoken,
         ):
             log.debug("Перебивание: «%s» есть в озвучке, игнорирую", match.phrase)
-            self.barge.reset()
+            barge.reset()
             return
 
         log.info("Перебивание голосом: «%s» (%s)", match.phrase, match.action)
         self.tts.stop()
-        self.barge.reset()
+        barge.reset()
         if self.wake is not None:
             self.wake.reset()
         if match.action == "wake":
@@ -830,6 +922,9 @@ class Assistant:
 
     def _start_dialog(self) -> str:
         """Включает непрерывный разговор и здоровается."""
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            dialog.start()
         self._dialog_active = True
         self._dialog_errors = 0
         self._dialog_last = time.monotonic()
@@ -845,6 +940,9 @@ class Assistant:
         """Выключает разговор. Причина: phrase, hotkey, idle, errors."""
         self._dialog_active = False
         self._dialog_errors = 0
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            dialog.stop()
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
@@ -1016,6 +1114,19 @@ class Assistant:
 
     def _cleanup(self) -> None:
         log.info("Завершаю работу")
+        dialog = getattr(self, "dialog", None)
+        if dialog is not None:
+            # Программу закрыли посреди разговора: сессия всё равно должна
+            # закрыться, иначе резюме её не увидит.
+            dialog.stop()
+        summarizer = getattr(self, "summarizer", None)
+        if summarizer is not None:
+            # Сырая сессия уже в базе; даём фоновому резюме дописаться,
+            # но не держим закрытие программы дольше десяти секунд.
+            summarizer.close(timeout=10)
+        memory = getattr(self, "memory", None)
+        if memory is not None:
+            memory.close()
         if self.mic is not None:
             self.mic.stop()
         if self._hotkey_listener is not None:

@@ -1,0 +1,419 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from datetime import UTC, datetime
+from pathlib import Path
+
+from app.cloud_llm import LLMError
+from app.persona import PersonaMemory
+from app.prompts import SELF_FACTS_SYSTEM, SUMMARY_SYSTEM
+from app.session import DialogSession, SessionMemory
+from app.session_store import SessionStore
+from app.summarizer import Summarizer
+
+
+def at(minute: int = 0) -> datetime:
+    return datetime(2026, 11, 16, 12, minute, tzinfo=UTC)
+
+
+def make_session(messages: list[tuple[str, str]] | None = None) -> DialogSession:
+    session = DialogSession(started_at=at(), id="s1")
+    for role, content in messages or [
+        ("user", "привет"),
+        ("assistant", "здравствуй"),
+    ]:
+        session.add(role, content, at=at(1))
+    session.finish(at=at(9))
+    return session
+
+
+def make_crashed(store: SessionStore, session_id: str = "crash") -> DialogSession:
+    """Сессия, оборванная сбоем: в базе active, finish не вызывался."""
+    session = DialogSession(started_at=at(), id=session_id)
+    store.create(session)
+    for position, (role, text) in enumerate([("user", "привет"), ("assistant", "здравствуй")]):
+        message = session.add(role, text, at=at(position + 1))
+        store.append(session, message, position)
+    return session
+
+
+class FakeLLM:
+    """Клиент модели без сети: записывает вызовы и отдаёт заготовку."""
+
+    model = "fake-model"
+
+    def __init__(
+        self, answer: str = "Говорили о C++ и циклах.", error: Exception | None = None
+    ) -> None:
+        self.answer_text = answer
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+        self.calls.append({"messages": messages, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return self.answer_text
+
+
+class SummarizerTest(unittest.TestCase):
+    def make(self, **kwargs) -> tuple[Summarizer, SessionStore, FakeLLM]:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        llm = FakeLLM()
+        kwargs.setdefault("background", False)
+        return Summarizer(llm, store, **kwargs), store, llm
+
+    # --------------------------------------------------------------- summary
+    def test_summarize_saves_summary(self) -> None:
+        summarizer, store, llm = self.make()
+        session = make_session()
+        store.save(session)
+
+        text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(
+            store.summary("s1"),
+            {
+                "session_id": "s1",
+                "summary": "Говорили о C++ и циклах.",
+                "created_at": store.summary("s1")["created_at"],
+                "model": "fake-model",
+                "prompt_version": 1,
+            },
+        )
+        call = llm.calls[0]
+        self.assertEqual(call["system"], SUMMARY_SYSTEM)
+        self.assertEqual(call["max_tokens"], 300)
+        self.assertEqual(call["temperature"], 0.2)
+        self.assertEqual(call["timeout"], 45.0)
+        self.assertIsNone(call["model"])
+        self.assertEqual(
+            call["messages"],
+            [
+                {
+                    "role": "user",
+                    "content": "Пользователь: привет\nАссистент: здравствуй",
+                }
+            ],
+        )
+
+    def test_model_and_prompt_version_are_recorded(self) -> None:
+        summarizer, store, _ = self.make(model="summary-model", prompt_version=3)
+        session = make_session()
+        store.save(session)
+
+        summarizer.summarize(session)
+
+        saved = store.summary("s1")
+        self.assertEqual(saved["model"], "summary-model")
+        self.assertEqual(saved["prompt_version"], 3)
+
+    def test_short_session_is_skipped(self) -> None:
+        summarizer, store, llm = self.make()
+        session = make_session([("user", "привет")])
+        store.save(session)
+
+        summarizer.handle(session)
+
+        self.assertEqual(llm.calls, [])
+        self.assertIsNone(store.summary("s1"))
+
+    def test_disabled_summarizer_does_nothing(self) -> None:
+        summarizer, store, llm = self.make(enabled=False)
+        session = make_session()
+        store.save(session)
+
+        summarizer.handle(session)
+
+        self.assertEqual(llm.calls, [])
+        self.assertIsNone(store.summary("s1"))
+
+    def test_empty_answer_is_not_saved(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        session = make_session()
+        store.save(session)
+        summary = Summarizer(FakeLLM(answer="   "), store, background=False)
+
+        with self.assertRaises(ValueError):
+            summary.summarize(session)
+
+        self.assertIsNone(store.summary("s1"))
+
+    def test_llm_error_keeps_raw_session(self) -> None:
+        summarizer, store, _ = self.make()
+        summarizer.llm = FakeLLM(error=LLMError("нет сети"))
+        session = make_session()
+        store.save(session)
+
+        with self.assertRaises(LLMError):
+            summarizer.summarize(session)
+
+        self.assertEqual(store.count(), 1)
+        self.assertEqual(len(store.messages("s1")), 2)
+        self.assertIsNone(store.summary("s1"))
+
+    # -------------------------------------------------------------- transcript
+    def test_long_transcript_keeps_tail(self) -> None:
+        summarizer, _, _ = self.make(max_input_chars=45)
+        session = make_session(
+            [
+                ("user", "старая длинная реплика про погоду и дела"),
+                ("assistant", "старый ответ"),
+                ("user", "новая реплика"),
+            ]
+        )
+
+        text = summarizer.transcript(session)
+
+        self.assertTrue(text.startswith("…\n"))
+        self.assertIn("новая реплика", text)
+        self.assertNotIn("погоду", text)
+        self.assertLessEqual(len(text), 45 + 2)
+
+    def test_transcript_without_limit_keeps_everything(self) -> None:
+        summarizer, _, _ = self.make(max_input_chars=0)
+        session = make_session()
+
+        self.assertEqual(
+            summarizer.transcript(session),
+            "Пользователь: привет\nАссистент: здравствуй",
+        )
+
+    # ------------------------------------------------------------------ hooks
+    def test_attach_saves_after_finish(self) -> None:
+        summarizer, store, llm = self.make()
+        memory = SessionMemory()
+        store.attach(memory)
+        summarizer.attach(memory)
+
+        memory.add("user", "привет")
+        memory.add("assistant", "здравствуй")
+        memory.finish()
+
+        session = memory.finished[0]
+        self.assertEqual(store.count(), 1)
+        self.assertEqual(store.summary(session.id)["summary"], "Говорили о C++ и циклах.")
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_background_worker_writes_before_close(self) -> None:
+        summarizer, store, _ = self.make(background=True)
+        memory = SessionMemory()
+        store.attach(memory)
+        summarizer.attach(memory)
+
+        memory.add("user", "привет")
+        memory.add("assistant", "здравствуй")
+        session = memory.finish()
+        summarizer.close()
+
+        self.assertEqual(store.summary(session.id)["summary"], "Говорили о C++ и циклах.")
+
+    def test_failed_summary_does_not_break_exit(self) -> None:
+        summarizer, store, _ = self.make()
+        summarizer.llm = FakeLLM(error=LLMError("нет сети"))
+        memory = SessionMemory()
+        store.attach(memory)
+        summarizer.attach(memory)
+
+        memory.add("user", "привет")
+        memory.add("assistant", "здравствуй")
+        with self.assertLogs("app.session", level="ERROR"):
+            session = memory.finish()
+
+        self.assertIsNone(memory.current)
+        self.assertEqual(store.messages(session.id)[0]["content"], "привет")
+        self.assertIsNone(store.summary(session.id))
+
+    # ----------------------------------------------------------------- config
+    def test_from_config_defaults(self) -> None:
+        summarizer = Summarizer.from_config(FakeLLM(), object())
+
+        self.assertTrue(summarizer.enabled)
+        self.assertTrue(summarizer.background)
+        self.assertEqual(summarizer.max_input_chars, 6000)
+        self.assertEqual(summarizer.max_tokens, 300)
+        self.assertEqual(summarizer.timeout, 45.0)
+        self.assertEqual(summarizer.min_messages, 2)
+        self.assertEqual(summarizer.model, "")
+
+    # ----------------------------------------------------------------- memory
+    def test_summary_is_indexed_in_memory(self) -> None:
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.saved: list[tuple[str, str]] = []
+
+            def remember(self, session_id: str, summary: str) -> bool:
+                self.saved.append((session_id, summary))
+                return True
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        memory = FakeMemory()
+        summarizer = Summarizer(FakeLLM(), store, background=False, memory=memory)
+        session = make_session()
+        store.save(session)
+
+        summarizer.summarize(session)
+
+        self.assertEqual(memory.saved, [("s1", "Говорили о C++ и циклах.")])
+
+    def test_memory_failure_does_not_block_summary(self) -> None:
+        class BrokenMemory:
+            def remember(self, session_id: str, summary: str) -> bool:
+                raise RuntimeError("Chroma умерла")
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        summarizer = Summarizer(FakeLLM(), store, background=False, memory=BrokenMemory())
+        session = make_session()
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="ERROR"):
+            text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(store.summary("s1")["summary"], text)
+
+    def test_self_facts_are_saved_to_persona(self) -> None:
+        class PersonaLLM(FakeLLM):
+            def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+                self.calls.append({"messages": messages, **kwargs})
+                if kwargs.get("system") == SELF_FACTS_SYSTEM:
+                    return "- Мне 23 года.\n- Живу в Москве."
+                return "Говорили о C++ и циклах."
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        persona = PersonaMemory(Path(directory.name) / "luna.txt")
+        llm = PersonaLLM()
+        summarizer = Summarizer(llm, store, background=False, persona=persona)
+        session = make_session()
+        store.save(session)
+
+        summarizer.summarize(session)
+
+        self.assertEqual(persona.facts(), ["Мне 23 года.", "Живу в Москве."])
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[1]["system"], SELF_FACTS_SYSTEM)
+        self.assertEqual(llm.calls[1]["temperature"], 0.0)
+
+    def test_persona_failure_does_not_block_summary(self) -> None:
+        class BrokenPersonaLLM(FakeLLM):
+            def chat(self, messages: list[dict[str, str]], **kwargs: object) -> str:
+                if kwargs.get("system") == SELF_FACTS_SYSTEM:
+                    raise RuntimeError("нет сети")
+                return super().chat(messages, **kwargs)
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        persona = PersonaMemory(Path(directory.name) / "luna.txt")
+        summarizer = Summarizer(
+            BrokenPersonaLLM(),
+            store,
+            background=False,
+            persona=persona,
+        )
+        session = make_session()
+        store.save(session)
+
+        with self.assertLogs("app.summarizer", level="ERROR"):
+            text = summarizer.summarize(session)
+
+        self.assertEqual(text, "Говорили о C++ и циклах.")
+        self.assertEqual(store.summary("s1")["summary"], text)
+        self.assertEqual(persona.facts(), [])
+
+    def test_from_config_passes_memory(self) -> None:
+        class FakeMemory:
+            def remember(self, session_id: str, summary: str) -> bool:
+                return True
+
+        memory = FakeMemory()
+        summarizer = Summarizer.from_config(FakeLLM(), object(), memory=memory)
+        self.assertIs(summarizer.memory, memory)
+
+    def test_from_config_passes_persona(self) -> None:
+        persona = PersonaMemory(None)
+        summarizer = Summarizer.from_config(FakeLLM(), object(), persona=persona)
+        self.assertIs(summarizer.persona, persona)
+
+    # ------------------------------------------------------------- recovery
+    def test_recover_summarizes_crashed_session(self) -> None:
+        summarizer, store, llm = self.make()
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.sessions()[0]["status"], "completed")
+        self.assertEqual(store.summary("crash")["summary"], "Говорили о C++ и циклах.")
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_recover_skips_session_with_summary(self) -> None:
+        summarizer, store, llm = self.make()
+        make_crashed(store)
+        store.save_summary("crash", "Резюме уже было.")
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.summary("crash")["summary"], "Резюме уже было.")
+        self.assertEqual(llm.calls, [])
+
+    def test_recover_closes_session_when_disabled(self) -> None:
+        summarizer, store, llm = self.make(enabled=False)
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+
+        self.assertEqual(store.active(), [])
+        self.assertIsNone(store.summary("crash"))
+        self.assertEqual(llm.calls, [])
+
+    def test_recover_in_background_queues_summary(self) -> None:
+        summarizer, store, _ = self.make(background=True)
+        make_crashed(store)
+
+        self.assertEqual(summarizer.recover(), 1)
+        summarizer.close(timeout=5)
+
+        self.assertIsNotNone(store.summary("crash"))
+
+    def test_from_config_overrides(self) -> None:
+        summarizer = Summarizer.from_config(
+            FakeLLM(),
+            object(),
+            {
+                "enabled": False,
+                "model": "summary-model",
+                "max_input_chars": 0,
+                "max_tokens": 120,
+                "temperature": 0.0,
+                "timeout_sec": 5,
+                "min_messages": 4,
+                "prompt_version": 2,
+                "background": False,
+            },
+        )
+
+        self.assertFalse(summarizer.enabled)
+        self.assertFalse(summarizer.background)
+        self.assertEqual(summarizer.model, "summary-model")
+        self.assertEqual(summarizer.max_input_chars, 0)
+        self.assertEqual(summarizer.max_tokens, 120)
+        self.assertEqual(summarizer.temperature, 0.0)
+        self.assertEqual(summarizer.timeout, 5.0)
+        self.assertEqual(summarizer.min_messages, 4)
+        self.assertEqual(summarizer.prompt_version, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

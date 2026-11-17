@@ -176,8 +176,10 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     # Непрерывный разговор: вход и выход по фразам, без wake-слова на
-    # каждую реплику. История реплик пока не хранится; контекст берётся
-    # из текстового файла profile_path, который пишет пользователь.
+    # каждую реплику. История живёт в памяти на время разговора, в модель
+    # уходит только окно history_messages/history_chars. Постоянный
+    # контекст — текстовый файл profile_path, который пишет пользователь.
+    # Завершённые сессии пишутся в SQLite db_path.
     "dialog": {
         "enabled": True,
         "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
@@ -196,8 +198,49 @@ DEFAULTS: dict[str, Any] = {
         "temperature": 0.5,
         "timeout_sec": 60,
         "max_errors": 2,
+        "history_messages": 12,
+        "history_chars": 4000,
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
+        # Факты Луны о себе: файл пополняется после разговоров и идёт
+        # в системный промпт отдельным блоком. Пустой путь выключает.
+        "persona_path": "state/luna.txt",
+        "persona_chars": 2000,
+        "db_path": "state/dialog.db",
+        # После выхода сессия сжимается в короткое резюме и ложится в
+        # таблицу summaries; резюме уходит в семантическую память, а факты
+        # Луны о себе — в persona_path. background — считать в фоновом
+        # потоке, чтобы не задерживать прощание; пустой model — cloud_llm.
+        "summary": {
+            "enabled": True,
+            "model": "",
+            "max_input_chars": 6000,
+            "max_tokens": 300,
+            "temperature": 0.2,
+            "timeout_sec": 45,
+            "min_messages": 2,
+            "background": True,
+        },
+    },
+    # Семантическая память: резюме прошлых разговоров ищутся по смыслу.
+    # Векторы считает Voyage через ProxyAPI, хранит Chroma в path. Тексты
+    # резюме остаются в SQLite; Chroma можно пересобрать. Память работает
+    # только в режиме диалога, разовые команды её не трогают.
+    "memory": {
+        "enabled": True,
+        "model": "mongodb/voyage-4",
+        "base_url": "",
+        "api_key": "",
+        "path": "state/chroma",
+        "collection": "summaries",
+        "top_k": 3,
+        "min_score": 0.35,
+        "min_margin": 0.05,
+        "max_chars": 1200,
+        "timeout_sec": 10,
+        # Версия раскладки индекса: при изменении старые векторы не ищутся,
+        # а пересчитываются из резюме при старте.
+        "index_version": 1,
     },
     # Озвучка: предзаписанные фразы играют с диска, ответы синтезируются
     # через ProxyAPI. Ключ и голос задаются в config.json.
@@ -245,12 +288,22 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])
 
     dialog_cfg = cfg.get("dialog") or {}
-    profile_path = str(dialog_cfg.get("profile_path") or "").strip()
-    if profile_path:
-        expanded = _expand_path(profile_path)
+    for key in ("profile_path", "persona_path", "db_path"):
+        value = str(dialog_cfg.get(key) or "").strip()
+        if not value:
+            continue
+        expanded = _expand_path(value)
         if not Path(expanded).is_absolute():
             expanded = str(ROOT / expanded)
-        dialog_cfg["profile_path"] = expanded
+        dialog_cfg[key] = expanded
+
+    memory_cfg = cfg.get("memory") or {}
+    memory_path = str(memory_cfg.get("path") or "").strip()
+    if memory_path:
+        expanded = _expand_path(memory_path)
+        if not Path(expanded).is_absolute():
+            expanded = str(ROOT / expanded)
+        memory_cfg["path"] = expanded
 
     for directory in (MODELS_DIR, LOGS_DIR, STATE_DIR):
         directory.mkdir(parents=True, exist_ok=True)

@@ -74,6 +74,9 @@ class FakeTTS:
         self.stops += 1
         self.speaking = False
 
+    def shutdown(self) -> None:
+        pass
+
 
 class FakeTray:
     def __init__(self, status: dict[str, Any]) -> None:
@@ -781,6 +784,22 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.listen_calls, [])
         self.assertIn(b"pcm", assistant._preroll)
 
+    def test_detector_error_does_not_break_loop(self) -> None:
+        assistant = self.make(None)
+
+        def boom(pcm: bytes) -> Any:
+            raise RuntimeError("vosk упал")
+
+        assistant.barge.feed = boom
+
+        with self.assertLogs("app.main", level="ERROR"):
+            assistant._handle_speech()
+
+        self.assertEqual(assistant.tts.stops, 0)
+        self.assertEqual(assistant.barge.resets, 1)
+        self.assertEqual(assistant.wake.resets, 1)
+        self.assertEqual(assistant.listen_calls, [])
+
     def test_wake_detector_catches_phrase_free_vosk_missed(self) -> None:
         assistant = self.make(None)
         assistant.wake.triggered = True
@@ -814,16 +833,46 @@ class BargeInHandlingTest(unittest.TestCase):
         self.assertEqual(assistant.wake.fed, 0)
 
 
+class SessionRecoveryTest(unittest.TestCase):
+    def test_recover_sessions_calls_summarizer(self) -> None:
+        calls: list[int] = []
+
+        class FakeSummarizer:
+            def recover(self) -> int:
+                calls.append(1)
+                return 1
+
+        Assistant._recover_sessions(FakeSummarizer())
+
+        self.assertEqual(calls, [1])
+
+    def test_recover_sessions_logs_error(self) -> None:
+        class BrokenSummarizer:
+            def recover(self) -> int:
+                raise RuntimeError("база недоступна")
+
+        with self.assertLogs("app.main", level="ERROR"):
+            Assistant._recover_sessions(BrokenSummarizer())
+
+
 class FakeDialog:
     def __init__(self, answer: str = "ответ диалога", error: Exception | None = None) -> None:
         self.answer = answer
         self.error = error
         self.replied: list[str] = []
+        self.started = 0
+        self.stopped = 0
         self.max_errors = 2
         self.idle_timeout = 60
         self.max_utterance = 60
         self.no_speech_timeout = 10
         self.silence_ms = 1200
+
+    def start(self) -> None:
+        self.started += 1
+
+    def stop(self) -> None:
+        self.stopped += 1
 
     def wants_entry(self, text: str) -> bool:
         return text in {"давай поговорим", "поговорим"}
@@ -867,6 +916,7 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(message, "Слушаю. О чём поговорим?")
         self.assertEqual(assistant.router.seen, [])
         self.assertIn(message, assistant.tts.said)
+        self.assertEqual(assistant.dialog.started, 1)
 
     def test_exit_phrase_disables_dialog(self) -> None:
         assistant = self.make()
@@ -875,6 +925,7 @@ class DialogModeTest(unittest.TestCase):
         self.assertFalse(assistant._dialog_active)
         self.assertEqual(message, "Хорошо, закончили.")
         self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.dialog.stopped, 1)
 
     def test_free_speech_goes_to_dialog_not_qa(self) -> None:
         assistant = self.make()
@@ -918,6 +969,17 @@ class DialogModeTest(unittest.TestCase):
             assistant.run_text("два")
         self.assertFalse(assistant._dialog_active)
         self.assertEqual(len(assistant.dialog.replied), 2)
+        self.assertEqual(assistant.dialog.stopped, 1)
+
+    def test_cleanup_closes_dialog_session(self) -> None:
+        assistant = self.make()
+        assistant.mic = None
+        assistant._hotkey_listener = None
+        assistant.server = None
+        assistant.browser = SimpleNamespace(stop=lambda: None)
+        assistant.tray = None
+        assistant._cleanup()
+        self.assertEqual(assistant.dialog.stopped, 1)
 
     def test_status_reports_dialog(self) -> None:
         assistant = self.make()
