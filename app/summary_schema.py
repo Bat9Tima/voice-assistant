@@ -51,16 +51,12 @@ class StructuredSummary:
     def to_dict(self) -> dict[str, Any]:
         """Форма для ``summaries.data``: только простые типы."""
         return {
-            "facts": [
-                {"text": item.text, "evidence": item.evidence} for item in self.facts
-            ],
+            "facts": [{"text": item.text, "evidence": item.evidence} for item in self.facts],
             "decisions": [
-                {"text": item.text, "evidence": item.evidence}
-                for item in self.decisions
+                {"text": item.text, "evidence": item.evidence} for item in self.decisions
             ],
             "unfinished": [
-                {"text": item.text, "evidence": item.evidence}
-                for item in self.unfinished
+                {"text": item.text, "evidence": item.evidence} for item in self.unfinished
             ],
             "topics": list(self.topics),
             "summary": self.summary,

@@ -309,9 +309,7 @@ class SessionStore:
     def delete_memory_facts(self, session_id: str) -> int:
         """Удаляет все факты сессии: пересчёт резюме не должен плодить дубли."""
         with self._connection() as conn:
-            cursor = conn.execute(
-                "DELETE FROM memory_facts WHERE session_id = ?", (session_id,)
-            )
+            cursor = conn.execute("DELETE FROM memory_facts WHERE session_id = ?", (session_id,))
         return cursor.rowcount
 
     # ------------------------------------------------------------------- read

@@ -18,14 +18,10 @@ class DurabilityTest(unittest.TestCase):
         self.assertEqual(classify_durability("Пользователь увлекается футболом"), PERMANENT)
 
     def test_preference_wins_over_short_period(self) -> None:
-        self.assertEqual(
-            classify_durability("Пользователь сегодня любит кофе"), PERMANENT
-        )
+        self.assertEqual(classify_durability("Пользователь сегодня любит кофе"), PERMANENT)
 
     def test_unclear_fact_defaults_to_permanent(self) -> None:
-        self.assertEqual(
-            classify_durability("Пользователь работает программистом"), PERMANENT
-        )
+        self.assertEqual(classify_durability("Пользователь работает программистом"), PERMANENT)
         self.assertEqual(classify_durability(""), PERMANENT)
 
 

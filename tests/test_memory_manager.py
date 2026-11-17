@@ -29,13 +29,9 @@ def make_summary(
 ) -> StructuredSummary:
     return StructuredSummary(
         facts=[SummaryItem(text=text, evidence=evidence) for text, evidence in facts or []],
-        decisions=[
-            SummaryItem(text=text, evidence=evidence)
-            for text, evidence in decisions or []
-        ],
+        decisions=[SummaryItem(text=text, evidence=evidence) for text, evidence in decisions or []],
         unfinished=[
-            SummaryItem(text=text, evidence=evidence)
-            for text, evidence in unfinished or []
+            SummaryItem(text=text, evidence=evidence) for text, evidence in unfinished or []
         ],
     )
 
@@ -74,9 +70,7 @@ class MemoryManagerTest(unittest.TestCase):
             {"Пользователю очень плохо"},
         )
         low = next(
-            row
-            for row in store.memory_facts()
-            if row["text"] == "Пользователь играет в Fortnite"
+            row for row in store.memory_facts() if row["text"] == "Пользователь играет в Fortnite"
         )
         self.assertEqual(low["importance"], "low")
 
@@ -206,9 +200,7 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertEqual(result.review, 0)
         rows = store.memory_facts(limit=10)
         old = next(row for row in rows if row["text"] == "Пользователь любит кофе")
-        new = next(
-            row for row in rows if row["text"] == "Пользователь больше не любит кофе"
-        )
+        new = next(row for row in rows if row["text"] == "Пользователь больше не любит кофе")
         self.assertEqual(old["status"], "superseded")
         self.assertEqual(old["replaced_by"], new["id"])
         self.assertEqual(new["status"], "active")
@@ -226,9 +218,7 @@ class MemoryManagerTest(unittest.TestCase):
 
         result = manager.ingest(
             "s2",
-            make_summary(
-                facts=[("Пользователь уже выздоровел", "я уже выздоровел")]
-            ),
+            make_summary(facts=[("Пользователь уже выздоровел", "я уже выздоровел")]),
             created_at=at(5),
         )
 
@@ -407,9 +397,7 @@ class MemoryManagerTest(unittest.TestCase):
 
         manager.ingest("s1", task, created_at=at(10))
 
-        refreshed = next(
-            row for row in store.memory_facts(limit=10) if row["kind"] == "unfinished"
-        )
+        refreshed = next(row for row in store.memory_facts(limit=10) if row["kind"] == "unfinished")
         self.assertEqual(refreshed["status"], "resolved")
 
     def test_block_has_header_and_skips_low(self) -> None:
@@ -484,9 +472,7 @@ class MemoryManagerTest(unittest.TestCase):
     def test_memory_key_groups_topics(self) -> None:
         self.assertEqual(memory_key("fact", "Пользователь любит кофе"), "preference")
         self.assertEqual(memory_key("fact", "Пользователь устал"), "health")
-        self.assertTrue(
-            memory_key("unfinished", "Закончить проект").startswith("task:")
-        )
+        self.assertTrue(memory_key("unfinished", "Закончить проект").startswith("task:"))
 
 
 if __name__ == "__main__":

@@ -280,9 +280,7 @@ class MemoryService:
             digest_min_messages=_int_setting(
                 section.get("digest_min_messages"), DEFAULT_DIGEST_MIN_MESSAGES
             ),
-            digest_limit=_int_setting(
-                section.get("digest_limit"), DEFAULT_DIGEST_LIMIT
-            ),
+            digest_limit=_int_setting(section.get("digest_limit"), DEFAULT_DIGEST_LIMIT),
             digest_item_chars=_int_setting(
                 section.get("digest_item_chars"), DEFAULT_DIGEST_ITEM_CHARS
             ),
@@ -505,9 +503,7 @@ class MemoryService:
         if self.digest_limit <= 0:
             return []
         try:
-            rows = self.store.summaries_with_sessions(
-                limit=max(20, self.digest_limit * 5)
-            )
+            rows = self.store.summaries_with_sessions(limit=max(20, self.digest_limit * 5))
         except Exception as exc:  # noqa: BLE001
             log.warning("Память: дневной дайджест недоступен: %s", exc)
             return []

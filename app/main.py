@@ -1043,11 +1043,7 @@ class Assistant:
         advisor = getattr(self, "intent", None)
         if advisor is None:
             return route
-        if (
-            route is not None
-            and route.kind in GATED_QA_KINDS
-            and advisor.mode == MODE_ACTIVE
-        ):
+        if route is not None and route.kind in GATED_QA_KINDS and advisor.mode == MODE_ACTIVE:
             decision = advisor.classify(text, in_dialog=True)
             if advisor.blocks_lookup(decision):
                 log.info(

@@ -56,9 +56,7 @@ def _int(value: Any, default: int) -> int:
 
 def _user_text(session: DialogSession) -> str:
     """Только реплики пользователя: по ним проверяются цитаты-подтверждения."""
-    return "\n".join(
-        message.content for message in session.messages if message.role == "user"
-    )
+    return "\n".join(message.content for message in session.messages if message.role == "user")
 
 
 def _cut_head(text: str, size: int) -> str:
@@ -247,8 +245,7 @@ class Summarizer:
             log.exception("Факты сессии %s не обновлены", session_id)
             return
         log.info(
-            "Факты сессии %s: +%s, объединено %s, обновлено %s, "
-            "на проверку %s, закрыто %s",
+            "Факты сессии %s: +%s, объединено %s, обновлено %s, на проверку %s, закрыто %s",
             session_id,
             result.added,
             result.merged,

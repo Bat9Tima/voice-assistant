@@ -70,8 +70,7 @@ class ParseSummaryTest(unittest.TestCase):
 
     def test_comparison_ignores_case_punctuation_and_yo(self) -> None:
         answer = (
-            '{"facts": [{"text": "Пользователь приболел", '
-            '"evidence": "Я ПРИБОЛЕЛ, но не сильно"}]}'
+            '{"facts": [{"text": "Пользователь приболел", "evidence": "Я ПРИБОЛЕЛ, но не сильно"}]}'
         )
         summary = parse_summary(answer, "я приболел но не сильно")
         self.assertEqual(len(summary.facts), 1)

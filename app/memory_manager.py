@@ -354,9 +354,7 @@ class MemoryManager:
         return cls(
             store,
             facts_limit=_int(section.get("facts_limit"), DEFAULT_FACTS_LIMIT),
-            facts_max_chars=_int(
-                section.get("facts_max_chars"), DEFAULT_FACTS_MAX_CHARS
-            ),
+            facts_max_chars=_int(section.get("facts_max_chars"), DEFAULT_FACTS_MAX_CHARS),
         )
 
     # ------------------------------------------------------------------ write
@@ -506,22 +504,13 @@ class MemoryManager:
         # Решения ищем по всей активной памяти, а не только по этому
         # резюме: пересчёт сессии не должен воскрешать уже закрытую задачу.
         decisions = [
-            row
-            for row in active
-            if row["kind"] == "decision" and row["status"] == "active"
+            row for row in active if row["kind"] == "decision" and row["status"] == "active"
         ]
         result.resolved = self._resolve(active, decisions, stamp)
         result.active = sum(1 for row in active if row["status"] == "active")
-        if (
-            result.added
-            or result.merged
-            or result.superseded
-            or result.resolved
-            or result.review
-        ):
+        if result.added or result.merged or result.superseded or result.resolved or result.review:
             log.info(
-                "Память: фактов +%s, объединено %s, обновлено %s, "
-                "на проверку %s, закрыто задач %s",
+                "Память: фактов +%s, объединено %s, обновлено %s, на проверку %s, закрыто задач %s",
                 result.added,
                 result.merged,
                 result.superseded,
@@ -637,9 +626,7 @@ class MemoryManager:
         rows = self.store.memory_facts(status=NEEDS_REVIEW, limit=MAX_ACTIVE_FACTS)
         for row in rows:
             if row["kind"] == kind and row["fact_key"] == key:
-                self.store.update_memory_fact(
-                    row["id"], status=DISMISSED, updated_at=stamp
-                )
+                self.store.update_memory_fact(row["id"], status=DISMISSED, updated_at=stamp)
 
     def _merge(
         self,
@@ -804,9 +791,7 @@ def memory_key(kind: str, text: str) -> str:
         for name, markers in _BUCKETS:
             if any(marker in flat for marker in markers):
                 return name
-    prefix = {"fact": "fact", "decision": "decision", "unfinished": "task"}.get(
-        kind, kind
-    )
+    prefix = {"fact": "fact", "decision": "decision", "unfinished": "task"}.get(kind, kind)
     tokens = _tokens(text)[:4]
     return f"{prefix}:" + " ".join(tokens) if tokens else f"{prefix}:empty"
 
