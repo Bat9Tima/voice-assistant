@@ -15,6 +15,7 @@ from .datetime_answer import datetime_context
 from .persona import PersonaMemory
 from .profile import Profile
 from .prompts import DIALOG_SYSTEM
+from .rolling_summary import RollingSummary
 from .session import (
     DEFAULT_HISTORY_CHARS,
     DEFAULT_HISTORY_MESSAGES,
@@ -216,6 +217,12 @@ class DialogService:
             max_tokens=DEFAULT_BUDGET_TOKENS if budget is None else int(budget),
             chars_per_token=float(context_cfg.get("chars_per_token") or DEFAULT_CHARS_PER_TOKEN),
         )
+        # Скользящее резюме: выпавшие из окна реплики сжимаются в фоне,
+        # чтобы разговор не терял начало на длинной дистанции.
+        self.rolling = RollingSummary.from_config(
+            self.llm,
+            context_cfg.get("rolling_summary") or {},
+        )
         self.sessions = sessions or SessionMemory(
             self.history_messages,
             self.history_chars,
@@ -261,6 +268,9 @@ class DialogService:
             block = self.persona.block()
             if block:
                 parts.append(ContextPart("persona", block, keep_tail=True))
+        block = self.rolling.block()
+        if block:
+            parts.append(ContextPart("dialog", block))
         return parts
 
     def system_prompt(self) -> str:
@@ -269,11 +279,13 @@ class DialogService:
 
     def start(self) -> None:
         """Начинает разговор с чистого листа: прошлая сессия закрывается."""
+        self.rolling.reset()
         self.sessions.start()
 
     def stop(self) -> None:
         """Закрывает сессию. Сейчас она просто уходит в ``on_finish``."""
         self.sessions.finish()
+        self.rolling.reset()
 
     def reply(self, text: str) -> str:
         """Один ход: окно истории + текущая реплика.
@@ -304,6 +316,7 @@ class DialogService:
             raise ValueError("модель вернула пустой ответ")
         self.sessions.add("user", text)
         self.sessions.add("assistant", answer)
+        self.rolling.observe(self.sessions.current, self.sessions.window_start())
         return answer
 
     def _memory_block(self, text: str) -> str:

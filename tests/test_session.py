@@ -130,6 +130,38 @@ class SessionMemoryTest(unittest.TestCase):
             memory.add("user", f"m{index}")
         self.assertEqual(len(memory.history()), 20)
 
+    def test_window_start_matches_history_by_messages(self) -> None:
+        memory = self.make(max_messages=2)
+        for index in range(4):
+            memory.add("user", f"m{index}")
+        start = memory.window_start()
+        self.assertEqual(start, 2)
+        self.assertEqual(
+            memory.history(),
+            [
+                {"role": item.role, "content": item.content}
+                for item in memory.current.messages[start:]
+            ],
+        )
+
+    def test_window_start_matches_history_by_chars(self) -> None:
+        memory = self.make(max_chars=10)
+        for text in ("aaa", "bbb", "cccc", "ddddd"):
+            memory.add("user", text)
+        self.assertEqual(memory.window_start(), 2)
+        self.assertEqual(memory.history()[0]["content"], "cccc")
+
+    def test_window_start_keeps_long_latest_message(self) -> None:
+        memory = self.make(max_chars=3)
+        memory.add("user", "длинная реплика")
+        self.assertEqual(memory.window_start(), 0)
+
+    def test_window_start_without_limits_and_session(self) -> None:
+        self.assertEqual(self.make().window_start(), 0)
+        memory = self.make(max_messages=0, max_chars=0)
+        memory.add("user", "привет")
+        self.assertEqual(memory.window_start(), 0)
+
     def test_finish_calls_hook_and_clears_current(self) -> None:
         memory = self.make()
         memory.add("user", "привет")

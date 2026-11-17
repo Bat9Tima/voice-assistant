@@ -132,7 +132,15 @@
     "history_chars": 4000,
     "context": {
       "budget_tokens": 6000,
-      "chars_per_token": 2.5
+      "chars_per_token": 2.5,
+      "rolling_summary": {
+        "enabled": true,
+        "min_messages": 4,
+        "max_chars": 1200,
+        "max_input_chars": 4000,
+        "max_tokens": 250,
+        "timeout_sec": 30
+      }
     },
     "profile_path": "state/profile.txt",
     "profile_chars": 4000,

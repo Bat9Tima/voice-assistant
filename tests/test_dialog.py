@@ -380,6 +380,33 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(messages[-1], {"role": "user", "content": "привет"})
         self.assertIn("голосовой ассистент", kwargs["system"])
 
+    def test_rolling_summary_goes_to_next_context(self) -> None:
+        llm = FakeLLM("Понятно.")
+        service = DialogService(
+            {
+                "dialog": {
+                    "history_messages": 2,
+                    "context": {"rolling_summary": {"min_messages": 2}},
+                }
+            },
+            llm,
+        )
+        self.addCleanup(service.rolling.close, 5)
+
+        service.reply("первый вопрос")
+        service.reply("второй вопрос")
+        service.rolling.close(timeout=5)
+        self.assertIn("Краткое содержание начала", service.rolling.block())
+
+        service.reply("третий вопрос")
+        dialog_calls = [
+            kwargs
+            for messages, kwargs in llm.calls
+            if messages[-1] == {"role": "user", "content": "третий вопрос"}
+        ]
+        self.assertTrue(dialog_calls)
+        self.assertIn("Краткое содержание начала", dialog_calls[-1]["system"])
+
     def test_persona_block_is_added_to_system_prompt(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

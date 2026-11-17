@@ -206,6 +206,17 @@ DEFAULTS: dict[str, Any] = {
         "context": {
             "budget_tokens": 6000,
             "chars_per_token": 2.5,
+            # Реплики, выпавшие из окна истории, сжимаются в краткое
+            # содержание текущего разговора. Фоновый запрос, в базу не
+            # пишется, живёт только до конца разговора.
+            "rolling_summary": {
+                "enabled": True,
+                "min_messages": 4,
+                "max_chars": 1200,
+                "max_input_chars": 4000,
+                "max_tokens": 250,
+                "timeout_sec": 30,
+            },
         },
         "profile_path": "state/profile.txt",
         "profile_chars": 4000,
