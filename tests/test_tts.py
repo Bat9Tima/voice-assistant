@@ -71,6 +71,9 @@ def make_service(directory: Path, **overrides) -> TTSService:
         "cache_dir": str(directory / "cache"),
         "phrases_dir": str(directory),
         "workers": 2,
+        # Буфер проверяется отдельно, остальным тестам он только добавил бы
+        # ожидание.
+        "prebuffer_sec": 0,
     }
     section.update(overrides)
     return TTSService({"tts": section})
@@ -714,6 +717,100 @@ class TTSStreamTest(unittest.TestCase):
             finally:
                 release.set()
             self.assertEqual(played, [1.0, 3.0])
+
+    def test_stream_buffers_next_chunk_before_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), prebuffer_sec=1.0)
+            started: dict[float, float] = {}
+
+            def fake_synth(text: str) -> np.ndarray:
+                value = 1.0 if "Первое" in text else 2.0
+                if value == 2.0:
+                    # Второй фрагмент синтезируется дольше первого.
+                    time.sleep(0.3)
+                return np.array([value], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                started[float(data[0])] = time.monotonic()
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed("Первое предложение здесь. Второе предложение здесь.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            gap = started[2.0] - started[1.0]
+            self.assertLess(gap, 0.1)
+
+    def test_stream_synthesizes_new_chunk_while_current_plays(self) -> None:
+        """Новый текст уходит в синтез, не дожидаясь конца текущей фразы."""
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), workers=2)
+            requested: list[str] = []
+            playing = threading.Event()
+            release = threading.Event()
+
+            def fake_synth(text: str) -> np.ndarray:
+                requested.append(text)
+                return np.zeros(10, dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                playing.set()
+                release.wait(timeout=5)
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                try:
+                    stream.feed("Первое предложение здесь. ")
+                    self.assertTrue(playing.wait(2))
+                    stream.feed("Второе предложение здесь. ")
+                    deadline = time.monotonic() + 2
+                    while len(requested) < 2 and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(
+                        requested,
+                        [
+                            "Первое предложение здесь.",
+                            "Второе предложение здесь.",
+                        ],
+                    )
+                finally:
+                    stream.close()
+                    release.set()
+            self.assertTrue(service.wait(5))
+
+    def test_stream_without_buffer_has_gap_on_slow_next_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = make_service(Path(tmp), prebuffer_sec=0)
+            started: dict[float, float] = {}
+
+            def fake_synth(text: str) -> np.ndarray:
+                value = 1.0 if "Первое" in text else 2.0
+                if value == 2.0:
+                    time.sleep(0.3)
+                return np.array([value], dtype=np.float32)
+
+            def fake_play(data, job=None) -> bool:  # noqa: ANN001
+                started[float(data[0])] = time.monotonic()
+                return True
+
+            with (
+                patch.object(service, "_synth_cached", side_effect=fake_synth),
+                patch.object(service, "_play", side_effect=fake_play),
+            ):
+                stream = service.stream()
+                stream.feed("Первое предложение здесь. Второе предложение здесь.")
+                stream.close()
+                self.assertTrue(service.wait(5))
+            gap = started[2.0] - started[1.0]
+            self.assertGreaterEqual(gap, 0.2)
 
     def test_stream_prefetches_next_chunk_while_current_plays(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

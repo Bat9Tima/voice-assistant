@@ -172,6 +172,14 @@ def split_sentences(text: str, limit: int = 180) -> list[str]:
     return merged
 
 
+def _preview(text: str, limit: int = 48) -> str:
+    """Короткая версия фрагмента для лога."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
 class PhraseBank:
     """Предзаписанные фразы: категория → варианты текста → дубли."""
 
@@ -254,11 +262,14 @@ class _SpeechJob:
     cancelled: threading.Event = field(default_factory=threading.Event)
     # Закрытая задача больше не ждёт новых фрагментов.
     closed: threading.Event = field(default_factory=threading.Event)
+    # Появлялся новый текст или сдвинулось окно предварительной генерации.
+    changed: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add(self, chunks: list[str]) -> None:
         with self.lock:
             self.chunks.extend(chunks)
+        self.changed.set()
 
     def snapshot(self) -> list[str]:
         with self.lock:
@@ -266,6 +277,7 @@ class _SpeechJob:
 
     def seal(self) -> None:
         self.closed.set()
+        self.changed.set()
 
     @property
     def sealed(self) -> bool:
@@ -379,6 +391,11 @@ class TTSService:
         # Сколько ждать готовности фрагмента, когда предыдущий уже доиграл.
         # 0 отключает предел: очередь будет ждать синтез сколько угодно.
         self.chunk_wait = max(0.0, float(section.get("chunk_wait_sec", 30) or 0))
+        # Небольшой буфер перед стартом фрагмента: если следующий уже
+        # синтезируется, даём ему досинтезироваться, чтобы стык не был
+        # слышен как пауза. Плата — задержка первого звука не больше этого
+        # значения. 0 выключает буфер.
+        self.prebuffer = max(0.0, float(section.get("prebuffer_sec", 0)))
         self.cache_dir = Path(section.get("cache_dir") or (DATA_DIR / "tts-cache"))
         self.bank = PhraseBank(section.get("phrases_dir") or (ROOT / "assets" / "phrases"))
         if self.enabled:
@@ -554,38 +571,63 @@ class TTSService:
     def _run_job(self, job: _SpeechJob) -> None:
         pool = ThreadPoolExecutor(max_workers=self.workers)
         futures: dict[int, Future] = {}
-        index = 0
+        synth_sec: dict[int, float] = {}
+        # Один замок на futures и точку, до которой всё отправлено: пока
+        # звучит фрагмент, отдельный поток успевает отдать в синтез новые.
+        cond = threading.Condition()
+        stop_submit = threading.Event()
         submitted = 0
+        index = 0
+
+        def submit_loop() -> None:
+            """Отдаёт в синтез новые фрагменты, пока играет текущий.
+
+            Раньше отправкой занимался сам проигрыватель между
+            фрагментами: пока звучало первое предложение, второе лежало
+            в очереди и не синтезировалось. Из-за этого на стыке
+            предложений слышалась пауза.
+            """
+            nonlocal submitted
+            while not stop_submit.is_set():
+                chunks = job.snapshot()
+                with cond:
+                    window = index + self.workers + 1
+                    while submitted < len(chunks) and submitted < window:
+                        futures[submitted] = pool.submit(
+                            self._synth_job, chunks[submitted], synth_sec, submitted
+                        )
+                        submitted += 1
+                    cond.notify_all()
+                # Выходить по seal нельзя: последний feed() мог добавить
+                # фрагмент уже после закрытия. Поток останавливает
+                # проигрыватель, когда очередь действительно доиграна.
+                job.changed.clear()
+                job.changed.wait(timeout=0.05)
+
+        submitter = threading.Thread(target=submit_loop, name="tts-submit", daemon=True)
+        submitter.start()
         synth_failures = 0
         play_failures = 0
+        play_end: float | None = None
         try:
             while True:
                 if not self._job_alive(job):
                     return
-                chunks = job.snapshot()
-                # Держим впереди ограниченное окно: пока играет текущий
-                # фрагмент, следующие уже синтезируются, но текст, который
-                # может не прозвучать, не отправляем в API целиком.
-                window = index + self.workers + 1
-                while submitted < len(chunks) and submitted < window:
-                    futures[submitted] = pool.submit(self._synth_cached, chunks[submitted])
-                    submitted += 1
-
-                if index >= len(chunks):
-                    # Потоковая задача ещё может получить текст; обычная уже
-                    # закрыта и просто закончилась.
-                    if job.sealed:
-                        # Снимок мог быть сделан до последнего добавления:
-                        # после seal проверяем очередь ещё раз.
-                        if index >= len(job.snapshot()):
+                with cond:
+                    # Фрагмент мог ещё не дойти до пула: ждём отправку.
+                    while index not in futures:
+                        if job.sealed and index >= len(job.snapshot()):
                             return
-                    else:
-                        time.sleep(0.03)
-                    continue
+                        cond.wait(timeout=0.05)
+                        if not self._job_alive(job):
+                            return
+                    future = futures.pop(index)
 
-                future = futures.pop(index)
+                chunks = job.snapshot()
+                wait_started = time.monotonic()
                 if not self._wait_future(future, job):
                     return
+                waited = time.monotonic() - wait_started
                 if not future.done():
                     log.warning(
                         "TTS: фрагмент %d не готов за %.1f с, пропускаю",
@@ -598,6 +640,7 @@ class TTSService:
                         log.warning("TTS: синтез не успевает, остаток ответа пропущен")
                         return
                     index += 1
+                    job.changed.set()
                     continue
 
                 try:
@@ -614,9 +657,29 @@ class TTSService:
                         return
                 else:
                     synth_failures = 0
+                    buffered = self._await_next(futures, index, job, cond)
                     with self._job_lock:
                         self._current_text = chunks[index]
-                    if not self._play(data, job):
+                    started = time.monotonic()
+                    gap = started - play_end if play_end is not None else 0.0
+                    played = self._play(data, job)
+                    played_sec = time.monotonic() - started
+                    log.info(
+                        "TTS: фрагмент %d/%d, %d симв., синтез %.2f с, "
+                        "ждал %.2f с, буфер %.2f с, пауза %.2f с, звук %.2f с%s: %s",
+                        index + 1,
+                        len(chunks),
+                        len(chunks[index]),
+                        synth_sec.get(index, 0.0),
+                        waited,
+                        buffered,
+                        gap,
+                        played_sec,
+                        "" if played else " (не сыграл)",
+                        _preview(chunks[index]),
+                    )
+                    if not played:
+                        play_end = None
                         with self._job_lock:
                             self._current_text = ""
                         if not self._job_alive(job):
@@ -628,11 +691,56 @@ class TTSService:
                             return
                     else:
                         play_failures = 0
+                        play_end = started + played_sec
                 index += 1
+                job.changed.set()
         finally:
+            stop_submit.set()
+            job.changed.set()
+            submitter.join(timeout=1)
             pool.shutdown(wait=False, cancel_futures=True)
             with self._job_lock:
                 self._current_text = ""
+
+    def _synth_job(
+        self,
+        text: str,
+        timings: dict[int, float],
+        index: int,
+    ) -> np.ndarray | None:
+        """Синтез фрагмента с замером времени для лога."""
+        started = time.monotonic()
+        try:
+            return self._synth_cached(text)
+        finally:
+            timings[index] = time.monotonic() - started
+
+    def _await_next(
+        self,
+        futures: dict[int, Future],
+        index: int,
+        job: _SpeechJob,
+        cond: threading.Condition,
+    ) -> float:
+        """Даёт следующему фрагменту шанс досинтезироваться до старта текущего.
+
+        Если следующий фрагмент ещё не отдан в синтез, ждать нечего: он
+        появится только вместе с новым текстом от модели. Возвращает,
+        сколько секунд реально ждали.
+        """
+        if self.prebuffer <= 0:
+            return 0.0
+        with cond:
+            nxt = futures.get(index + 1)
+        if nxt is None:
+            return 0.0
+        started = time.monotonic()
+        deadline = started + self.prebuffer
+        while not nxt.done() and self._job_alive(job):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        return time.monotonic() - started
 
     def _wait_future(self, future: Future, job: _SpeechJob) -> bool:
         """Ждёт фрагмент не дольше ``chunk_wait``.
