@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -222,11 +222,151 @@ class PhraseBank:
 
 @dataclass
 class _SpeechJob:
-    """Очередь озвучки: текст режется на фрагменты до постановки в очередь."""
+    """Очередь озвучки: фрагменты можно добавлять и после постановки в очередь."""
 
-    chunks: list[str]
-    generation: int
+    chunks: list[str] = field(default_factory=list)
+    generation: int = 0
     cancelled: threading.Event = field(default_factory=threading.Event)
+    # Закрытая задача больше не ждёт новых фрагментов.
+    closed: threading.Event = field(default_factory=threading.Event)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def add(self, chunks: list[str]) -> None:
+        with self.lock:
+            self.chunks.extend(chunks)
+
+    def snapshot(self) -> list[str]:
+        with self.lock:
+            return list(self.chunks)
+
+    def seal(self) -> None:
+        self.closed.set()
+
+    @property
+    def sealed(self) -> bool:
+        return self.closed.is_set()
+
+
+# Граница предложения в потоке: знак конца фразы перед пробелом или перевод
+# строки. Без пробела после точки ждём следующий кусок: это может быть
+# сокращение или число.
+STREAM_BOUNDARY_RE = re.compile(r"[.!?…]+(?=\s)|\n")
+STREAM_CHUNK_LIMIT = 180
+# Первый фрагмент режем короче: синтез идёт примерно в темпе речи, и на
+# длинном первом фрагменте пользователь ждал бы молчания. Запятая в начале
+# предложения даёт естественную паузу.
+STREAM_FIRST_LIMIT = 70
+STREAM_FIRST_MIN = 15
+STREAM_FIRST_BREAK_RE = re.compile(r"[,;:—](?=\s)")
+
+
+class _SpeechStream:
+    """Потоковая озвучка: текст добавляется по мере генерации ответа."""
+
+    def __init__(self, service: TTSService, job: _SpeechJob) -> None:
+        self._service = service
+        self._job = job
+        self._lock = threading.Lock()
+        self._pending = ""
+        self._added = 0
+        self._full = False
+        self._closed = False
+
+    def feed(self, text: str) -> None:
+        """Добавляет кусок текста. Готовые предложения сразу уходят в синтез."""
+        if not text:
+            return
+        chunks: list[str] = []
+        with self._lock:
+            if self._closed or self._full or self._job.cancelled.is_set():
+                return
+            self._pending += text
+            for sentence in self._take_sentences():
+                chunks.extend(self._accept(sentence))
+                if self._full:
+                    break
+            if self._full:
+                self._pending = ""
+        if chunks:
+            self._job.add(chunks)
+
+    def close(self) -> None:
+        """Завершает поток: остаток текста уходит в синтез, задача закрывается."""
+        chunks: list[str] = []
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            rest = self._pending.strip()
+            self._pending = ""
+            if rest and not self._full and not self._job.cancelled.is_set():
+                chunks.extend(self._accept(rest))
+        if chunks:
+            self._job.add(chunks)
+        self._job.seal()
+
+    # ---------------------------------------------------------------- private
+    def _take_sentences(self) -> list[str]:
+        ready: list[str] = []
+        # Самый первый фрагмент — короткий, чтобы озвучка началась раньше.
+        cut = self._first_cut()
+        if cut:
+            ready.append(self._pending[:cut].strip())
+            self._pending = self._pending[cut:].lstrip()
+        while True:
+            match = STREAM_BOUNDARY_RE.search(self._pending)
+            if match is None:
+                break
+            sentence = self._pending[: match.end()].strip()
+            self._pending = self._pending[match.end() :].lstrip()
+            if sentence:
+                ready.append(sentence)
+        # Без знаков конца фразы режем по словам, чтобы не ждать конца абзаца.
+        while len(self._pending) > STREAM_CHUNK_LIMIT:
+            cut = self._pending.rfind(" ", 0, STREAM_CHUNK_LIMIT)
+            if cut < STREAM_CHUNK_LIMIT // 2:
+                cut = STREAM_CHUNK_LIMIT
+            sentence = self._pending[:cut].strip()
+            self._pending = self._pending[cut:].lstrip()
+            if sentence:
+                ready.append(sentence)
+        return ready
+
+    def _first_cut(self) -> int:
+        """Где оборвать первый фрагмент, пока ничего ещё не сказано."""
+        if self._added:
+            return 0
+        pending = self._pending
+        if len(pending) <= STREAM_FIRST_LIMIT:
+            return 0
+        # Готовое короткое предложение режем по нему, а не по середине.
+        sentence = STREAM_BOUNDARY_RE.search(pending)
+        if sentence is not None and sentence.end() <= STREAM_FIRST_LIMIT:
+            return 0
+        window = pending[:STREAM_FIRST_LIMIT]
+        for match in STREAM_FIRST_BREAK_RE.finditer(window):
+            if match.end() >= STREAM_FIRST_MIN:
+                return match.end()
+        # Запятой нет — режем по последнему пробелу в окне.
+        space = window.rfind(" ")
+        if space >= STREAM_FIRST_MIN:
+            return space
+        return STREAM_FIRST_LIMIT
+
+    def _accept(self, sentence: str) -> list[str]:
+        """Чистит предложение и делит его на куски в пределах лимита озвучки."""
+        clean = clean_for_speech(sentence)
+        if not clean:
+            return []
+        chunks: list[str] = []
+        for chunk in split_sentences(clean):
+            limit = self._service.max_chars
+            if limit and self._added + len(chunk) > limit:
+                self._full = True
+                break
+            chunks.append(chunk)
+            self._added += len(chunk)
+        return chunks
 
 
 class TTSService:
@@ -316,9 +456,25 @@ class TTSService:
         self._ensure_worker()
         with self._job_lock:
             job = _SpeechJob(chunks=chunks, generation=self._generation)
+            job.seal()
             self._pending += 1
         self._jobs.put(job)
         return True
+
+    def stream(self) -> _SpeechStream | None:
+        """Начинает потоковую озвучку: текст можно добавлять по мере генерации.
+
+        Возвращает ``None``, если озвучка выключена: тогда диалог работает
+        обычным путём, одним запросом.
+        """
+        if not self.available or not self.speak_answers:
+            return None
+        self._ensure_worker()
+        with self._job_lock:
+            job = _SpeechJob(generation=self._generation)
+            self._pending += 1
+        self._jobs.put(job)
+        return _SpeechStream(self, job)
 
     def stop(self) -> None:
         """Обрывает текущую речь и выбрасывает всё, что ещё стоит в очереди."""
@@ -401,11 +557,31 @@ class TTSService:
 
     def _run_job(self, job: _SpeechJob) -> None:
         pool = ThreadPoolExecutor(max_workers=self.workers)
+        futures: dict[int, Future] = {}
+        index = 0
+        submitted = 0
         try:
-            futures = [pool.submit(self._synth_cached, chunk) for chunk in job.chunks]
-            for chunk, future in zip(job.chunks, futures, strict=False):
+            while True:
                 if not self._job_alive(job):
-                    break
+                    return
+                chunks = job.snapshot()
+                while submitted < len(chunks):
+                    futures[submitted] = pool.submit(self._synth_cached, chunks[submitted])
+                    submitted += 1
+
+                if index >= len(chunks):
+                    # Потоковая задача ещё может получить текст; обычная уже
+                    # закрыта и просто закончилась.
+                    if job.sealed:
+                        # Снимок мог быть сделан до последнего добавления:
+                        # после seal проверяем очередь ещё раз.
+                        if index >= len(job.snapshot()):
+                            return
+                    else:
+                        time.sleep(0.03)
+                    continue
+
+                future = futures.pop(index)
                 # Синтез идёт по сети: проверяем отмену, не дожидаясь
                 # полного ответа ProxyAPI.
                 while not future.done():
@@ -417,12 +593,12 @@ class TTSService:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("TTS: фрагмент не синтезирован: %s", exc)
                     data = None
-                if data is None:
-                    continue
-                with self._job_lock:
-                    self._current_text = chunk
-                if not self._play(data, job):
-                    break
+                if data is not None:
+                    with self._job_lock:
+                        self._current_text = chunks[index]
+                    if not self._play(data, job):
+                        return
+                index += 1
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
             with self._job_lock:

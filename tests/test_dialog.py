@@ -159,6 +159,26 @@ class FakeLLM:
         return self.answer
 
 
+class StreamLLM(FakeLLM):
+    """Модель с потоком: исключение в pieces обрывает ответ на этом месте."""
+
+    def __init__(self, pieces: list[str | Exception]) -> None:
+        super().__init__("Ответ")
+        self.pieces = pieces
+        self.stream_calls: list[tuple[list[dict[str, str]], dict]] = []
+
+    def chat_stream(self, messages: list[dict[str, str]], **kwargs):
+        self.stream_calls.append((messages, kwargs))
+
+        def generate():
+            for piece in self.pieces:
+                if isinstance(piece, Exception):
+                    raise piece
+                yield piece
+
+        return generate()
+
+
 class DialogServiceTest(unittest.TestCase):
     def test_entry_phrases_with_fillers(self) -> None:
         service = DialogService({"dialog": {}}, FakeLLM())
@@ -406,6 +426,60 @@ class DialogServiceTest(unittest.TestCase):
         ]
         self.assertTrue(dialog_calls)
         self.assertIn("Краткое содержание начала", dialog_calls[-1]["system"])
+
+    def test_streaming_reply_feeds_chunks_and_records_answer(self) -> None:
+        llm = StreamLLM(["При", "вет. ", "Как дела?"])
+        service = DialogService({"dialog": {}}, llm)
+        chunks: list[str] = []
+
+        answer = service.reply("привет", on_chunk=chunks.append)
+
+        self.assertEqual(answer, "Привет. Как дела?")
+        self.assertEqual("".join(chunks), "Привет. Как дела?")
+        self.assertEqual(
+            service.sessions.history()[-1],
+            {"role": "assistant", "content": "Привет. Как дела?"},
+        )
+        self.assertEqual(len(llm.stream_calls), 1)
+        self.assertEqual(llm.calls, [])
+
+    def test_streaming_disabled_uses_regular_chat(self) -> None:
+        llm = StreamLLM(["При"])
+        service = DialogService({"dialog": {"streaming": {"enabled": False}}}, llm)
+
+        answer = service.reply("привет", on_chunk=lambda piece: None)
+
+        self.assertEqual(answer, "Ответ")
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(llm.stream_calls, [])
+
+    def test_streaming_without_callback_uses_regular_chat(self) -> None:
+        llm = StreamLLM(["При"])
+        service = DialogService({"dialog": {}}, llm)
+
+        self.assertEqual(service.reply("привет"), "Ответ")
+        self.assertEqual(len(llm.calls), 1)
+        self.assertEqual(llm.stream_calls, [])
+
+    def test_streaming_partial_error_keeps_said_text(self) -> None:
+        llm = StreamLLM(["При", RuntimeError("обрыв")])
+        service = DialogService({"dialog": {}}, llm)
+        chunks: list[str] = []
+
+        with self.assertLogs("app.dialog", level="WARNING"):
+            answer = service.reply("привет", on_chunk=chunks.append)
+
+        self.assertEqual(answer, "При")
+        self.assertEqual("".join(chunks), "При")
+        self.assertEqual(service.sessions.history()[-1]["content"], "При")
+
+    def test_streaming_error_before_first_chunk_raises(self) -> None:
+        llm = StreamLLM([RuntimeError("нет связи")])
+        service = DialogService({"dialog": {}}, llm)
+
+        with self.assertRaises(RuntimeError):
+            service.reply("привет", on_chunk=lambda piece: None)
+        self.assertEqual(service.sessions.history(), [])
 
     def test_persona_block_is_added_to_system_prompt(self) -> None:
         directory = tempfile.TemporaryDirectory()

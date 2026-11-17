@@ -24,6 +24,39 @@ class FakeResponse:
         return self.body
 
 
+class FakeStreamResponse:
+    """SSE-ответ: итерируется построчно, как http.client.HTTPResponse."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self.lines = lines
+
+    def __enter__(self) -> FakeStreamResponse:
+        return self
+
+    def __exit__(self, *args) -> bool:
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+def sse_lines(*texts: str, done: bool = True) -> list[bytes]:
+    lines = [
+        (
+            "data: "
+            + json.dumps(
+                {"choices": [{"delta": {"content": text}}]},
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        ).encode("utf-8")
+        for text in texts
+    ]
+    if done:
+        lines.append(b"data: [DONE]\n\n")
+    return lines
+
+
 def make_llm(**overrides) -> CloudLLM:
     section = {
         "enabled": True,
@@ -487,6 +520,102 @@ class CloudLLMHttpTest(unittest.TestCase):
             with self.assertRaises(LLMError) as ctx:
                 llm.answer("вопрос")
         self.assertIn("choices", str(ctx.exception))
+
+
+class CloudLLMStreamTest(unittest.TestCase):
+    def test_stream_sends_sse_payload(self) -> None:
+        llm = make_llm(retries=0, fallback_models=[])
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):  # noqa: ANN001
+            captured["request"] = request
+            return FakeStreamResponse(sse_lines("Ответ"))
+
+        with patch("app.cloud_llm.urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(
+                list(llm.chat_stream([{"role": "user", "content": "привет"}])),
+                ["Ответ"],
+            )
+
+        payload = json.loads(captured["request"].data)
+        self.assertTrue(payload["stream"])
+        self.assertEqual(
+            captured["request"].headers["Accept"],
+            "text/event-stream",
+        )
+
+    def test_stream_yields_deltas_in_order_and_skips_noise(self) -> None:
+        llm = make_llm(retries=0, fallback_models=[])
+        lines = [
+            b": keep-alive\n\n",
+            b"event: message\n\n",
+            b"data: not json\n\n",
+            json.dumps(
+                {"choices": [{"delta": {"role": "assistant"}}]},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+            *sse_lines("При", "вет", ". Как дела?"),
+        ]
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            text = "".join(llm.chat_stream([{"role": "user", "content": "привет"}]))
+
+        self.assertEqual(text, "Привет. Как дела?")
+
+    def test_stream_falls_back_before_first_chunk(self) -> None:
+        llm = make_llm(retries=0)
+        calls: list[str] = []
+
+        def fake_stream(model, messages, **kwargs):  # noqa: ANN001
+            calls.append(model)
+            if model == llm.model:
+                raise LLMError("boom")
+            yield "запас"
+
+        with patch.object(llm, "_post_stream", side_effect=fake_stream):
+            self.assertEqual(
+                list(llm.chat_stream([{"role": "user", "content": "привет"}])),
+                ["запас"],
+            )
+
+        self.assertEqual(calls, [llm.model, llm.fallback_models[0]])
+
+    def test_stream_does_not_fall_back_after_first_chunk(self) -> None:
+        llm = make_llm(retries=0)
+        calls: list[str] = []
+
+        def fake_stream(model, messages, **kwargs):  # noqa: ANN001
+            calls.append(model)
+            if model == llm.model:
+                yield "начало"
+                raise LLMError("обрыв")
+            yield "запас"
+
+        with patch.object(llm, "_post_stream", side_effect=fake_stream):
+            with self.assertRaises(LLMError) as ctx:
+                list(llm.chat_stream([{"role": "user", "content": "привет"}]))
+
+        self.assertIn("поток прерван", str(ctx.exception))
+        self.assertEqual(calls, [llm.model])
+
+    def test_stream_empty_answer_is_an_error(self) -> None:
+        llm = make_llm(retries=0, fallback_models=[])
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse([b"data: [DONE]\n\n"]),
+        ):
+            with self.assertRaises(LLMError) as ctx:
+                list(llm.chat_stream([{"role": "user", "content": "привет"}]))
+
+        self.assertIn("пустой ответ", str(ctx.exception))
+
+    def test_stream_requires_messages_and_key(self) -> None:
+        with self.assertRaises(LLMError):
+            make_llm().chat_stream([])
+        with self.assertRaises(LLMError):
+            make_llm(api_key="").chat_stream([{"role": "user", "content": "привет"}])
 
 
 if __name__ == "__main__":

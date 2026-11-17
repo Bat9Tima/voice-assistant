@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import unittest
 from collections import deque
 from types import SimpleNamespace
@@ -887,6 +888,54 @@ class FakeDialog:
         return self.answer
 
 
+class StreamingFakeStream:
+    def __init__(self) -> None:
+        self.fed: list[str] = []
+        self.closed = 0
+
+    def feed(self, piece: str) -> None:
+        self.fed.append(piece)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class StreamingFakeTTS(FakeTTS):
+    def __init__(self) -> None:
+        super().__init__(enabled=True)
+        self.streams: list[StreamingFakeStream] = []
+
+    def stream(self) -> StreamingFakeStream:
+        stream = StreamingFakeStream()
+        self.streams.append(stream)
+        return stream
+
+
+class StreamingFakeDialog(FakeDialog):
+    """Диалог, который отдаёт ответ кусками через on_chunk."""
+
+    streaming = True
+
+    def __init__(
+        self,
+        answer: str = "ответ диалога",
+        pieces: list[str] | None = None,
+        error_after: Exception | None = None,
+    ) -> None:
+        super().__init__(answer)
+        self.pieces = pieces if pieces is not None else [answer]
+        self.error_after = error_after
+
+    def reply(self, text: str, on_chunk=None) -> str:  # noqa: ANN001
+        self.replied.append(text)
+        for piece in self.pieces:
+            if on_chunk is not None:
+                on_chunk(piece)
+        if self.error_after is not None:
+            raise self.error_after
+        return self.answer
+
+
 class DialogModeTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
@@ -970,6 +1019,53 @@ class DialogModeTest(unittest.TestCase):
         self.assertFalse(assistant._dialog_active)
         self.assertEqual(len(assistant.dialog.replied), 2)
         self.assertEqual(assistant.dialog.stopped, 1)
+
+    def test_streaming_dialog_feeds_chunks_and_does_not_repeat_answer(self) -> None:
+        assistant = self.make()
+        assistant.tts = StreamingFakeTTS()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет. Как дела?",
+            pieces=["Привет. ", "Как дела?"],
+        )
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+
+        message = assistant.run_text("привет")
+
+        self.assertEqual(message, "Привет. Как дела?")
+        self.assertEqual(len(assistant.tts.streams), 1)
+        self.assertEqual(assistant.tts.streams[0].fed, ["Привет. ", "Как дела?"])
+        self.assertEqual(assistant.tts.streams[0].closed, 1)
+        self.assertEqual(assistant.tts.said, [])
+
+    def test_streaming_without_tts_speaks_answer_at_end(self) -> None:
+        assistant = self.make()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет.",
+            pieces=["Привет."],
+        )
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+
+        assistant.run_text("привет")
+
+        self.assertEqual(assistant.tts.said, ["Привет."])
+
+    def test_streaming_error_after_chunks_closes_stream(self) -> None:
+        assistant = self.make()
+        assistant.tts = StreamingFakeTTS()
+        assistant.dialog = StreamingFakeDialog(
+            answer="Привет.",
+            pieces=["При"],
+            error_after=RuntimeError("обрыв"),
+        )
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_active = True
+        with patch("app.main.log.exception"):
+            message = assistant.run_text("привет")
+        self.assertEqual(message, "Не получилось ответить.")
+        self.assertEqual(assistant.tts.streams[0].closed, 1)
+        self.assertEqual(assistant.tts.said, ["Не получилось ответить."])
 
     def test_cleanup_closes_dialog_session(self) -> None:
         assistant = self.make()

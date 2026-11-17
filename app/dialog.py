@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import Any
 from .context_builder import (
     DEFAULT_BUDGET_TOKENS,
     DEFAULT_CHARS_PER_TOKEN,
+    BuiltContext,
     ContextBuilder,
     ContextPart,
 )
@@ -22,6 +24,8 @@ from .session import (
     SessionMemory,
 )
 from .text import normalize
+
+log = logging.getLogger(__name__)
 
 DEFAULT_TURN_TTL_SEC = 180.0
 DEFAULT_NEWS_TTL_SEC = 900.0
@@ -209,6 +213,7 @@ class DialogService:
         self.max_tokens = max(1, int(section.get("max_tokens") or 400))
         self.temperature = float(section.get("temperature", 0.5))
         self.timeout = float(section.get("timeout_sec") or 60)
+        self.streaming = bool((section.get("streaming") or {}).get("enabled", True))
         self.history_messages = _limit(section.get("history_messages"), DEFAULT_HISTORY_MESSAGES)
         self.history_chars = _limit(section.get("history_chars"), DEFAULT_HISTORY_CHARS)
         context_cfg = section.get("context") or {}
@@ -287,13 +292,16 @@ class DialogService:
         self.sessions.finish()
         self.rolling.reset()
 
-    def reply(self, text: str) -> str:
+    def reply(self, text: str, on_chunk: Callable[[str], None] | None = None) -> str:
         """Один ход: окно истории + текущая реплика.
 
         Реплики попадают в сессию только после успешного ответа, чтобы
         неудачный ход не отравлял контекст следующих вопросов. Перед
         запросом к модели подмешиваются резюме прошлых разговоров, если
         память включена и нашлось что-то по смыслу.
+
+        ``on_chunk`` включает потоковый путь: куски ответа сразу отдаются
+        в озвучку, а в историю попадает весь текст после завершения.
         """
         text = " ".join((text or "").split())
         if not text:
@@ -304,19 +312,48 @@ class DialogService:
             user_text=text,
             memory=self._memory_block(text),
         )
-        answer = self.llm.chat(
-            built.messages,
-            system=built.system,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            timeout=self.timeout,
-        )
-        answer = " ".join((answer or "").split())
-        if not answer:
-            raise ValueError("модель вернула пустой ответ")
+        if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
+            answer = self._reply_stream(built, on_chunk)
+        else:
+            answer = self.llm.chat(
+                built.messages,
+                system=built.system,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout=self.timeout,
+            )
+            answer = " ".join((answer or "").split())
+            if not answer:
+                raise ValueError("модель вернула пустой ответ")
         self.sessions.add("user", text)
         self.sessions.add("assistant", answer)
         self.rolling.observe(self.sessions.current, self.sessions.window_start())
+        return answer
+
+    def _reply_stream(self, built: BuiltContext, on_chunk: Callable[[str], None]) -> str:
+        """Читает поток модели и сразу отдаёт куски в озвучку."""
+        pieces: list[str] = []
+        try:
+            for piece in self.llm.chat_stream(
+                built.messages,
+                system=built.system,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                timeout=self.timeout,
+            ):
+                # Сначала озвучка: если она сломается, ответ лучше не
+                # записывать в историю как сказанный.
+                on_chunk(piece)
+                pieces.append(piece)
+        except Exception:  # noqa: BLE001
+            if not pieces:
+                raise
+            # Часть ответа уже прозвучала: обрываем его молча, а не
+            # заменяем ошибкой поверх сказанного.
+            log.warning("Поток ответа оборвался, отдаю сказанную часть", exc_info=True)
+        answer = " ".join("".join(pieces).split())
+        if not answer:
+            raise ValueError("модель вернула пустой ответ")
         return answer
 
     def _memory_block(self, text: str) -> str:

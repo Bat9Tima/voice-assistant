@@ -130,6 +130,9 @@
     "max_errors": 2,
     "history_messages": 12,
     "history_chars": 4000,
+    "streaming": {
+      "enabled": true
+    },
     "context": {
       "budget_tokens": 6000,
       "chars_per_token": 2.5,

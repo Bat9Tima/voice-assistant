@@ -962,9 +962,31 @@ class Assistant:
         if dialog is None:
             return "Не понял команду"
         started = time.monotonic()
+        stream = None
+        streamed = False
+
+        def on_chunk(piece: str) -> None:
+            """Заводит озвучку с первого куска: без TTS задача не нужна."""
+            nonlocal stream, streamed
+            if stream is None:
+                starter = getattr(self.tts, "stream", None)
+                if starter is None:
+                    return
+                stream = starter()
+                if stream is None:
+                    return
+            streamed = True
+            stream.feed(piece)
+
         try:
-            answer = dialog.reply(text)
+            if getattr(dialog, "streaming", False):
+                answer = dialog.reply(text, on_chunk=on_chunk)
+            else:
+                answer = dialog.reply(text)
         except Exception:  # noqa: BLE001
+            if stream is not None:
+                stream.close()
+                stream = None
             log.exception("Ошибка ответа в диалоге")
             self._dialog_errors = int(getattr(self, "_dialog_errors", 0)) + 1
             message = "Не получилось ответить."
@@ -973,10 +995,14 @@ class Assistant:
                 return self._stop_dialog("errors")
             self.tts.say(message)
             return message
+        finally:
+            if stream is not None:
+                stream.close()
         self._dialog_errors = 0
         self._dialog_last = time.monotonic()
         self.notify(answer[:250])
-        self.tts.say(answer)
+        if not streamed:
+            self.tts.say(answer)
         log.info(
             "Диалог: ответ за %.2f с, символов %s",
             time.monotonic() - started,
