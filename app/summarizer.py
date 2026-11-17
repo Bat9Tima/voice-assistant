@@ -247,11 +247,13 @@ class Summarizer:
             log.exception("Факты сессии %s не обновлены", session_id)
             return
         log.info(
-            "Факты сессии %s: +%s, объединено %s, заменено %s, закрыто %s",
+            "Факты сессии %s: +%s, объединено %s, обновлено %s, "
+            "на проверку %s, закрыто %s",
             session_id,
             result.added,
             result.merged,
             result.superseded,
+            result.review,
             result.resolved,
         )
 

@@ -328,6 +328,21 @@ class SessionStore:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def memory_fact(self, fact_id: int) -> dict[str, Any] | None:
+        """Один факт по id или ``None``. Нужен для пары конфликта."""
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, session_id, kind, fact_key, text, evidence, importance,
+                       confidence, status, created_at, updated_at, replaced_by,
+                       conflict_with, resolved_by
+                FROM memory_facts
+                WHERE id = ?
+                """,
+                (int(fact_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def memory_fact_count(self, *, status: str = "active") -> int:
         """Сколько фактов в выбранном состоянии."""
         with self._connection() as conn:

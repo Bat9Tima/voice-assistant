@@ -464,7 +464,9 @@ class SummarizerTest(unittest.TestCase):
 
             def ingest(self, session_id, summary):
                 self.calls.append((session_id, summary))
-                return SimpleNamespace(added=1, merged=0, superseded=0, resolved=0)
+                return SimpleNamespace(
+                    added=1, merged=0, superseded=0, resolved=0, review=0
+                )
 
         answer = (
             '{"facts": [{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}],'

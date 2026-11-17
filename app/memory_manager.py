@@ -33,10 +33,41 @@ DEFAULT_FACTS_LIMIT = 6
 DEFAULT_FACTS_MAX_CHARS = 900
 DEFAULT_MERGE_SIMILARITY = 0.4
 MAX_ACTIVE_FACTS = 500
+NEEDS_REVIEW = "needs_review"
+DISMISSED = "dismissed"
+REVIEW_LIMIT = 2
 FACTS_HEADER = (
     "Ключевые факты из прошлых разговоров (важное, не текущий разговор):\n"
     "Это проверенные факты, подтверждённые цитатами пользователя. Не "
     "пересказывай их списком и не выдумывай новые."
+)
+REVIEW_HEADER = (
+    "Противоречивые сведения из прошлых разговоров (требуют уточнения):\n"
+    "Не утверждай ни один вариант как факт. Если тема важна, мягко уточни "
+    "у пользователя."
+)
+# Явные маркеры смены состояния: «выздоровел», «больше не», «теперь».
+# Только с ними система решается заменить старый факт без проверки.
+_UPDATE_MARKERS = (
+    "выздоров",
+    "полегчало",
+    "теперь",
+    "уже не",
+    "больше не",
+    "перестал",
+    "перестала",
+    "бросил",
+    "бросила",
+    "сменил",
+    "сменила",
+    "переехал",
+    "переехала",
+    "устроился",
+    "устроилась",
+    "расстал",
+    "рассталась",
+    "помирил",
+    "помирилась",
 )
 _META_FACT_PREFIXES = (
     "не ясно",
@@ -289,6 +320,7 @@ class IngestResult:
     merged: int = 0
     superseded: int = 0
     resolved: int = 0
+    review: int = 0
     active: int = 0
 
 
@@ -356,41 +388,81 @@ class MemoryManager:
                 )
                 if merged is not None:
                     result.merged += 1
+                    # Повторное подтверждение снимает старые сомнения.
+                    self._dismiss_reviews(kind, key, stamp)
                     continue
                 conflict = self._conflict(active, kind, key, item.text)
                 if conflict is not None:
-                    new_id = self._add(
-                        session_id,
-                        kind,
-                        key,
-                        item,
-                        importance,
-                        confidence,
-                        stamp,
-                        conflict_with=conflict["id"],
-                    )
-                    self.store.update_memory_fact(
-                        conflict["id"],
-                        status="superseded",
-                        replaced_by=new_id,
-                        updated_at=stamp,
-                    )
-                    conflict["status"] = "superseded"
-                    conflict["replaced_by"] = new_id
-                    result.superseded += 1
-                    result.added += 1
-                    self._remember(
-                        active,
-                        new_id,
-                        session_id,
-                        kind,
-                        key,
-                        item,
-                        importance,
-                        confidence,
-                        stamp,
-                        conflict["id"],
-                    )
+                    if _is_update(item.text):
+                        new_id = self._add(
+                            session_id,
+                            kind,
+                            key,
+                            item,
+                            importance,
+                            confidence,
+                            stamp,
+                            conflict_with=conflict["id"],
+                        )
+                        self.store.update_memory_fact(
+                            conflict["id"],
+                            status="superseded",
+                            replaced_by=new_id,
+                            updated_at=stamp,
+                        )
+                        conflict["status"] = "superseded"
+                        conflict["replaced_by"] = new_id
+                        result.superseded += 1
+                        result.added += 1
+                        self._remember(
+                            active,
+                            new_id,
+                            session_id,
+                            kind,
+                            key,
+                            item,
+                            importance,
+                            confidence,
+                            stamp,
+                            conflict["id"],
+                        )
+                        self._dismiss_reviews(kind, key, stamp)
+                    else:
+                        # Противоположное без маркера времени: не выбираем
+                        # сами, а прячем оба факта до уточнения.
+                        new_id = self._add(
+                            session_id,
+                            kind,
+                            key,
+                            item,
+                            importance,
+                            confidence,
+                            stamp,
+                            status=NEEDS_REVIEW,
+                            conflict_with=conflict["id"],
+                        )
+                        self.store.update_memory_fact(
+                            conflict["id"],
+                            status=NEEDS_REVIEW,
+                            conflict_with=new_id,
+                            updated_at=stamp,
+                        )
+                        conflict["status"] = NEEDS_REVIEW
+                        conflict["conflict_with"] = new_id
+                        result.review += 1
+                        self._remember(
+                            active,
+                            new_id,
+                            session_id,
+                            kind,
+                            key,
+                            item,
+                            importance,
+                            confidence,
+                            stamp,
+                            conflict["id"],
+                            status=NEEDS_REVIEW,
+                        )
                     continue
                 new_id = self._add(
                     session_id,
@@ -413,6 +485,8 @@ class MemoryManager:
                     confidence,
                     stamp,
                 )
+                # Новое активное утверждение важнее незакрытого спора.
+                self._dismiss_reviews(kind, key, stamp)
 
         # Решения ищем по всей активной памяти, а не только по этому
         # резюме: пересчёт сессии не должен воскрешать уже закрытую задачу.
@@ -423,12 +497,20 @@ class MemoryManager:
         ]
         result.resolved = self._resolve(active, decisions, stamp)
         result.active = sum(1 for row in active if row["status"] == "active")
-        if result.added or result.merged or result.superseded or result.resolved:
+        if (
+            result.added
+            or result.merged
+            or result.superseded
+            or result.resolved
+            or result.review
+        ):
             log.info(
-                "Память: фактов +%s, объединено %s, заменено %s, закрыто задач %s",
+                "Память: фактов +%s, объединено %s, обновлено %s, "
+                "на проверку %s, закрыто задач %s",
                 result.added,
                 result.merged,
                 result.superseded,
+                result.review,
                 result.resolved,
             )
         return result
@@ -452,23 +534,98 @@ class MemoryManager:
         )
         return rows[: max(0, int(limit if limit is not None else self.facts_limit))]
 
-    def block(self, query: str = "") -> str:
-        """Готовый блок для системного промпта или пустая строка."""
-        facts = self.facts(query)
-        if not facts:
-            return ""
-        lines = [FACTS_HEADER]
-        total = len(FACTS_HEADER)
-        for row in facts:
-            moment = _short_date(str(row.get("updated_at") or ""))
-            line = f"- {moment}{row['text']}" if moment else f"- {row['text']}"
-            if self.facts_max_chars and total + len(line) + 1 > self.facts_max_chars:
+    def reviews(self, limit: int = REVIEW_LIMIT) -> list[tuple[dict | None, dict]]:
+        """Пары конфликтующих фактов, которые ждут уточнения.
+
+        Возвращает ``(старый, новый)``. Старый может быть ``None``, если
+        парная запись уже удалена. Показываем только важное: спор о погоде
+        не стоит вопроса пользователю.
+        """
+        if limit <= 0:
+            return []
+        rows = self.store.memory_facts(status=NEEDS_REVIEW, limit=MAX_ACTIVE_FACTS)
+        pairs: list[tuple[dict | None, dict]] = []
+        seen: set[tuple[int, int]] = set()
+        for row in rows:
+            if row["importance"] not in (HIGH, MEDIUM):
+                continue
+            other_id = row.get("conflict_with")
+            other = self.store.memory_fact(int(other_id)) if other_id else None
+            if other is not None and other["status"] != NEEDS_REVIEW:
+                # Пара уже закрыта обновлением или подтверждением.
+                continue
+            left = int(other_id) if other_id else int(row["id"])
+            key = (min(int(row["id"]), left), max(int(row["id"]), left))
+            if key in seen:
+                continue
+            seen.add(key)
+            if other is None:
+                pairs.append((None, row))
+            elif int(row["id"]) < int(other["id"]):
+                pairs.append((row, other))
+            else:
+                pairs.append((other, row))
+            if len(pairs) >= int(limit):
                 break
-            lines.append(line)
-            total += len(line) + 1
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return pairs
+
+    def block(self, query: str = "") -> str:
+        """Готовый блок для системного промпта или пустая строка.
+
+        Активные факты идут первыми. Противоречия не выдаются за факты:
+        для них отдельный короткий блок с просьбой уточнить.
+        """
+        facts = self.facts(query)
+        reviews = self.reviews()
+        if not facts and not reviews:
+            return ""
+        lines: list[str] = []
+        total = 0
+        if facts:
+            body: list[str] = []
+            used = len(FACTS_HEADER) + 1
+            for row in facts:
+                moment = _short_date(str(row.get("updated_at") or ""))
+                line = f"- {moment}{row['text']}" if moment else f"- {row['text']}"
+                if self.facts_max_chars and used + len(line) + 1 > self.facts_max_chars:
+                    break
+                body.append(line)
+                used += len(line) + 1
+            if body:
+                lines.extend([FACTS_HEADER, *body])
+                total = used
+        if reviews:
+            body = []
+            used = total + len(REVIEW_HEADER) + 1
+            for old, new in reviews:
+                if old is None:
+                    line = f"- Требует уточнения: {new['text']}"
+                else:
+                    previous = str(old["text"]).rstrip(" .")
+                    line = f"- Было: {previous}. Сейчас: {new['text']}"
+                if self.facts_max_chars and used + len(line) + 1 > self.facts_max_chars:
+                    break
+                body.append(line)
+                used += len(line) + 1
+            if body:
+                lines.extend([REVIEW_HEADER, *body])
+        return "\n".join(lines)
 
     # --------------------------------------------------------------- private
+    def _dismiss_reviews(
+        self,
+        kind: str,
+        key: str,
+        stamp: str,
+    ) -> None:
+        """Закрывает незавершённые споры по теме: появилось новое знание."""
+        rows = self.store.memory_facts(status=NEEDS_REVIEW, limit=MAX_ACTIVE_FACTS)
+        for row in rows:
+            if row["kind"] == kind and row["fact_key"] == key:
+                self.store.update_memory_fact(
+                    row["id"], status=DISMISSED, updated_at=stamp
+                )
+
     def _merge(
         self,
         active: list[dict],
@@ -483,6 +640,8 @@ class MemoryManager:
         best_score = 0.0
         for row in active:
             if row["kind"] != kind or row["fact_key"] != key:
+                continue
+            if row["status"] != "active":
                 continue
             if _opposes(row["text"], item.text):
                 continue
@@ -540,6 +699,7 @@ class MemoryManager:
         confidence: float,
         stamp: str,
         *,
+        status: str = "active",
         conflict_with: int | None = None,
     ) -> int:
         return self.store.add_memory_fact(
@@ -550,7 +710,7 @@ class MemoryManager:
             evidence=item.evidence,
             importance=importance,
             confidence=confidence,
-            status="active",
+            status=status,
             created_at=stamp,
             updated_at=stamp,
             conflict_with=conflict_with,
@@ -568,6 +728,7 @@ class MemoryManager:
         confidence: float,
         stamp: str,
         conflict_with: int | None = None,
+        status: str = "active",
     ) -> dict:
         row = {
             "id": fact_id,
@@ -578,7 +739,7 @@ class MemoryManager:
             "evidence": item.evidence,
             "importance": importance,
             "confidence": confidence,
-            "status": "active",
+            "status": status,
             "created_at": stamp,
             "updated_at": stamp,
             "replaced_by": None,
@@ -635,6 +796,12 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
     return len(left & right) / len(left | right)
+
+
+def _is_update(text: str) -> bool:
+    """Есть ли явный маркер смены состояния, а не просто отрицание."""
+    flat = _flat(text)
+    return any(marker in flat for marker in _UPDATE_MARKERS)
 
 
 def _opposes(left: str, right: str) -> bool:

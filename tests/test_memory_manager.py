@@ -5,7 +5,13 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.memory_manager import FACTS_HEADER, MemoryManager, memory_key
+from app.memory_manager import (
+    FACTS_HEADER,
+    NEEDS_REVIEW,
+    REVIEW_HEADER,
+    MemoryManager,
+    memory_key,
+)
 from app.session import DialogSession
 from app.session_store import SessionStore
 from app.summary_schema import StructuredSummary, SummaryItem
@@ -140,7 +146,7 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertEqual(len(facts), 1)
         self.assertEqual(facts[0]["text"], "Пользователь очень любит кофе по утрам")
 
-    def test_opposite_fact_supersedes_old(self) -> None:
+    def test_ambiguous_opposite_goes_to_review(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")
         self.add_session(store, "s2", minute=5)
@@ -156,15 +162,113 @@ class MemoryManagerTest(unittest.TestCase):
             created_at=at(5),
         )
 
-        self.assertEqual(result.superseded, 1)
-        self.assertEqual(result.added, 1)
+        self.assertEqual(result.review, 1)
+        self.assertEqual(result.superseded, 0)
+        self.assertEqual(result.added, 0)
         rows = store.memory_facts(limit=10)
         old = next(row for row in rows if row["text"] == "Пользователь любит кофе")
         new = next(row for row in rows if row["text"] == "Пользователь не любит кофе")
+        self.assertEqual(old["status"], NEEDS_REVIEW)
+        self.assertEqual(new["status"], NEEDS_REVIEW)
+        self.assertEqual(old["conflict_with"], new["id"])
+        self.assertEqual(new["conflict_with"], old["id"])
+        self.assertEqual(manager.facts(), [])
+        block = manager.block("что я люблю?")
+        self.assertIn(REVIEW_HEADER, block)
+        self.assertIn("Пользователь любит кофе", block)
+        self.assertIn("Пользователь не любит кофе", block)
+
+    def test_explicit_change_supersedes_old(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь любит кофе", "обожаю кофе")]),
+            created_at=at(),
+        )
+
+        result = manager.ingest(
+            "s2",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь больше не любит кофе",
+                        "больше не люблю кофе",
+                    )
+                ]
+            ),
+            created_at=at(5),
+        )
+
+        self.assertEqual(result.superseded, 1)
+        self.assertEqual(result.added, 1)
+        self.assertEqual(result.review, 0)
+        rows = store.memory_facts(limit=10)
+        old = next(row for row in rows if row["text"] == "Пользователь любит кофе")
+        new = next(
+            row for row in rows if row["text"] == "Пользователь больше не любит кофе"
+        )
         self.assertEqual(old["status"], "superseded")
         self.assertEqual(old["replaced_by"], new["id"])
-        self.assertEqual(new["conflict_with"], old["id"])
+        self.assertEqual(new["status"], "active")
         self.assertEqual([row["text"] for row in manager.facts()], [new["text"]])
+
+    def test_recovery_updates_health_state(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь болеет", "я болею")]),
+            created_at=at(),
+        )
+
+        result = manager.ingest(
+            "s2",
+            make_summary(
+                facts=[("Пользователь уже выздоровел", "я уже выздоровел")]
+            ),
+            created_at=at(5),
+        )
+
+        self.assertEqual(result.superseded, 1)
+        self.assertEqual(result.review, 0)
+        self.assertEqual(
+            [row["text"] for row in manager.facts()],
+            ["Пользователь уже выздоровел"],
+        )
+        block = manager.block("как я?")
+        self.assertNotIn(REVIEW_HEADER, block)
+
+    def test_repeat_confirmation_dismisses_review(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        self.add_session(store, "s3", minute=10)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь любит кофе", "обожаю кофе")]),
+            created_at=at(),
+        )
+        manager.ingest(
+            "s2",
+            make_summary(facts=[("Пользователь не любит кофе", "не люблю кофе")]),
+            created_at=at(5),
+        )
+
+        result = manager.ingest(
+            "s3",
+            make_summary(facts=[("Пользователь не любит кофе", "не люблю кофе")]),
+            created_at=at(10),
+        )
+
+        self.assertEqual(result.review, 0)
+        review_rows = store.memory_facts(status=NEEDS_REVIEW, limit=10)
+        self.assertEqual(review_rows, [])
+        active = manager.facts()
+        self.assertEqual([row["text"] for row in active], ["Пользователь не любит кофе"])
+        self.assertNotIn(REVIEW_HEADER, manager.block("кофе"))
 
     def test_decision_resolves_matching_unfinished_task(self) -> None:
         manager, store = self.make()

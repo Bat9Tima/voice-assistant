@@ -507,6 +507,8 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertEqual(rows[0]["id"], fact_id)
         self.assertEqual(rows[0]["status"], "active")
         self.assertEqual(rows[0]["confidence"], 0.9)
+        self.assertEqual(store.memory_fact(fact_id)["text"], "Пользователь любит кофе")
+        self.assertIsNone(store.memory_fact(fact_id + 100))
         self.assertEqual(store.memory_fact_count(), 1)
 
     def test_status_filter_and_newest_first(self) -> None:
