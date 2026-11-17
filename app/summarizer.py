@@ -25,6 +25,7 @@ from .persona import PersonaMemory, parse_facts
 from .prompts import SELF_FACTS_SYSTEM, SUMMARY_PROMPT_VERSION, SUMMARY_SYSTEM
 from .session import DialogSession, SessionMemory
 from .summary_schema import (
+    StructuredSummary,
     SummaryFormatError,
     parse_summary,
     render_summary,
@@ -99,6 +100,7 @@ class Summarizer:
         background: bool = True,
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
+        manager: Any | None = None,
     ) -> None:
         self.llm = llm
         self.store = store
@@ -106,6 +108,8 @@ class Summarizer:
         self.memory = memory
         # Факты Луны о себе: отдельный файл, отдельный запрос к модели.
         self.persona = persona
+        # Менеджер фактов: после резюме обновляет отдельную таблицу памяти.
+        self.manager = manager
         self.enabled = bool(enabled)
         self.model = str(model or "").strip()
         self.max_input_chars = max(0, int(max_input_chars))
@@ -128,6 +132,7 @@ class Summarizer:
         *,
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
+        manager: Any | None = None,
     ) -> Summarizer:
         """Собирает суммаризатор из вложенной секции ``dialog.summary``."""
         section = section or {}
@@ -145,6 +150,7 @@ class Summarizer:
             background=bool(section.get("background", True)),
             memory=memory,
             persona=persona,
+            manager=manager,
         )
 
     # ------------------------------------------------------------------ hooks
@@ -204,6 +210,7 @@ class Summarizer:
         if not raw:
             raise ValueError("модель вернула пустое резюме")
         data: dict[str, Any] = {}
+        structured: StructuredSummary | None = None
         try:
             structured = parse_summary(raw, _user_text(session))
         except SummaryFormatError:
@@ -224,9 +231,29 @@ class Summarizer:
             data=data,
         )
         log.info("Резюме сессии %s сохранено: %s символов", session.id, len(summary))
+        if structured is not None:
+            self._update_facts(session.id, structured)
         self._remember(session.id, summary)
         self._remember_self(session, transcript)
         return summary
+
+    def _update_facts(self, session_id: str, summary: StructuredSummary) -> None:
+        """Передаёт подтверждённые пункты менеджеру памяти. Сбой не критичен."""
+        if self.manager is None:
+            return
+        try:
+            result = self.manager.ingest(session_id, summary)
+        except Exception:  # noqa: BLE001
+            log.exception("Факты сессии %s не обновлены", session_id)
+            return
+        log.info(
+            "Факты сессии %s: +%s, объединено %s, заменено %s, закрыто %s",
+            session_id,
+            result.added,
+            result.merged,
+            result.superseded,
+            result.resolved,
+        )
 
     def _remember(self, session_id: str, summary: str) -> None:
         """Индексирует резюме для семантического поиска. Сбой не критичен."""

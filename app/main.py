@@ -22,6 +22,7 @@ from .dialog import DialogService
 from .duck import AppVolumeDucker
 from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
+from .memory_manager import MemoryManager
 from .persona import PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
@@ -138,6 +139,7 @@ class Assistant:
         self.session_store: SessionStore | None = None
         self.summarizer: Summarizer | None = None
         self.memory: MemoryService | None = None
+        self.memory_manager: MemoryManager | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
             profile = Profile(
@@ -151,7 +153,12 @@ class Assistant:
             )
             if db_path:
                 self.session_store = SessionStore(db_path)
-                self.memory = MemoryService.from_config(cfg, self.session_store)
+                self.memory_manager = MemoryManager.from_config(
+                    self.session_store, cfg.get("memory")
+                )
+                self.memory = MemoryService.from_config(
+                    cfg, self.session_store, manager=self.memory_manager
+                )
             self.dialog = DialogService(
                 cfg,
                 self.llm,
@@ -167,6 +174,7 @@ class Assistant:
                     dialog_cfg.get("summary"),
                     memory=self.memory,
                     persona=persona,
+                    manager=self.memory_manager,
                 ).attach(self.dialog.sessions)
                 log.info("Сессии диалога сохраняются в %s", db_path)
                 if persona.path is not None:

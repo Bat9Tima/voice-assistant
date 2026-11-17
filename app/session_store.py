@@ -65,7 +65,44 @@ CREATE TABLE IF NOT EXISTS summaries (
     prompt_version INTEGER NOT NULL DEFAULT 1,
     data TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    fact_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    importance TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    replaced_by INTEGER,
+    conflict_with INTEGER,
+    resolved_by INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_facts_status
+    ON memory_facts(status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_memory_facts_session
+    ON memory_facts(session_id);
 """
+
+FACT_FIELDS = (
+    "kind",
+    "fact_key",
+    "text",
+    "evidence",
+    "importance",
+    "confidence",
+    "status",
+    "updated_at",
+    "replaced_by",
+    "conflict_with",
+    "resolved_by",
+)
 
 
 class SessionStore:
@@ -194,6 +231,114 @@ class SessionStore:
                     payload,
                 ),
             )
+
+    # --------------------------------------------------------------- facts
+    def add_memory_fact(
+        self,
+        *,
+        session_id: str,
+        kind: str,
+        fact_key: str,
+        text: str,
+        evidence: str,
+        importance: str,
+        confidence: float,
+        status: str = "active",
+        created_at: str,
+        updated_at: str,
+        replaced_by: int | None = None,
+        conflict_with: int | None = None,
+        resolved_by: int | None = None,
+    ) -> int:
+        """Добавляет факт памяти и возвращает его id.
+
+        Факты живут отдельно от резюме: один факт может быть обновлён,
+        вытеснен или закрыт, не переписывая исходный разговор.
+        """
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO memory_facts
+                    (session_id, kind, fact_key, text, evidence, importance,
+                     confidence, status, created_at, updated_at, replaced_by,
+                     conflict_with, resolved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    kind,
+                    fact_key,
+                    text,
+                    evidence,
+                    importance,
+                    float(confidence),
+                    status,
+                    created_at,
+                    updated_at,
+                    replaced_by,
+                    conflict_with,
+                    resolved_by,
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def update_memory_fact(self, fact_id: int, **fields: Any) -> bool:
+        """Меняет поля факта. Неизвестные поля игнорируются.
+
+        ``True``, если запись нашлась. Так менеджер помечает объединение,
+        конфликт и закрытие задачи, не удаляя историю.
+        """
+        updates = {key: value for key, value in fields.items() if key in FACT_FIELDS}
+        if not updates:
+            return False
+        columns = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values())
+        values.append(int(fact_id))
+        with self._connection() as conn:
+            cursor = conn.execute(
+                f"UPDATE memory_facts SET {columns} WHERE id = ?",
+                values,
+            )
+        return cursor.rowcount > 0
+
+    def delete_memory_facts(self, session_id: str) -> int:
+        """Удаляет все факты сессии: пересчёт резюме не должен плодить дубли."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM memory_facts WHERE session_id = ?", (session_id,)
+            )
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------- read
+    def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        """Факты памяти, свежие сверху. ``status`` фильтрует active/superseded."""
+        query = """
+            SELECT id, session_id, kind, fact_key, text, evidence, importance,
+                   confidence, status, created_at, updated_at, replaced_by,
+                   conflict_with, resolved_by
+            FROM memory_facts
+        """
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def memory_fact_count(self, *, status: str = "active") -> int:
+        """Сколько фактов в выбранном состоянии."""
+        with self._connection() as conn:
+            if status:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM memory_facts WHERE status = ?",
+                    (status,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS total FROM memory_facts").fetchone()
+        return int(row["total"])
 
     # ------------------------------------------------------------------- read
     def sessions(self, limit: int = 20, *, status: str = "") -> list[dict[str, Any]]:

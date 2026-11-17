@@ -475,5 +475,112 @@ class SummaryStoreTest(unittest.TestCase):
         self.assertEqual(store.summaries(), [])
 
 
+class MemoryFactsStoreTest(unittest.TestCase):
+    def make(self) -> SessionStore:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return SessionStore(Path(directory.name) / "dialog.db")
+
+    def add(self, store: SessionStore, **fields) -> int:
+        values = {
+            "session_id": "s1",
+            "kind": "fact",
+            "fact_key": "preference",
+            "text": "Пользователь любит кофе",
+            "evidence": "обожаю кофе",
+            "importance": "high",
+            "confidence": 0.9,
+            "created_at": at(1).isoformat(),
+            "updated_at": at(1).isoformat(),
+        }
+        values.update(fields)
+        return store.add_memory_fact(**values)
+
+    def test_add_and_read_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        rows = store.memory_facts()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], fact_id)
+        self.assertEqual(rows[0]["status"], "active")
+        self.assertEqual(rows[0]["confidence"], 0.9)
+        self.assertEqual(store.memory_fact_count(), 1)
+
+    def test_status_filter_and_newest_first(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        first = self.add(store)
+        second = self.add(
+            store,
+            kind="decision",
+            fact_key="decision:курс",
+            text="Пользователь решил бросить курс",
+            created_at=at(2).isoformat(),
+            updated_at=at(2).isoformat(),
+        )
+        store.update_memory_fact(first, status="superseded")
+
+        active = store.memory_facts(status="active")
+        all_rows = store.memory_facts(status="", limit=10)
+
+        self.assertEqual([row["id"] for row in active], [second])
+        self.assertEqual([row["id"] for row in all_rows], [second, first])
+        self.assertEqual(store.memory_fact_count(), 1)
+        self.assertEqual(store.memory_fact_count(status="superseded"), 1)
+
+    def test_update_changes_allowed_fields_only(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        self.assertTrue(
+            store.update_memory_fact(
+                fact_id,
+                text="Пользователь обожает кофе",
+                status="superseded",
+                replaced_by=42,
+                unknown="игнор",
+            )
+        )
+        row = store.memory_facts()[0]
+        self.assertEqual(row["text"], "Пользователь обожает кофе")
+        self.assertEqual(row["status"], "superseded")
+        self.assertEqual(row["replaced_by"], 42)
+        self.assertFalse(store.update_memory_fact(fact_id))
+        self.assertFalse(store.update_memory_fact(9999, text="нет"))
+
+    def test_delete_by_session(self) -> None:
+        store = self.make()
+        store.save(make_session("s1"))
+        store.save(make_session("s2", minute=10))
+        self.add(store, session_id="s1")
+        self.add(store, session_id="s2")
+
+        self.assertEqual(store.delete_memory_facts("s1"), 1)
+        self.assertEqual([row["session_id"] for row in store.memory_facts()], ["s2"])
+
+    def test_delete_session_cascades_to_facts(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        self.add(store)
+
+        self.assertTrue(store.delete("s1"))
+        self.assertEqual(store.memory_facts(), [])
+
+    def test_fact_requires_session(self) -> None:
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.add(self.make(), session_id="нет-такой")
+
+    def test_unknown_fact_fields_are_ignored(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        fact_id = self.add(store)
+
+        self.assertFalse(store.update_memory_fact(fact_id, entirely_unknown="x"))
+
+
 if __name__ == "__main__":
     unittest.main()

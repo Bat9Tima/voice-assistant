@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .embeddings import EmbeddingError, VoyageEmbedder
+from .memory_manager import MemoryManager
 from .session_store import SessionStore
 
 log = logging.getLogger(__name__)
@@ -227,10 +228,14 @@ class MemoryService:
         digest_limit: int = DEFAULT_DIGEST_LIMIT,
         digest_item_chars: int = DEFAULT_DIGEST_ITEM_CHARS,
         index_version: int = INDEX_VERSION,
+        manager: MemoryManager | None = None,
     ) -> None:
         self.embedder = embedder
         self.store = store
         self.vectors = vectors
+        # Факты менеджера идут первыми: это уже проверенные утверждения,
+        # а не пересказ целой сессии.
+        self.manager = manager
         self.top_k = max(1, int(top_k))
         self.min_score = float(min_score)
         self.min_margin = max(0.0, float(min_margin))
@@ -245,6 +250,8 @@ class MemoryService:
         cls,
         cfg: dict[str, Any],
         store: SessionStore,
+        *,
+        manager: MemoryManager | None = None,
     ) -> MemoryService | None:
         """Собирает память из секции ``memory``. ``None`` — память выключена."""
         section = (cfg or {}).get("memory") or {}
@@ -280,6 +287,7 @@ class MemoryService:
                 section.get("digest_item_chars"), DEFAULT_DIGEST_ITEM_CHARS
             ),
             index_version=int(section.get("index_version") or INDEX_VERSION),
+            manager=manager,
         )
 
     # ------------------------------------------------------------------ write
@@ -440,16 +448,23 @@ class MemoryService:
     def block(self, query: str, *, now: datetime | None = None) -> str:
         """Готовый блок для системного промпта или пустая строка.
 
-        Сначала идут сегодняшние содержательные сессии: они не зависят от
-        того, насколько удачно запрос совпал с резюме по смыслу. Потом —
-        семантические находки, без повторов.
+        Сначала идут отдельные факты менеджера: это проверенные факты,
+        уже очищенные от повторов и противоречий. Потом — сегодняшние
+        содержательные сессии, затем семантические находки без повторов.
         """
+        facts = self.facts_block(query)
         hits = self.recall(query)
         digest = self.digest(now=now)
-        if not hits and not digest:
+        if not facts and not hits and not digest:
             return ""
-        lines = [MEMORY_HEADER]
-        total = len(MEMORY_HEADER)
+        lines: list[str] = []
+        total = 0
+        if facts:
+            lines.append(facts)
+            total = len(facts) + 1
+        if hits or digest:
+            lines.append(MEMORY_HEADER)
+            total += len(MEMORY_HEADER) + 1
         seen: set[str] = set()
         for hit in digest:
             line = f"- Сегодня, {_clock(hit.created_at)}: {hit.summary}"
@@ -468,7 +483,17 @@ class MemoryService:
             lines.append(line)
             total += len(line) + 1
             seen.add(hit.session_id)
-        return "\n".join(lines) if len(lines) > 1 else ""
+        return "\n".join(lines) if len(lines) > 1 or facts else ""
+
+    def facts_block(self, query: str = "") -> str:
+        """Факты менеджера. Сбой чтения не должен ломать системный промпт."""
+        if self.manager is None:
+            return ""
+        try:
+            return self.manager.block(query)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: факты недоступны: %s", exc)
+            return ""
 
     def digest(self, *, now: datetime | None = None) -> list[MemoryHit]:
         """Сегодняшние завершённые сессии с достаточным числом реплик.

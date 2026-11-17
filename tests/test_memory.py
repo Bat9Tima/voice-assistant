@@ -92,6 +92,21 @@ class FakeVectors:
         return len(self.items)
 
 
+class FakeManager:
+    """Менеджер фактов без базы: отдаёт заготовленный блок или ошибку."""
+
+    def __init__(self, block: str = "", error: Exception | None = None) -> None:
+        self.value = block
+        self.error = error
+        self.queries: list[str] = []
+
+    def block(self, query: str = "") -> str:
+        self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
 class MemoryServiceTest(unittest.TestCase):
     def make(self, **kwargs) -> tuple[MemoryService, FakeEmbedder, FakeVectors, SessionStore]:
         directory = tempfile.TemporaryDirectory()
@@ -329,6 +344,33 @@ class MemoryServiceTest(unittest.TestCase):
         memory, _, vectors, _ = self.make(max_chars=10)
         vectors.hits = [VectorHit("s1", 0.8, {})]
         self.assertEqual(memory.block("вопрос"), "")
+
+    def test_block_puts_facts_before_memory_header(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.hits = [VectorHit("s1", 0.8, {})]
+        memory.manager = FakeManager("Ключевые факты:\n- любит кофе")
+
+        block = memory.block("что я люблю?")
+
+        self.assertTrue(block.startswith("Ключевые факты:"))
+        self.assertLess(block.index("Ключевые факты:"), block.index(MEMORY_HEADER))
+
+    def test_block_returns_facts_without_summaries(self) -> None:
+        memory, _, _, _ = self.make()
+        memory.manager = FakeManager("Ключевые факты:\n- любит кофе")
+
+        self.assertEqual(memory.block("вопрос"), "Ключевые факты:\n- любит кофе")
+
+    def test_manager_error_does_not_break_memory(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.hits = [VectorHit("s1", 0.8, {})]
+        memory.manager = FakeManager(error=RuntimeError("база занята"))
+
+        with self.assertLogs("app.memory", level="WARNING"):
+            block = memory.block("что я изучал?")
+
+        self.assertTrue(block.startswith(MEMORY_HEADER))
+        self.assertIn("Пользователь изучает C++ и циклы.", block)
 
     # ----------------------------------------------------------------- digest
     def test_digest_includes_today_long_sessions_only(self) -> None:
