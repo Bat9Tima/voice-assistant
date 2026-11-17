@@ -8,10 +8,14 @@ from unittest.mock import patch
 
 from app.intent_classifier import (
     ANSWER,
+    CLARIFY,
+    COMMAND,
+    CONTROL,
     DIALOG,
     INFO,
     MODE_ACTIVE,
     MODE_SHADOW,
+    QUESTION,
     SOURCE_FALLBACK,
     SOURCE_MODEL,
     SOURCE_RULES,
@@ -212,6 +216,11 @@ class IntentClassifierHttpTest(unittest.TestCase):
         self.assertEqual(decision.source, SOURCE_FALLBACK)
         self.assertFalse(classifier.blocks_search(decision))
 
+    def test_prompt_keeps_new_questions_out_of_answer(self) -> None:
+        instructions = QUESTION["instructions"]
+        self.assertIn("не становятся answer", instructions)
+        self.assertIn("Если реплика сама задаёт вопрос, это не answer", instructions)
+
     def test_explicit_search_skips_network(self) -> None:
         classifier = IntentClassifier(make_cfg())
 
@@ -243,14 +252,16 @@ class IntentClassifierRulesTest(unittest.TestCase):
         def decision(intent: str, source: str) -> IntentDecision:
             return IntentDecision(intent=intent, source=source)
 
-        for intent in (ANSWER, DIALOG, "clarify", UNKNOWN):
+        for intent in (ANSWER, DIALOG, CLARIFY, UNKNOWN):
             with self.subTest(intent=intent):
+                self.assertTrue(classifier.blocks_lookup(decision(intent, SOURCE_MODEL)))
+                # Старое имя должно вести себя так же.
                 self.assertTrue(classifier.blocks_search(decision(intent, SOURCE_MODEL)))
-        for intent in (INFO, "command", "control"):
+        for intent in (INFO, COMMAND, CONTROL):
             with self.subTest(intent=intent):
-                self.assertFalse(classifier.blocks_search(decision(intent, SOURCE_MODEL)))
-        self.assertFalse(classifier.blocks_search(decision(ANSWER, SOURCE_RULES)))
-        self.assertFalse(classifier.blocks_search(decision(UNKNOWN, SOURCE_FALLBACK)))
+                self.assertFalse(classifier.blocks_lookup(decision(intent, SOURCE_MODEL)))
+        self.assertFalse(classifier.blocks_lookup(decision(ANSWER, SOURCE_RULES)))
+        self.assertFalse(classifier.blocks_lookup(decision(UNKNOWN, SOURCE_FALLBACK)))
 
     def test_mode_typo_does_not_enable_active(self) -> None:
         classifier = IntentClassifier(make_cfg(mode="activ"))

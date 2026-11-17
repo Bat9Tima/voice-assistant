@@ -40,7 +40,10 @@ log = logging.getLogger(__name__)
 
 # Внутри разговора эти фразы обслуживают быстрые сервисы, остальное уходит
 # в чат с историей. Уточнения и общие вопросы — тоже чат.
-DIALOG_INTENT_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
+DIALOG_QA_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "search"})
+# Из них классификатор может отменить только те, что требуют внешних
+# данных. Дата считается локально, а уточнения держатся за контекст.
+GATED_QA_KINDS = frozenset({"weather", "news", "search"})
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -1024,18 +1027,24 @@ class Assistant:
     def _dialog_route(self, text: str, route: Route | None) -> Route | None:
         """Классификатор поверх правил внутри разговора.
 
-        В shadow он только пишет статистику в фоне. В active перед слабым
-        поиском ждёт решение: если фраза оказалась ответом или разговором,
-        поиск отменяется. Сетевой сбой оставляет маршрут как был.
+        В shadow он только пишет статистику в фоне. В active перед
+        маршрутом к внешним данным ждёт решение: если модель уверена, что
+        это разговор, ответ или уточнение, маршрут отменяется. Дата и
+        уточнения к прошлому ответу классификатор не трогает.
         """
         advisor = getattr(self, "intent", None)
         if advisor is None:
             return route
-        if route is not None and route.kind == "search" and advisor.mode == MODE_ACTIVE:
+        if (
+            route is not None
+            and route.kind in GATED_QA_KINDS
+            and advisor.mode == MODE_ACTIVE
+        ):
             decision = advisor.classify(text, in_dialog=True)
-            if advisor.blocks_search(decision):
+            if advisor.blocks_lookup(decision):
                 log.info(
-                    "Поиск отменён: реплика похожа на разговор (%s, %.2f)",
+                    "Маршрут %s отменён: реплика похожа на разговор (%s, %.2f)",
+                    route.kind,
                     decision.intent,
                     decision.confidence,
                 )
@@ -1066,7 +1075,7 @@ class Assistant:
             route = qa.route(text) if qa is not None else None
             if in_dialog:
                 route = self._dialog_route(text, route)
-            if in_dialog and route is not None and route.kind not in DIALOG_INTENT_KINDS:
+            if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 

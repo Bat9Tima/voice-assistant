@@ -109,7 +109,7 @@ class FakeQA:
         self.answered: list[str] = []
         self.shown: list[QAAnswer] = []
 
-    def route(self, text: str) -> Route:
+    def route(self, text: str, *, in_dialog: bool = False) -> Route:
         self.routed.append(text)
         return Route(self.kind)
 
@@ -146,13 +146,16 @@ class FakeIntent:
         self.classified.append((text, in_dialog))
         return self.decision
 
-    def blocks_search(self, decision: IntentDecision) -> bool:
+    def blocks_lookup(self, decision: IntentDecision) -> bool:
         return decision.source == SOURCE_MODEL and decision.intent in {
             ANSWER,
             DIALOG,
             "clarify",
             UNKNOWN,
         }
+
+    def blocks_search(self, decision: IntentDecision) -> bool:
+        return self.blocks_lookup(decision)
 
 
 class TrayStatusTest(unittest.TestCase):
@@ -746,6 +749,50 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(assistant.qa.answered, [])
         self.assertEqual(assistant.intent.classified, [("курс доллара", True)])
         self.assertEqual(assistant.intent.observed, [])
+
+    def test_active_blocks_false_news_in_dialog(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="news")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("новости")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.intent.classified, [("новости", True)])
+
+    def test_active_keeps_real_news(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="news")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(INFO, confidence=0.99, raw=INFO, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("новости")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["новости"])
+        self.assertEqual(assistant.intent.classified, [("новости", True)])
+
+    def test_active_does_not_gate_datetime(self) -> None:
+        assistant = self.make()
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("который час")
+
+        self.assertTrue(message.startswith("Сейчас "))
+        self.assertEqual(assistant.intent.classified, [])
+        self.assertEqual(assistant.intent.observed, [("который час", True)])
 
     def test_active_keeps_real_info_search(self) -> None:
         assistant = self.make()

@@ -82,6 +82,17 @@
     "ttl_sec": 180
   },
 
+  "intent": {
+    "enabled": true,
+    "mode": "shadow",
+    "base_url": "https://api.proxyapi.ru/v1",
+    "api_key": "",
+    "model": "openai/gpt-6-luna-decisions",
+    "threshold": 0.6,
+    "timeout_sec": 4.0,
+    "answer_ttl_sec": 120
+  },
+
   "opencode": {
     "enabled": true,
     "agent": "voice",
