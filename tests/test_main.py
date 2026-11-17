@@ -9,6 +9,18 @@ from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
+from app.intent_classifier import (
+    ANSWER,
+    DIALOG,
+    INFO,
+    MODE_ACTIVE,
+    MODE_SHADOW,
+    SOURCE_FALLBACK,
+    SOURCE_MODEL,
+    UNKNOWN,
+    DialogState,
+    IntentDecision,
+)
 from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
 from app.qa import QAAnswer, QAService, Route
@@ -108,6 +120,39 @@ class FakeQA:
     def show(self, answer: QAAnswer) -> bool:
         self.shown.append(answer)
         return True
+
+
+class FakeIntent:
+    def __init__(
+        self,
+        mode: str = MODE_SHADOW,
+        decision: IntentDecision | None = None,
+    ) -> None:
+        self.mode = mode
+        self.decision = decision or IntentDecision(
+            DIALOG,
+            confidence=0.9,
+            raw=DIALOG,
+            source=SOURCE_MODEL,
+        )
+        self.state = DialogState()
+        self.observed: list[tuple[str, bool]] = []
+        self.classified: list[tuple[str, bool]] = []
+
+    def observe(self, text: str, *, in_dialog: bool) -> None:
+        self.observed.append((text, in_dialog))
+
+    def classify(self, text: str, *, in_dialog: bool) -> IntentDecision:
+        self.classified.append((text, in_dialog))
+        return self.decision
+
+    def blocks_search(self, decision: IntentDecision) -> bool:
+        return decision.source == SOURCE_MODEL and decision.intent in {
+            ANSWER,
+            DIALOG,
+            "clarify",
+            UNKNOWN,
+        }
 
 
 class TrayStatusTest(unittest.TestCase):
@@ -672,6 +717,82 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(message, "Не понял команду")
         self.assertEqual(assistant.tts.phrases, ["ack", "unknown"])
         beep.assert_called_once_with(320, 120)
+
+    def test_shadow_observes_dialog_search_and_keeps_it(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(MODE_SHADOW)
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+        self.assertEqual(assistant.intent.observed, [("курс доллара", True)])
+        self.assertEqual(assistant.intent.classified, [])
+
+    def test_active_blocks_false_search_in_dialog(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(DIALOG, confidence=0.9, raw=DIALOG, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.intent.classified, [("курс доллара", True)])
+        self.assertEqual(assistant.intent.observed, [])
+
+    def test_active_keeps_real_info_search(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(INFO, confidence=0.99, raw=INFO, source=SOURCE_MODEL),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+        self.assertEqual(assistant.intent.classified, [("курс доллара", True)])
+
+    def test_active_keeps_search_on_classifier_fallback(self) -> None:
+        assistant = self.make()
+        assistant.qa = FakeQA(kind="search")
+        assistant.intent = FakeIntent(
+            MODE_ACTIVE,
+            IntentDecision(
+                UNKNOWN,
+                confidence=0.0,
+                raw="",
+                source=SOURCE_FALLBACK,
+            ),
+        )
+        assistant._dialog_active = True
+
+        message = assistant.run_text("курс доллара")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["курс доллара"])
+
+    def test_unknown_outside_dialog_is_observed(self) -> None:
+        assistant = self.make()
+        assistant.intent = FakeIntent(MODE_SHADOW)
+
+        with patch("app.main.beep"):
+            message = assistant.run_text("сделай что-нибудь странное")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(
+            assistant.intent.observed,
+            [("сделай что нибудь странное", False)],
+        )
 
     def test_new_command_interrupts_previous_speech(self) -> None:
         assistant = self.make()

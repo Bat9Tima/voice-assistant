@@ -207,9 +207,33 @@ class QuestionDetectionTest(unittest.TestCase):
         self.assertTrue(needs_search("что слышно"))
         self.assertTrue(needs_search("есть ли что-нибудь новое"))
         self.assertTrue(needs_search("поищи рецепт борща"))
+        self.assertTrue(needs_search("кто сейчас президент"))
         self.assertFalse(needs_search("что такое фотосинтез"))
         self.assertFalse(needs_search("расскажи про Python"))
         self.assertFalse(needs_search("посоветуй фильм"))
+
+    def test_dialog_replies_do_not_trigger_search(self) -> None:
+        # Реальные фразы из разговора: «сейчас» и «вчера» — часть ответа,
+        # а не просьба о свежих данных.
+        for text in (
+            "да говорил я такой ну вроде бы сейчас получше стало",
+            "нет я говорю я выздоровел но сейчас уже лучше",
+            "а да нормально ты что сейчас делаешь",
+            "мне сегодня уже легче",
+            "когда ты вернулся",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(needs_search(text))
+
+    def test_time_words_do_not_hide_fresh_request(self) -> None:
+        for text in (
+            "какие новости сегодня",
+            "что случилось вчера",
+            "курс доллара сейчас",
+            "последние новости за сегодня",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(needs_search(text))
 
 
 class SearchQueryTest(unittest.TestCase):

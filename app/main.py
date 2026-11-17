@@ -20,6 +20,7 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
 from .persona import PersonaMemory
 from .profile import Profile
@@ -128,6 +129,7 @@ class Assistant:
             self.planner = LocalPlanner(cfg)
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
+        self.intent = IntentClassifier(cfg)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
@@ -930,6 +932,9 @@ class Assistant:
         self._dialog_last = time.monotonic()
         self.set_state("idle")
         message = "Слушаю. О чём поговорим?"
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.note_question(message)
         self.notify(message)
         if not self.tts.say(message):
             beep(880, 80)
@@ -943,6 +948,9 @@ class Assistant:
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.clear()
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
@@ -1000,6 +1008,9 @@ class Assistant:
                 stream.close()
         self._dialog_errors = 0
         self._dialog_last = time.monotonic()
+        advisor = getattr(self, "intent", None)
+        if advisor is not None:
+            advisor.state.note_reply(answer)
         self.notify(answer[:250])
         if not streamed:
             self.tts.say(answer)
@@ -1009,6 +1020,29 @@ class Assistant:
             len(answer),
         )
         return answer
+
+    def _dialog_route(self, text: str, route: Route | None) -> Route | None:
+        """Классификатор поверх правил внутри разговора.
+
+        В shadow он только пишет статистику в фоне. В active перед слабым
+        поиском ждёт решение: если фраза оказалась ответом или разговором,
+        поиск отменяется. Сетевой сбой оставляет маршрут как был.
+        """
+        advisor = getattr(self, "intent", None)
+        if advisor is None:
+            return route
+        if route is not None and route.kind == "search" and advisor.mode == MODE_ACTIVE:
+            decision = advisor.classify(text, in_dialog=True)
+            if advisor.blocks_search(decision):
+                log.info(
+                    "Поиск отменён: реплика похожа на разговор (%s, %.2f)",
+                    decision.intent,
+                    decision.confidence,
+                )
+                return None
+            return route
+        advisor.observe(text, in_dialog=True)
+        return route
 
     def _process(self, text: str) -> str:
         text = canonicalize(normalize(text))
@@ -1030,6 +1064,8 @@ class Assistant:
             qa = getattr(self, "qa", None)
             # Разбираем фразу один раз: и для подводки, и для ответа.
             route = qa.route(text) if qa is not None else None
+            if in_dialog:
+                route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_INTENT_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
@@ -1115,6 +1151,11 @@ class Assistant:
                     self.tts.phrase("error")
                 return message
 
+            # Вне разговора классификатор пока только наблюдает: ответ
+            # остаётся прежним, но в лог попадает, что это была за фраза.
+            advisor = getattr(self, "intent", None)
+            if advisor is not None:
+                advisor.observe(text, in_dialog=False)
             message = "Не понял команду"
             self.notify(message)
             beep(320, 120)
