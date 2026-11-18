@@ -124,6 +124,9 @@ class MemoryServiceTest(unittest.TestCase):
         )
         embedder = FakeEmbedder()
         vectors = FakeVectors()
+        # Старые тесты проверяют семантику и дайджест отдельно, поэтому
+        # блок последних разговоров по умолчанию выключен.
+        kwargs.setdefault("recent_limit", 0)
         memory = MemoryService(embedder, store, vectors, **kwargs)
         return memory, embedder, vectors, store
 
@@ -350,10 +353,10 @@ class MemoryServiceTest(unittest.TestCase):
         memory, _, vectors, _ = self.make()
         vectors.hits = [VectorHit("s1", 0.8, {})]
 
-        block = memory.block("что я изучал?")
+        block = memory.block("что я изучал?", now=at(20))
 
         self.assertTrue(block.startswith(MEMORY_HEADER))
-        self.assertIn("16.11.2026 12:10", block)
+        self.assertIn("Сегодня, 12:10", block)
         self.assertIn("Пользователь изучает C++ и циклы.", block)
 
     def test_block_is_empty_without_hits(self) -> None:
@@ -443,22 +446,92 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertTrue(digest[0].summary.endswith("…"))
         self.assertLessEqual(len(digest[0].summary), 21)
 
-    def test_block_puts_digest_before_semantic_hits_and_deduplicates(self) -> None:
-        memory, _, vectors, store = self.make(digest_min_messages=6)
+    def test_block_shows_timeline_without_duplicates(self) -> None:
+        memory, _, _, store = self.make(recent_limit=2, digest_min_messages=6)
         self.add_session(store, "long", 6, "Сегодняшний разговор.")
-        vectors.hits = [VectorHit("s1", 0.8, {}), VectorHit("long", 0.9, {})]
 
-        block = memory.block("вопрос", now=at(20))
+        block = memory.block("что мы обсуждали?", now=at(20))
 
         lines = block.splitlines()
         self.assertTrue(lines[0].startswith("Эпизодическая память"))
         self.assertIn("- Сегодня, 12:01: Сегодняшний разговор.", lines)
-        self.assertIn("- 16.11.2026 12:10: Пользователь изучает C++ и циклы.", lines)
+        self.assertIn("- Сегодня, 12:00: Пользователь изучает C++ и циклы.", lines)
         self.assertLess(
             lines.index("- Сегодня, 12:01: Сегодняшний разговор."),
-            lines.index("- 16.11.2026 12:10: Пользователь изучает C++ и циклы."),
+            lines.index("- Сегодня, 12:00: Пользователь изучает C++ и циклы."),
         )
         self.assertEqual(block.count("Сегодняшний разговор."), 1)
+
+    def test_specific_query_skips_timeline(self) -> None:
+        memory, _, vectors, store = self.make(recent_limit=1)
+        self.add_session(store, "fresh", 4, "Свежий разговор.", minute=30)
+        vectors.hits = [VectorHit("s1", 0.9, {})]
+
+        lines = memory.block("что я изучал?", now=at(40)).splitlines()
+
+        self.assertIn("- Сегодня, 12:10: Пользователь изучает C++ и циклы.", lines)
+        self.assertNotIn("Свежий разговор.", lines)
+
+    def test_block_puts_latest_summary_first(self) -> None:
+        memory, _, _, store = self.make(recent_limit=2)
+        self.add_session(store, "later", 4, "Поздний разговор.", minute=30)
+        self.add_session(store, "earlier", 4, "Ранний разговор.", minute=10)
+
+        lines = memory.block("что мы обсуждали?", now=at(40)).splitlines()
+
+        self.assertLess(
+            lines.index("- Сегодня, 12:30: Поздний разговор."),
+            lines.index("- Сегодня, 12:10: Ранний разговор."),
+        )
+        self.assertNotIn("Пользователь изучает C++ и циклы.", lines)
+
+    def test_yesterday_query_orders_everything_by_time(self) -> None:
+        memory, _, vectors, store = self.make(recent_limit=2)
+        yesterday = datetime(2026, 11, 15, 19, 0, tzinfo=UTC)
+        self.add_session(store, "old", 4, "Ранний разговор.", started_at=yesterday)
+        self.add_session(
+            store,
+            "middle",
+            4,
+            "Средний разговор.",
+            started_at=yesterday.replace(hour=20),
+        )
+        self.add_session(
+            store,
+            "late",
+            4,
+            "Поздний разговор.",
+            started_at=yesterday.replace(hour=21),
+        )
+        vectors.hits = [VectorHit("old", 0.9, {})]
+
+        lines = memory.block("что мы обсуждали вчера?", now=at(40)).splitlines()
+
+        self.assertLess(
+            lines.index("- Вчера, 21:00: Поздний разговор."),
+            lines.index("- Вчера, 19:00: Ранний разговор."),
+        )
+        self.assertLess(
+            lines.index("- Вчера, 20:00: Средний разговор."),
+            lines.index("- Вчера, 19:00: Ранний разговор."),
+        )
+
+    def test_yesterday_query_shows_only_yesterday(self) -> None:
+        memory, _, _, store = self.make(recent_limit=3)
+        yesterday = datetime(2026, 11, 15, 19, 0, tzinfo=UTC)
+        self.add_session(store, "old", 4, "Вчерашний разговор.", started_at=yesterday)
+        self.add_session(store, "today", 4, "Сегодняшний разговор.", minute=30)
+
+        block = memory.block("что мы обсуждали вчера?", now=at(40))
+
+        self.assertIn("- Вчера, 19:00: Вчерашний разговор.", block)
+        self.assertNotIn("Сегодняшний разговор.", block)
+
+    def test_yesterday_query_drops_other_days(self) -> None:
+        memory, _, vectors, _ = self.make(recent_limit=2)
+        vectors.hits = [VectorHit("s1", 0.9, {})]
+
+        self.assertEqual(memory.block("что было вчера?", now=at(20)), "")
 
     # ----------------------------------------------------------------- config
     def test_from_config_disabled(self) -> None:
@@ -506,6 +579,8 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertEqual(memory.digest_min_messages, 6)
         self.assertEqual(memory.digest_limit, 3)
         self.assertEqual(memory.digest_item_chars, 320)
+        self.assertEqual(memory.recent_limit, 2)
+        self.assertEqual(memory.recent_item_chars, 320)
 
 
 @unittest.skipUnless(HAS_CHROMA, "chromadb не установлен")

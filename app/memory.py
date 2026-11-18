@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -43,6 +43,10 @@ DEFAULT_COLLECTION = "summaries"
 DEFAULT_DIGEST_MIN_MESSAGES = 6
 DEFAULT_DIGEST_LIMIT = 3
 DEFAULT_DIGEST_ITEM_CHARS = 320
+# Последние разговоры по времени, а не по смыслу: это страховка от
+# того, что свежая тема проиграет более заметному старому резюме.
+DEFAULT_RECENT_LIMIT = 2
+DEFAULT_RECENT_ITEM_CHARS = 320
 # Свежесть как небольшой бонус к смысловой близости: она решает только
 # близкие случаи, а явно более похожее старое резюме всё равно остаётся
 # первым. Переиндексация не нужна: дата берётся из SQLite.
@@ -232,6 +236,8 @@ class MemoryService:
         digest_min_messages: int = DEFAULT_DIGEST_MIN_MESSAGES,
         digest_limit: int = DEFAULT_DIGEST_LIMIT,
         digest_item_chars: int = DEFAULT_DIGEST_ITEM_CHARS,
+        recent_limit: int = DEFAULT_RECENT_LIMIT,
+        recent_item_chars: int = DEFAULT_RECENT_ITEM_CHARS,
         index_version: int = INDEX_VERSION,
         manager: MemoryManager | None = None,
     ) -> None:
@@ -248,6 +254,8 @@ class MemoryService:
         self.digest_min_messages = max(1, int(digest_min_messages))
         self.digest_limit = max(0, int(digest_limit))
         self.digest_item_chars = max(0, int(digest_item_chars))
+        self.recent_limit = max(0, int(recent_limit))
+        self.recent_item_chars = max(0, int(recent_item_chars))
         self.index_version = max(1, int(index_version))
 
     @classmethod
@@ -288,6 +296,10 @@ class MemoryService:
             digest_limit=_int_setting(section.get("digest_limit"), DEFAULT_DIGEST_LIMIT),
             digest_item_chars=_int_setting(
                 section.get("digest_item_chars"), DEFAULT_DIGEST_ITEM_CHARS
+            ),
+            recent_limit=_int_setting(section.get("recent_limit"), DEFAULT_RECENT_LIMIT),
+            recent_item_chars=_int_setting(
+                section.get("recent_item_chars"), DEFAULT_RECENT_ITEM_CHARS
             ),
             index_version=int(section.get("index_version") or INDEX_VERSION),
             manager=manager,
@@ -470,26 +482,51 @@ class MemoryService:
     def block(self, query: str, *, now: datetime | None = None) -> str:
         """Готовый блок для системного промпта или пустая строка.
 
-        Сначала идут отдельные факты менеджера: это проверенные факты,
-        уже очищенные от повторов и противоречий. Потом — сегодняшние
-        содержательные сессии, затем семантические находки без повторов.
+        Порядок: факты менеджера, затем резюме по времени — последние
+        разговоры раньше остальных сегодняшних, затем семантические
+        находки. Если в вопросе назван день («вчера»), остаются только
+        этот день: свежесть здесь важнее смысловой близости.
         """
         facts = self.facts_block(query)
+        day = _period_day(query, now)
         hits = self.recall(query, now=now)
-        digest = self.digest(now=now)
-        if not facts and not hits and not digest:
+        if day is not None:
+            hits = [hit for hit in hits if _is_on_day(hit.created_at, day)]
+        # Если поиск уверенно нашёл нужное, хронология только мешает:
+        # свежий разговор может быть совсем про другое. А на общий вопрос
+        # или вопрос про день она, наоборот, важнее смысла.
+        specific = bool(hits) and day is None
+        recent = [] if specific else self.recent(day)
+        digest = [] if day is not None or specific else self.digest(now=now)
+
+        timeline: dict[str, MemoryHit] = {hit.session_id: hit for hit in digest}
+        # Свежее резюме важнее дневного дайджеста: при совпадении текста
+        # оставляем именно его, с полным лимитом символов.
+        timeline.update({hit.session_id: hit for hit in recent})
+        if day is not None:
+            # В конкретный день важен порядок, а не сходство: все
+            # воспоминания этого дня раскладываем по времени.
+            timeline.update({hit.session_id: hit for hit in hits})
+            hits = []
+        ordered = sorted(
+            timeline.values(),
+            key=lambda hit: _moment_key(hit.created_at),
+            reverse=True,
+        )
+
+        if not facts and not ordered and not hits:
             return ""
         lines: list[str] = []
         total = 0
         if facts:
             lines.append(facts)
             total = len(facts) + 1
-        if hits or digest:
+        if ordered or hits:
             lines.append(MEMORY_HEADER)
             total += len(MEMORY_HEADER) + 1
         seen: set[str] = set()
-        for hit in digest:
-            line = f"- Сегодня, {_clock(hit.created_at)}: {hit.summary}"
+        for hit in ordered:
+            line = _dated_line(hit, now)
             if self.max_chars and total + len(line) + 1 > self.max_chars:
                 break
             lines.append(line)
@@ -498,14 +535,51 @@ class MemoryService:
         for hit in hits:
             if hit.session_id in seen:
                 continue
-            moment = _short_date(hit.created_at)
-            line = f"- {moment}{hit.summary}" if moment else f"- {hit.summary}"
+            line = _dated_line(hit, now)
             if self.max_chars and total + len(line) + 1 > self.max_chars:
                 break
             lines.append(line)
             total += len(line) + 1
             seen.add(hit.session_id)
         return "\n".join(lines) if len(lines) > 1 or facts else ""
+
+    def recent(self, day: date | None = None) -> list[MemoryHit]:
+        """Последние разговоры по времени, а не по смыслу.
+
+        Без ``day`` берутся просто последние завершённые сессии. С днём —
+        только он: так отвечаем на «что было вчера», не полагаясь на
+        векторное сходство. Ошибка чтения базы не ломает диалог.
+        """
+        if self.recent_limit <= 0:
+            return []
+        try:
+            rows = self.store.summaries_with_sessions(limit=max(20, self.recent_limit * 10))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: последние разговоры недоступны: %s", exc)
+            return []
+        found: list[MemoryHit] = []
+        for row in rows:
+            if str(row.get("status") or "") != "completed":
+                continue
+            started = _parse_moment(str(row.get("started_at") or ""))
+            if started is None:
+                continue
+            if day is not None and started.date() != day:
+                continue
+            text = str(row.get("summary") or "").strip()
+            if not text:
+                continue
+            found.append(
+                MemoryHit(
+                    session_id=str(row["session_id"]),
+                    summary=_clip(text, self.recent_item_chars),
+                    score=0.0,
+                    created_at=str(row.get("started_at") or ""),
+                )
+            )
+            if len(found) >= self.recent_limit:
+                break
+        return found
 
     def facts_block(self, query: str = "") -> str:
         """Факты менеджера. Сбой чтения не должен ломать системный промпт."""
@@ -596,10 +670,50 @@ def _parse_moment(value: str) -> datetime | None:
         return None
 
 
-def _clock(value: str) -> str:
-    """«17:18» из ISO-строки; мусор не роняет строку памяти."""
+def _period_day(query: str, now: datetime | None) -> date | None:
+    """День, названный в вопросе словами. Иначе ``None``.
+
+    «Позавчера» проверяется первым: оно содержит «вчера».
+    """
+    text = (query or "").lower()
+    today = _as_local(now).date()
+    if "позавчера" in text:
+        return today - timedelta(days=2)
+    if "вчера" in text:
+        return today - timedelta(days=1)
+    if "сегодня" in text:
+        return today
+    return None
+
+
+def _is_on_day(value: str, day: date) -> bool:
     moment = _parse_moment(value)
-    return moment.strftime("%H:%M") if moment is not None else "--:--"
+    return moment is not None and moment.date() == day
+
+
+def _moment_key(value: str) -> float:
+    """Числовой ключ сортировки: ISO с разными поясами так не сравнишь."""
+    moment = _parse_moment(value)
+    return moment.timestamp() if moment is not None else 0.0
+
+
+def _dated_line(hit: MemoryHit, now: datetime | None) -> str:
+    moment = _parse_moment(hit.created_at)
+    if moment is None:
+        return f"- {hit.summary}"
+    label = _day_label(moment.date(), _as_local(now).date())
+    return f"- {label}, {moment.strftime('%H:%M')}: {hit.summary}"
+
+
+def _day_label(day: date, today: date) -> str:
+    delta = (today - day).days
+    if delta == 0:
+        return "Сегодня"
+    if delta == 1:
+        return "Вчера"
+    if delta == 2:
+        return "Позавчера"
+    return day.strftime("%d.%m.%Y")
 
 
 def _clip(text: str, limit: int) -> str:
@@ -617,12 +731,3 @@ def _clip(text: str, limit: int) -> str:
     if position >= floor:
         cut = cut[:position]
     return cut.rstrip(" ,;:") + "…"
-
-
-def _short_date(value: str) -> str:
-    """«16.11.2026 01:45» из ISO-строки; мусор даёт пустую строку."""
-    try:
-        moment = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
-        return ""
-    return moment.strftime("%d.%m.%Y %H:%M: ")

@@ -187,6 +187,8 @@
     "digest_min_messages": 6,
     "digest_limit": 3,
     "digest_item_chars": 320,
+    "recent_limit": 2,
+    "recent_item_chars": 320,
     "facts_limit": 6,
     "facts_max_chars": 900,
     "timeout_sec": 10,
