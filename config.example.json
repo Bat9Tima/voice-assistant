@@ -160,6 +160,7 @@
     "profile_chars": 4000,
     "persona_path": "state/luna.txt",
     "persona_chars": 2000,
+    "persona_max_facts": 100,
     "db_path": "state/dialog.db",
     "summary": {
       "enabled": true,

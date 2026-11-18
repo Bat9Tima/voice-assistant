@@ -40,6 +40,40 @@ class PersonaMemoryTest(unittest.TestCase):
         self.assertEqual(memory.merge(["мне 23 года", "- Мне 23 года."]), 0)
         self.assertEqual(memory.facts(), ["Мне 23 года."])
 
+    def test_merge_skips_near_duplicate(self) -> None:
+        memory = self.make("Луна любит пить чай с печеньем.\n")
+        self.assertEqual(memory.merge(["Любит чай с печеньем."]), 0)
+        self.assertEqual(memory.facts(), ["Луна любит пить чай с печеньем."])
+
+    def test_merge_keeps_more_complete_fact(self) -> None:
+        memory = self.make("Луна любит чай.\n")
+        self.assertEqual(memory.merge(["Луна любит чай с печеньем."]), 1)
+        self.assertEqual(memory.facts(), ["Луна любит чай с печеньем."])
+
+    def test_merge_keeps_different_facts(self) -> None:
+        memory = self.make("Луна любит чай.\n")
+        self.assertEqual(memory.merge(["Луна любит кофе."]), 1)
+        self.assertEqual(memory.facts(), ["Луна любит чай.", "Луна любит кофе."])
+
+    def test_merge_compacts_existing_duplicates(self) -> None:
+        memory = self.make("Луна любит пить чай с печеньем.\nЛюбит чай с печеньем.\n")
+        self.assertEqual(memory.merge([]), 0)
+        self.assertEqual(memory.facts(), ["Луна любит пить чай с печеньем."])
+
+    def test_merge_limits_facts(self) -> None:
+        memory = self.make(max_facts=3)
+        self.assertEqual(
+            memory.merge(["Факт 1.", "Факт 2.", "Факт 3.", "Факт 4.", "Факт 5."]),
+            5,
+        )
+        self.assertEqual(memory.facts(), ["Факт 3.", "Факт 4.", "Факт 5."])
+
+    def test_compact_removes_duplicates(self) -> None:
+        memory = self.make("Луна любит пить чай с печеньем.\nЛюбит чай с печеньем.\n")
+        self.assertEqual(memory.compact(), 1)
+        self.assertEqual(memory.facts(), ["Луна любит пить чай с печеньем."])
+        self.assertEqual(memory.compact(), 0)
+
     def test_merge_skips_empty_and_negative_answer(self) -> None:
         memory = self.make()
         self.assertEqual(memory.merge(["  ", "НЕТ", "нет фактов."]), 0)

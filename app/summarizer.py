@@ -290,7 +290,8 @@ class Summarizer:
                 model=self.model or None,
             )
             facts = parse_facts(answer or "")
-            added = self.persona.merge(facts) if facts else 0
+            # Пустой список тоже полезен: merge заодно чистит старые повторы.
+            added = self.persona.merge(facts)
         except Exception:  # noqa: BLE001
             log.exception("Факты о Луне не сохранены для сессии %s", session.id)
             return
