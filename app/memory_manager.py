@@ -521,21 +521,37 @@ class MemoryManager:
 
     # ------------------------------------------------------------------- read
     def facts(self, query: str = "", limit: int | None = None) -> list[dict]:
-        """Активные важные факты, сначала самые уместные и свежие."""
+        """Активные важные факты, сначала самые уместные и свежие.
+
+        Если запрос цепляет факты, решают совпадение и важность. Если
+        запрос общий («что мы обсуждали?»), первыми идут свежие: для
+        последней темы важнее дата, а не заметность факта.
+        """
         if self.facts_limit <= 0 and limit is None:
             return []
         rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
         rows = [row for row in rows if row["importance"] in (HIGH, MEDIUM)]
         query_tokens = _token_set(query)
-        rows.sort(
-            key=lambda row: (
-                len(query_tokens & _token_set(row["text"])),
-                WEIGHT.get(row["importance"], 2),
-                float(row["confidence"]),
-                str(row["updated_at"]),
-            ),
-            reverse=True,
-        )
+        overlaps = {int(row["id"]): len(query_tokens & _token_set(row["text"])) for row in rows}
+        if any(overlaps.values()):
+            rows.sort(
+                key=lambda row: (
+                    overlaps[int(row["id"])],
+                    WEIGHT.get(row["importance"], 2),
+                    str(row["updated_at"]),
+                    float(row["confidence"]),
+                ),
+                reverse=True,
+            )
+        else:
+            rows.sort(
+                key=lambda row: (
+                    str(row["updated_at"]),
+                    WEIGHT.get(row["importance"], 2),
+                    float(row["confidence"]),
+                ),
+                reverse=True,
+            )
         return rows[: max(0, int(limit if limit is not None else self.facts_limit))]
 
     def reviews(self, limit: int = REVIEW_LIMIT) -> list[tuple[dict | None, dict]]:

@@ -400,6 +400,61 @@ class MemoryManagerTest(unittest.TestCase):
         refreshed = next(row for row in store.memory_facts(limit=10) if row["kind"] == "unfinished")
         self.assertEqual(refreshed["status"], "resolved")
 
+    def test_vague_query_puts_fresh_facts_first(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь болеет", "я болею")]),
+            created_at=at(),
+        )
+        manager.ingest(
+            "s2",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь работает над проектом Луна",
+                        "работаю над проектом луна",
+                    )
+                ]
+            ),
+            created_at=at(5),
+        )
+
+        facts = manager.facts("что мы обсуждали?")
+
+        self.assertEqual(
+            [row["text"] for row in facts],
+            ["Пользователь работает над проектом Луна", "Пользователь болеет"],
+        )
+
+    def test_specific_query_keeps_relevant_fact_first(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь болеет", "я болею")]),
+            created_at=at(),
+        )
+        manager.ingest(
+            "s2",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь работает над проектом Луна",
+                        "работаю над проектом луна",
+                    )
+                ]
+            ),
+            created_at=at(5),
+        )
+
+        facts = manager.facts("я болею")
+
+        self.assertEqual(facts[0]["text"], "Пользователь болеет")
+
     def test_block_has_header_and_skips_low(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")

@@ -301,6 +301,26 @@ class MemoryServiceTest(unittest.TestCase):
         vectors.hits = [VectorHit("нет-такой", 0.9, {})]
         self.assertEqual(memory.recall("вопрос"), [])
 
+    def test_recall_prefers_fresh_close_summary(self) -> None:
+        memory, _, vectors, store = self.make()
+        old = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        self.add_session(store, "old", 2, "Старый разговор.", started_at=old)
+        vectors.hits = [VectorHit("old", 0.6, {}), VectorHit("s1", 0.57, {})]
+
+        hits = memory.recall("вопрос", now=at(30))
+
+        self.assertEqual([hit.session_id for hit in hits], ["s1", "old"])
+
+    def test_recall_keeps_clearly_better_old_summary(self) -> None:
+        memory, _, vectors, store = self.make()
+        old = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+        self.add_session(store, "old", 2, "Старый разговор.", started_at=old)
+        vectors.hits = [VectorHit("old", 0.9, {}), VectorHit("s1", 0.6, {})]
+
+        hits = memory.recall("вопрос", now=at(30))
+
+        self.assertEqual([hit.session_id for hit in hits], ["old", "s1"])
+
     def test_recall_respects_top_k(self) -> None:
         memory, _, vectors, _ = self.make(top_k=1)
         vectors.hits = [VectorHit("s1", 0.9, {}), VectorHit("s1", 0.8, {})]

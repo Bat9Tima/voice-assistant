@@ -43,6 +43,11 @@ DEFAULT_COLLECTION = "summaries"
 DEFAULT_DIGEST_MIN_MESSAGES = 6
 DEFAULT_DIGEST_LIMIT = 3
 DEFAULT_DIGEST_ITEM_CHARS = 320
+# Свежесть как небольшой бонус к смысловой близости: она решает только
+# близкие случаи, а явно более похожее старое резюме всё равно остаётся
+# первым. Переиндексация не нужна: дата берётся из SQLite.
+RECENCY_BONUS = 0.05
+RECENCY_DAYS = 7.0
 # Версия раскладки индекса. Меняйте, если изменился способ подготовки
 # текста или модель: старые векторы перестанут участвовать в поиске,
 # а restore пересчитает их из резюме в SQLite.
@@ -393,8 +398,13 @@ class MemoryService:
         return True
 
     # ------------------------------------------------------------------- read
-    def recall(self, query: str) -> list[MemoryHit]:
-        """Ищет прошлые резюме по смыслу. Любой сбой — пустой список."""
+    def recall(self, query: str, *, now: datetime | None = None) -> list[MemoryHit]:
+        """Ищет прошлые резюме по смыслу, затем чуть поднимает свежие.
+
+        Смысловая близость остаётся главной; бонус за свежесть решает
+        близкие случаи и помогает «последней теме» не проиграть более
+        заметному, но старому разговору. Любой сбой — пустой список.
+        """
         text = " ".join((query or "").split())
         if not text:
             return []
@@ -424,9 +434,23 @@ class MemoryService:
                     created_at=str(saved.get("created_at") or ""),
                 )
             )
-            if len(found) >= self.top_k:
-                break
-        return found
+        found.sort(
+            key=lambda hit: hit.score + self._recency_bonus(hit.created_at, now),
+            reverse=True,
+        )
+        return found[: self.top_k]
+
+    def _recency_bonus(self, created_at: str, now: datetime | None) -> float:
+        """Небольшая надбавка за свежесть: максимум в день создания."""
+        moment = _parse_moment(created_at)
+        if moment is None:
+            return 0.0
+        age = (_as_local(now) - moment).total_seconds() / 86400
+        if age <= 0:
+            return RECENCY_BONUS
+        if age >= RECENCY_DAYS:
+            return 0.0
+        return RECENCY_BONUS * (1.0 - age / RECENCY_DAYS)
 
     def _relevant(self, score: float, ranked: list[VectorHit], index: int) -> bool:
         """Проходит ли результат по порогу или по отрыву от второго места.
@@ -451,7 +475,7 @@ class MemoryService:
         содержательные сессии, затем семантические находки без повторов.
         """
         facts = self.facts_block(query)
-        hits = self.recall(query)
+        hits = self.recall(query, now=now)
         digest = self.digest(now=now)
         if not facts and not hits and not digest:
             return ""
