@@ -199,7 +199,7 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(answer, "Ответ модели")
         messages, kwargs = llm.calls[0]
         self.assertEqual(messages, [{"role": "user", "content": "как дела?"}])
-        self.assertIn("голосовой ассистент", kwargs["system"])
+        self.assertIn("реальная девушка", kwargs["system"])
         self.assertEqual(kwargs["temperature"], 0.4)
         self.assertEqual(kwargs["timeout"], 12)
 
@@ -383,7 +383,7 @@ class DialogServiceTest(unittest.TestCase):
         service.reply("привет")
 
         system = llm.calls[0][1]["system"]
-        self.assertIn("голосовой ассистент", system)
+        self.assertIn("реальная девушка", system)
         self.assertNotIn("Эпизодическая", system)
 
     def test_context_keeps_current_message_with_tiny_budget(self) -> None:
@@ -398,7 +398,7 @@ class DialogServiceTest(unittest.TestCase):
 
         messages, kwargs = llm.calls[0]
         self.assertEqual(messages[-1], {"role": "user", "content": "привет"})
-        self.assertIn("голосовой ассистент", kwargs["system"])
+        self.assertIn("реальная девушка", kwargs["system"])
 
     def test_rolling_summary_goes_to_next_context(self) -> None:
         llm = FakeLLM("Понятно.")
