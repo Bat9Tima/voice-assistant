@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from app.embeddings import EmbeddingError
@@ -82,11 +82,21 @@ class FakeVectors:
             raise self.error
         return {session_id: metadata for session_id, (_, metadata) in self.items.items()}
 
-    def delete(self, session_id: str) -> None:
+    def delete_session(self, session_id: str) -> None:
         if self.error is not None:
             raise self.error
         self.deleted.append(session_id)
-        self.items.pop(session_id, None)
+        for vector_id in list(self.items):
+            _, metadata = self.items[vector_id]
+            stored = str(metadata.get("session_id") or vector_id.split(":")[0])
+            if stored == session_id:
+                self.items.pop(vector_id, None)
+
+    def delete_id(self, vector_id: str) -> None:
+        if self.error is not None:
+            raise self.error
+        self.deleted.append(vector_id)
+        self.items.pop(vector_id, None)
 
     def count(self) -> int:
         return len(self.items)
@@ -162,7 +172,7 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertTrue(memory.remember("s1", "Пользователь изучает C++."))
 
         self.assertEqual(embedder.calls, [(["Пользователь изучает C++."], "document")])
-        embedding, metadata = vectors.items["s1"]
+        embedding, metadata = vectors.items["s1:0"]
         self.assertEqual(embedding, [1.0, 0.0, 0.0])
         self.assertEqual(metadata["embedding_model"], "fake-voyage")
         self.assertEqual(metadata["dim"], 3)
@@ -201,16 +211,51 @@ class MemoryServiceTest(unittest.TestCase):
 
         memory.remember("s1", "текст")
 
-        _, metadata = vectors.items["s1"]
+        _, metadata = vectors.items["s1:0"]
         self.assertEqual(metadata["embedding_model"], "fake-voyage")
         self.assertEqual(metadata["index_version"], 2)
+
+    def test_remember_indexes_each_topic(self) -> None:
+        memory, embedder, vectors, _ = self.make()
+        topics = [
+            {"title": "учёба", "text": "Пользователь изучает C++."},
+            {"title": "планы", "text": "Собирается на море."},
+        ]
+
+        self.assertTrue(memory.remember("s1", "Целиком.", topics=topics, created_at=at(10)))
+
+        self.assertEqual(
+            embedder.calls,
+            [
+                (
+                    ["учёба. Пользователь изучает C++.", "планы. Собирается на море."],
+                    "document",
+                )
+            ],
+        )
+        self.assertEqual(sorted(vectors.items), ["s1:0", "s1:1"])
+        _, first = vectors.items["s1:0"]
+        self.assertEqual(first["topic_no"], 0)
+        self.assertEqual(first["topic_title"], "учёба")
+        self.assertEqual(first["created_ts"], int(at(10).timestamp()))
+        _, second = vectors.items["s1:1"]
+        self.assertEqual(second["topic_no"], 1)
+        self.assertEqual(second["topic_title"], "планы")
+
+    def test_remember_without_topic_text_indexes_summary(self) -> None:
+        memory, embedder, vectors, _ = self.make()
+
+        memory.remember("s1", "Целиком.", topics=[{"title": "учёба"}], created_at=at(10))
+
+        self.assertEqual(embedder.calls, [(["Целиком."], "document")])
+        self.assertEqual(sorted(vectors.items), ["s1:0"])
 
     # ----------------------------------------------------------------- restore
     def test_restore_indexes_missing_summaries(self) -> None:
         memory, embedder, vectors, _ = self.make()
 
         self.assertEqual(memory.restore(), 1)
-        self.assertIn("s1", vectors.items)
+        self.assertIn("s1:0", vectors.items)
         self.assertEqual(embedder.calls, [(["Пользователь изучает C++ и циклы."], "document")])
 
         self.assertEqual(memory.restore(), 0)
@@ -218,23 +263,51 @@ class MemoryServiceTest(unittest.TestCase):
 
     def test_restore_reindexes_other_model(self) -> None:
         memory, _, vectors, _ = self.make()
-        vectors.items["s1"] = (
+        vectors.items["s1:0"] = (
             [0.0, 1.0, 0.0],
             {"embedding_model": "old-model", "index_version": 1},
         )
 
         self.assertEqual(memory.restore(), 1)
-        self.assertEqual(vectors.items["s1"][1]["embedding_model"], "fake-voyage")
+        self.assertEqual(vectors.items["s1:0"][1]["embedding_model"], "fake-voyage")
 
     def test_restore_honors_index_version(self) -> None:
         memory, _, vectors, _ = self.make(index_version=2)
-        vectors.items["s1"] = (
+        vectors.items["s1:0"] = (
             [1.0, 0.0, 0.0],
             {"embedding_model": "fake-voyage", "index_version": 1},
         )
 
         self.assertEqual(memory.restore(), 1)
-        self.assertEqual(vectors.items["s1"][1]["index_version"], 2)
+        self.assertEqual(vectors.items["s1:0"][1]["index_version"], 2)
+
+    def test_restore_indexes_topics_from_v3(self) -> None:
+        memory, embedder, vectors, store = self.make()
+        store.save_summary(
+            "s1",
+            "Общее резюме.",
+            created_at=at(10),
+            data={
+                "topics": [
+                    {"title": "учёба", "text": "Пользователь изучает C++."},
+                    {"title": "планы", "text": "Собирается на море."},
+                ]
+            },
+        )
+
+        self.assertEqual(memory.restore(), 2)
+        self.assertEqual(
+            embedder.calls,
+            [
+                (
+                    ["учёба. Пользователь изучает C++.", "планы. Собирается на море."],
+                    "document",
+                )
+            ],
+        )
+        self.assertEqual(sorted(vectors.items), ["s1:0", "s1:1"])
+        self.assertEqual(vectors.items["s1:1"][1]["topic_title"], "планы")
+        self.assertEqual(vectors.items["s1:1"][1]["created_ts"], int(at().timestamp()))
 
     def test_restore_removes_vectors_without_summary(self) -> None:
         memory, _, vectors, _ = self.make()
@@ -267,7 +340,7 @@ class MemoryServiceTest(unittest.TestCase):
                     session_id="s1",
                     summary="Пользователь изучает C++ и циклы.",
                     score=0.8,
-                    created_at=at(10).isoformat(),
+                    created_at=at().isoformat(),
                 )
             ],
         )
@@ -282,6 +355,45 @@ class MemoryServiceTest(unittest.TestCase):
         self.assertEqual(
             vectors.where,
             {"$and": [{"embedding_model": "fake-voyage"}, {"index_version": 3}]},
+        )
+
+    def test_recall_returns_topic_text_and_title(self) -> None:
+        memory, _, vectors, store = self.make()
+        store.save_summary(
+            "s1",
+            "Общее резюме.",
+            data={
+                "topics": [
+                    {"title": "учёба", "text": "Пользователь изучает C++."},
+                    {"title": "планы", "text": "Собирается на море."},
+                ]
+            },
+        )
+        vectors.hits = [VectorHit("s1:1", 0.8, {"session_id": "s1", "topic_no": 1})]
+
+        hits = memory.recall("море")
+
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].summary, "Собирается на море.")
+        self.assertEqual(hits[0].topic_title, "планы")
+        self.assertEqual(hits[0].topic_no, 1)
+
+    def test_recall_filters_day_in_chroma(self) -> None:
+        memory, _, vectors, _ = self.make()
+        vectors.hits = []
+
+        memory.recall("вчера", day=date(2026, 11, 15))
+
+        clauses = vectors.where["$and"]
+        self.assertEqual(
+            clauses[:2],
+            [{"embedding_model": "fake-voyage"}, {"index_version": 2}],
+        )
+        self.assertIn("$gte", clauses[2]["created_ts"])
+        self.assertIn("$lt", clauses[3]["created_ts"])
+        self.assertLess(
+            clauses[2]["created_ts"]["$gte"],
+            clauses[3]["created_ts"]["$lt"],
         )
 
     def test_recall_skips_low_scores(self) -> None:
@@ -356,7 +468,7 @@ class MemoryServiceTest(unittest.TestCase):
         block = memory.block("что я изучал?", now=at(20))
 
         self.assertTrue(block.startswith(MEMORY_HEADER))
-        self.assertIn("Сегодня, 12:10", block)
+        self.assertIn("Сегодня, 12:00", block)
         self.assertIn("Пользователь изучает C++ и циклы.", block)
 
     def test_block_is_empty_without_hits(self) -> None:
@@ -469,7 +581,7 @@ class MemoryServiceTest(unittest.TestCase):
 
         lines = memory.block("что я изучал?", now=at(40)).splitlines()
 
-        self.assertIn("- Сегодня, 12:10: Пользователь изучает C++ и циклы.", lines)
+        self.assertIn("- Сегодня, 12:00: Пользователь изучает C++ и циклы.", lines)
         self.assertNotIn("Свежий разговор.", lines)
 
     def test_block_puts_latest_summary_first(self) -> None:
@@ -484,6 +596,32 @@ class MemoryServiceTest(unittest.TestCase):
             lines.index("- Сегодня, 12:10: Ранний разговор."),
         )
         self.assertNotIn("Пользователь изучает C++ и циклы.", lines)
+
+    def test_recent_day_orders_last_topic_first(self) -> None:
+        memory, _, _, store = self.make(recent_limit=1)
+        self.add_session(store, "s2", 4, "Коротко.", started_at=at(20))
+        store.save_summary(
+            "s2",
+            "Коротко.",
+            created_at=at(20),
+            data={
+                "topics": [
+                    {"title": "утро", "text": "Обсуждали утро."},
+                    {"title": "вечер", "text": "Обсуждали вечер."},
+                ]
+            },
+        )
+
+        hits = memory.recent(at(30).date())
+
+        self.assertEqual(
+            [(hit.session_id, hit.topic_no) for hit in hits],
+            [("s2", 1), ("s2", 0)],
+        )
+        self.assertEqual([hit.topic_title for hit in hits], ["вечер", "утро"])
+
+        block = memory.block("что было сегодня?", now=at(30))
+        self.assertLess(block.index("«вечер»"), block.index("«утро»"))
 
     def test_yesterday_query_orders_everything_by_time(self) -> None:
         memory, _, vectors, store = self.make(recent_limit=2)

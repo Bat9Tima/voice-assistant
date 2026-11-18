@@ -192,6 +192,6 @@
     "facts_limit": 6,
     "facts_max_chars": 900,
     "timeout_sec": 10,
-    "index_version": 1
+    "index_version": 2
   }
 }

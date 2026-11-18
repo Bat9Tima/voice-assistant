@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -55,7 +55,7 @@ RECENCY_DAYS = 7.0
 # Версия раскладки индекса. Меняйте, если изменился способ подготовки
 # текста или модель: старые векторы перестанут участвовать в поиске,
 # а restore пересчитает их из резюме в SQLite.
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 RESTORE_BATCH = 16
 # Насколько ниже порога пускаем лучший результат, если он оторвался
 # от второго. Так находятся перефразировки, а «погода» не цепляет мусор.
@@ -72,21 +72,27 @@ MEMORY_HEADER = (
 
 @dataclass(frozen=True)
 class VectorHit:
-    """Найденный вектор: id сессии, близость и метаданные."""
+    """Найденный вектор: id, близость и метаданные."""
 
-    session_id: str
+    vector_id: str
     score: float
     metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class MemoryHit:
-    """Воспоминание: резюме из SQLite и его близость к запросу."""
+    """Воспоминание: тема из SQLite и её близость к запросу.
+
+    ``topic_no`` — номер темы внутри сессии, ``-1`` — вся сессия целиком
+    (дайджест или последний разговор без разбивки на темы).
+    """
 
     session_id: str
     summary: str
     score: float
     created_at: str = ""
+    topic_no: int = 0
+    topic_title: str = ""
 
 
 class VectorStore(Protocol):
@@ -98,7 +104,7 @@ class VectorStore(Protocol):
 
     def upsert(
         self,
-        session_id: str,
+        vector_id: str,
         embedding: list[float],
         metadata: dict[str, Any],
     ) -> None: ...
@@ -112,7 +118,9 @@ class VectorStore(Protocol):
 
     def indexed(self) -> dict[str, dict[str, Any]]: ...
 
-    def delete(self, session_id: str) -> None: ...
+    def delete_session(self, session_id: str) -> None: ...
+
+    def delete_id(self, vector_id: str) -> None: ...
 
     def count(self) -> int: ...
 
@@ -149,7 +157,7 @@ class ChromaVectorStore:
 
     def upsert(
         self,
-        session_id: str,
+        vector_id: str,
         embedding: list[float],
         metadata: dict[str, Any],
     ) -> None:
@@ -159,7 +167,7 @@ class ChromaVectorStore:
             if isinstance(value, (str, int, float, bool))
         }
         self._collection.upsert(
-            ids=[session_id],
+            ids=[vector_id],
             embeddings=[embedding],
             metadatas=[clean],
         )
@@ -183,12 +191,12 @@ class ChromaVectorStore:
         distances = (result.get("distances") or [[]])[0]
         metadatas = (result.get("metadatas") or [[]])[0]
         hits: list[VectorHit] = []
-        for position, session_id in enumerate(ids):
+        for position, vector_id in enumerate(ids):
             distance = distances[position] if position < len(distances) else 1.0
             metadata = metadatas[position] if position < len(metadatas) else {}
             hits.append(
                 VectorHit(
-                    session_id=str(session_id),
+                    vector_id=str(vector_id),
                     score=1.0 - float(distance),
                     metadata=dict(metadata or {}),
                 )
@@ -196,18 +204,22 @@ class ChromaVectorStore:
         return hits
 
     def indexed(self) -> dict[str, dict[str, Any]]:
-        """Метаданные всех векторов: id сессии → словарь без эмбеддинга."""
+        """Метаданные всех векторов: id вектора → словарь без эмбеддинга."""
         result = self._collection.get(include=["metadatas"])
         ids = result.get("ids") or []
         metadatas = result.get("metadatas") or []
         found: dict[str, dict[str, Any]] = {}
-        for position, session_id in enumerate(ids):
+        for position, vector_id in enumerate(ids):
             metadata = metadatas[position] if position < len(metadatas) else {}
-            found[str(session_id)] = dict(metadata or {})
+            found[str(vector_id)] = dict(metadata or {})
         return found
 
-    def delete(self, session_id: str) -> None:
-        self._collection.delete(ids=[session_id])
+    def delete_session(self, session_id: str) -> None:
+        """Удаляет все векторы сессии: у темы свой id, но сессия общая."""
+        self._collection.delete(where={"session_id": session_id})
+
+    def delete_id(self, vector_id: str) -> None:
+        self._collection.delete(ids=[vector_id])
 
     def count(self) -> int:
         return int(self._collection.count())
@@ -306,28 +318,53 @@ class MemoryService:
         )
 
     # ------------------------------------------------------------------ write
-    def remember(self, session_id: str, summary: str) -> bool:
-        """Индексирует резюме. Сбой только логируется: диалог важнее."""
-        text = (summary or "").strip()
-        if not text or not session_id:
+    def remember(
+        self,
+        session_id: str,
+        summary: str,
+        *,
+        topics: list[dict[str, Any]] | None = None,
+        created_at: datetime | None = None,
+    ) -> bool:
+        """Индексирует темы резюме, а без них — резюме целиком.
+
+        Каждая тема становится отдельным вектором: так у неё есть дата и
+        номер внутри разговора. Сбой только логируется: диалог важнее.
+        """
+        if not session_id:
+            return False
+        items = _summary_items({"summary": summary, "data": {"topics": topics or []}})
+        if not items:
             return False
         try:
-            vector = self.embedder.embed([text], input_type="document")[0]
-            self.vectors.upsert(
-                session_id,
-                vector,
-                self._metadata(vector),
+            vectors = self.embedder.embed(
+                [_embedding_text(item) for item in items], input_type="document"
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("Память не обновлена для сессии %s: %s", session_id, exc)
             return False
-        log.info("Память: резюме сессии %s проиндексировано", session_id)
-        return True
+        stamp = created_at or _now()
+        saved = 0
+        for item, vector in zip(items, vectors, strict=False):
+            vector_id = _vector_id(session_id, item["topic_no"])
+            try:
+                self.vectors.upsert(
+                    vector_id,
+                    vector,
+                    self._metadata(vector, session_id=session_id, item=item, created_at=stamp),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: тема %s не сохранена: %s", vector_id, exc)
+                continue
+            saved += 1
+        if saved:
+            log.info("Память: сессия %s проиндексирована, тем %s", session_id, saved)
+        return saved > 0
 
     def restore(self) -> int:
-        """Достраивает индекс по резюме из SQLite. Возвращает число векторов.
+        """Достраивает индекс по резюме из SQLite. Возвращает число тем.
 
-        Пересчитывает только те резюме, чей вектор отсутствует или сделан
+        Пересчитывает только темы, чей вектор отсутствует или сделан
         другой моделью/версией. Устаревшие векторы без резюме удаляются.
         Сбой эмбеддера не роняет приложение: что успели — то пересчитали.
         """
@@ -342,42 +379,72 @@ class MemoryService:
             log.warning("Память: не удалось прочитать резюме: %s", exc)
             return 0
 
-        known = {str(row["session_id"]) for row in rows}
-        for orphan_id in sorted(set(indexed) - known):
-            self.forget(orphan_id)
+        expected: dict[str, tuple[str, dict[str, Any], datetime | None]] = {}
+        for row in rows:
+            session_id = str(row["session_id"])
+            started = _parse_moment(str(row.get("started_at") or row.get("created_at") or ""))
+            for item in _summary_items(row):
+                expected[_vector_id(session_id, item["topic_no"])] = (session_id, item, started)
 
-        stale = [row for row in rows if not self._is_current(indexed.get(str(row["session_id"])))]
+        for orphan in sorted(set(indexed) - set(expected)):
+            try:
+                self.vectors.delete_id(orphan)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: устаревший вектор %s не удалён: %s", orphan, exc)
+
+        stale = [
+            vector_id for vector_id in expected if not self._is_current(indexed.get(vector_id))
+        ]
         if not stale:
-            log.info("Память: индекс актуален, резюме %s", len(rows))
+            log.info("Память: индекс актуален, тем %s", len(expected))
             return 0
 
         restored = 0
         for start in range(0, len(stale), RESTORE_BATCH):
             batch = stale[start : start + RESTORE_BATCH]
-            texts = [str(row["summary"]) for row in batch]
+            texts = [_embedding_text(expected[vector_id][1]) for vector_id in batch]
             try:
                 vectors = self.embedder.embed(texts, input_type="document")
             except Exception as exc:  # noqa: BLE001
                 log.warning("Память: векторы не пересчитаны: %s", exc)
                 break
-            for row, vector in zip(batch, vectors, strict=False):
-                session_id = str(row["session_id"])
+            for vector_id, vector in zip(batch, vectors, strict=False):
+                session_id, item, started = expected[vector_id]
                 try:
-                    self.vectors.upsert(session_id, vector, self._metadata(vector))
+                    self.vectors.upsert(
+                        vector_id,
+                        vector,
+                        self._metadata(
+                            vector, session_id=session_id, item=item, created_at=started
+                        ),
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    log.warning("Память: вектор сессии %s не сохранён: %s", session_id, exc)
+                    log.warning("Память: вектор %s не сохранён: %s", vector_id, exc)
                     continue
                 restored += 1
-        log.info("Память: пересчитано резюме %s из %s", restored, len(rows))
+        log.info("Память: пересчитано тем %s (резюме %s)", restored, len(rows))
         return restored
 
-    def _metadata(self, vector: list[float]) -> dict[str, Any]:
-        """Пометки вектора: по ним поиск отсекает чужую модель и версию."""
+    def _metadata(
+        self,
+        vector: list[float],
+        *,
+        session_id: str = "",
+        item: dict[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Пометки вектора: модель, версия, сессия, тема и время разговора."""
+        item = item or {"topic_no": 0, "title": ""}
+        stamp = created_at or _now()
         return {
             "embedding_model": self.embedder.model,
             "index_version": self.index_version,
             "dim": len(vector),
-            "created_at": _now_iso(),
+            "indexed_at": _now_iso(),
+            "session_id": session_id,
+            "topic_no": int(item.get("topic_no") or 0),
+            "topic_title": str(item.get("title") or ""),
+            "created_ts": int(stamp.timestamp()),
         }
 
     def _is_current(self, metadata: dict[str, Any] | None) -> bool:
@@ -391,38 +458,47 @@ class MemoryService:
             return False
         return version == self.index_version
 
-    def _index_filter(self) -> dict[str, Any]:
-        """Фильтр Chroma: только векторы текущей модели и версии."""
-        return {
-            "$and": [
-                {"embedding_model": self.embedder.model},
-                {"index_version": self.index_version},
-            ]
-        }
+    def _index_filter(self, day: date | None = None) -> dict[str, Any]:
+        """Фильтр Chroma: своя модель и версия, при необходимости — день."""
+        clauses: list[dict[str, Any]] = [
+            {"embedding_model": self.embedder.model},
+            {"index_version": self.index_version},
+        ]
+        if day is not None:
+            start, end = _day_bounds(day)
+            clauses.append({"created_ts": {"$gte": start}})
+            clauses.append({"created_ts": {"$lt": end}})
+        return {"$and": clauses}
 
     def forget(self, session_id: str) -> bool:
-        """Убирает вектор удалённой сессии. Сбой только логируется."""
+        """Убирает все векторы удалённой сессии. Сбой только логируется."""
         try:
-            self.vectors.delete(session_id)
+            self.vectors.delete_session(session_id)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Вектор сессии %s не удалён: %s", session_id, exc)
+            log.warning("Векторы сессии %s не удалены: %s", session_id, exc)
             return False
         return True
 
     # ------------------------------------------------------------------- read
-    def recall(self, query: str, *, now: datetime | None = None) -> list[MemoryHit]:
-        """Ищет прошлые резюме по смыслу, затем чуть поднимает свежие.
+    def recall(
+        self,
+        query: str,
+        *,
+        now: datetime | None = None,
+        day: date | None = None,
+    ) -> list[MemoryHit]:
+        """Ищет темы по смыслу, при необходимости только за один день.
 
         Смысловая близость остаётся главной; бонус за свежесть решает
-        близкие случаи и помогает «последней теме» не проиграть более
-        заметному, но старому разговору. Любой сбой — пустой список.
+        близкие случаи. Если назван день, Chroma сразу отсекает чужие
+        даты по ``created_ts``. Любой сбой — пустой список.
         """
         text = " ".join((query or "").split())
         if not text:
             return []
         try:
             vector = self.embedder.embed([text], input_type="query")[0]
-            hits = self.vectors.search(vector, self.top_k * 2, self._index_filter())
+            hits = self.vectors.search(vector, self.top_k * 2, self._index_filter(day))
         except EmbeddingError as exc:
             log.warning("Поиск по памяти пропущен: %s", exc)
             return []
@@ -435,15 +511,23 @@ class MemoryService:
         for index, hit in enumerate(ranked):
             if not self._relevant(hit.score, ranked, index):
                 continue
-            saved = self.store.summary(hit.session_id)
+            session_id = _hit_session_id(hit)
+            topic_no = _hit_topic_no(hit)
+            saved = self.store.summary(session_id)
             if saved is None:
                 continue
+            topic = _topic_at(saved, topic_no)
             found.append(
                 MemoryHit(
-                    session_id=hit.session_id,
-                    summary=str(saved["summary"]),
+                    session_id=session_id,
+                    summary=_clip(
+                        topic["text"] if topic else str(saved["summary"]),
+                        self.digest_item_chars,
+                    ),
                     score=hit.score,
-                    created_at=str(saved.get("created_at") or ""),
+                    created_at=str(saved.get("started_at") or saved.get("created_at") or ""),
+                    topic_no=topic_no,
+                    topic_title=str(topic["title"]) if topic else "",
                 )
             )
         found.sort(
@@ -489,7 +573,7 @@ class MemoryService:
         """
         facts = self.facts_block(query)
         day = _period_day(query, now)
-        hits = self.recall(query, now=now)
+        hits = self.recall(query, now=now, day=day)
         if day is not None:
             hits = [hit for hit in hits if _is_on_day(hit.created_at, day)]
         # Если поиск уверенно нашёл нужное, хронология только мешает:
@@ -499,18 +583,20 @@ class MemoryService:
         recent = [] if specific else self.recent(day)
         digest = [] if day is not None or specific else self.digest(now=now)
 
-        timeline: dict[str, MemoryHit] = {hit.session_id: hit for hit in digest}
+        timeline: dict[tuple[str, int], MemoryHit] = {
+            (hit.session_id, hit.topic_no): hit for hit in digest
+        }
         # Свежее резюме важнее дневного дайджеста: при совпадении текста
         # оставляем именно его, с полным лимитом символов.
-        timeline.update({hit.session_id: hit for hit in recent})
+        timeline.update({(hit.session_id, hit.topic_no): hit for hit in recent})
         if day is not None:
             # В конкретный день важен порядок, а не сходство: все
-            # воспоминания этого дня раскладываем по времени.
-            timeline.update({hit.session_id: hit for hit in hits})
+            # воспоминания этого дня раскладываем по времени и темам.
+            timeline.update({(hit.session_id, hit.topic_no): hit for hit in hits})
             hits = []
         ordered = sorted(
             timeline.values(),
-            key=lambda hit: _moment_key(hit.created_at),
+            key=lambda hit: (_moment_key(hit.created_at), hit.topic_no),
             reverse=True,
         )
 
@@ -524,31 +610,33 @@ class MemoryService:
         if ordered or hits:
             lines.append(MEMORY_HEADER)
             total += len(MEMORY_HEADER) + 1
-        seen: set[str] = set()
+        seen: set[tuple[str, int]] = set()
         for hit in ordered:
             line = _dated_line(hit, now)
             if self.max_chars and total + len(line) + 1 > self.max_chars:
                 break
             lines.append(line)
             total += len(line) + 1
-            seen.add(hit.session_id)
+            seen.add((hit.session_id, hit.topic_no))
         for hit in hits:
-            if hit.session_id in seen:
+            key = (hit.session_id, hit.topic_no)
+            if key in seen:
                 continue
             line = _dated_line(hit, now)
             if self.max_chars and total + len(line) + 1 > self.max_chars:
                 break
             lines.append(line)
             total += len(line) + 1
-            seen.add(hit.session_id)
+            seen.add(key)
         return "\n".join(lines) if len(lines) > 1 or facts else ""
 
     def recent(self, day: date | None = None) -> list[MemoryHit]:
         """Последние разговоры по времени, а не по смыслу.
 
-        Без ``day`` берутся просто последние завершённые сессии. С днём —
-        только он: так отвечаем на «что было вчера», не полагаясь на
-        векторное сходство. Ошибка чтения базы не ломает диалог.
+        Без ``day`` берутся резюме последних завершённых сессий. С днём —
+        темы этого дня, последняя тема первой: так отвечаем на «что было
+        вчера», не полагаясь на векторное сходство. Ошибка чтения базы не
+        ломает диалог.
         """
         if self.recent_limit <= 0:
             return []
@@ -558,6 +646,7 @@ class MemoryService:
             log.warning("Память: последние разговоры недоступны: %s", exc)
             return []
         found: list[MemoryHit] = []
+        sessions = 0
         for row in rows:
             if str(row.get("status") or "") != "completed":
                 continue
@@ -566,18 +655,38 @@ class MemoryService:
                 continue
             if day is not None and started.date() != day:
                 continue
-            text = str(row.get("summary") or "").strip()
-            if not text:
+            items = _summary_items(row)
+            if not items:
                 continue
-            found.append(
-                MemoryHit(
-                    session_id=str(row["session_id"]),
-                    summary=_clip(text, self.recent_item_chars),
-                    score=0.0,
-                    created_at=str(row.get("started_at") or ""),
+            session_id = str(row["session_id"])
+            created_at = str(row.get("started_at") or row.get("created_at") or "")
+            if day is None:
+                text = str(row.get("summary") or "").strip()
+                if not text:
+                    text = " ".join(item["text"] for item in items)
+                found.append(
+                    MemoryHit(
+                        session_id=session_id,
+                        summary=_clip(text, self.recent_item_chars),
+                        score=0.0,
+                        created_at=created_at,
+                        topic_no=-1,
+                    )
                 )
-            )
-            if len(found) >= self.recent_limit:
+            else:
+                for item in reversed(items):
+                    found.append(
+                        MemoryHit(
+                            session_id=session_id,
+                            summary=_clip(item["text"], self.recent_item_chars),
+                            score=0.0,
+                            created_at=created_at,
+                            topic_no=int(item["topic_no"]),
+                            topic_title=str(item["title"]),
+                        )
+                    )
+            sessions += 1
+            if sessions >= self.recent_limit:
                 break
         return found
 
@@ -624,6 +733,7 @@ class MemoryService:
                     summary=_clip(text, self.digest_item_chars),
                     score=0.0,
                     created_at=str(row.get("started_at") or ""),
+                    topic_no=-1,
                 )
             )
             if len(found) >= self.digest_limit:
@@ -642,7 +752,94 @@ class MemoryService:
 
 
 def _now_iso() -> str:
-    return datetime.now().astimezone().isoformat()
+    return _now().isoformat()
+
+
+def _now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _vector_id(session_id: str, topic_no: int) -> str:
+    """Id вектора: сессия и номер темы. Сессии — hex, двоеточие безопасно."""
+    return f"{session_id}:{int(topic_no)}"
+
+
+def _summary_items(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Единицы индексации: темы v3 с текстом или резюме целиком.
+
+    Старые резюме (v2 и раньше) не разбиваются на темы: у них есть только
+    названия без описания, индексировать их по отдельности нечем.
+    """
+    data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    raw_topics = data.get("topics") if isinstance(data, dict) else None
+    items: list[dict[str, Any]] = []
+    if isinstance(raw_topics, list):
+        for number, raw in enumerate(raw_topics):
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title") or "").strip()
+            text = str(raw.get("text") or "").strip()
+            if not text:
+                continue
+            items.append(
+                {
+                    "topic_no": number,
+                    "title": title or text[:80],
+                    "text": text,
+                }
+            )
+    if items:
+        return items
+    text = str(row.get("summary") or "").strip()
+    if text:
+        items.append({"topic_no": 0, "title": "", "text": text})
+    return items
+
+
+def _embedding_text(item: dict[str, Any]) -> str:
+    """Текст темы для вектора: название помогает попасть в запрос."""
+    title = str(item.get("title") or "").strip()
+    text = str(item.get("text") or "").strip()
+    if title and text:
+        return f"{title}. {text}"
+    return text or title
+
+
+def _hit_session_id(hit: VectorHit) -> str:
+    session_id = str(hit.metadata.get("session_id") or "").strip()
+    if session_id:
+        return session_id
+    return hit.vector_id.split(":", 1)[0]
+
+
+def _hit_topic_no(hit: VectorHit) -> int:
+    try:
+        return int(hit.metadata.get("topic_no") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _topic_at(row: dict[str, Any], topic_no: int) -> dict[str, str] | None:
+    """Тема из ``data`` по номеру. Старый формат и мусор дают ``None``."""
+    data = row.get("data") if isinstance(row.get("data"), dict) else {}
+    topics = data.get("topics") if isinstance(data, dict) else None
+    if not isinstance(topics, list) or not 0 <= topic_no < len(topics):
+        return None
+    raw = topics[topic_no]
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title") or "").strip()
+    text = str(raw.get("text") or "").strip()
+    if not text:
+        return None
+    return {"title": title, "text": text}
+
+
+def _day_bounds(day: date) -> tuple[int, int]:
+    """Начало и конец местного дня в epoch-секундах."""
+    start = datetime.combine(day, time.min).astimezone()
+    end = start + timedelta(days=1)
+    return int(start.timestamp()), int(end.timestamp())
 
 
 def _int_setting(value: Any, default: int) -> int:
@@ -700,9 +897,12 @@ def _moment_key(value: str) -> float:
 def _dated_line(hit: MemoryHit, now: datetime | None) -> str:
     moment = _parse_moment(hit.created_at)
     if moment is None:
-        return f"- {hit.summary}"
-    label = _day_label(moment.date(), _as_local(now).date())
-    return f"- {label}, {moment.strftime('%H:%M')}: {hit.summary}"
+        label = ""
+    else:
+        day = _day_label(moment.date(), _as_local(now).date())
+        label = f"{day}, {moment.strftime('%H:%M')}: "
+    topic = f"«{hit.topic_title}» " if hit.topic_title else ""
+    return f"- {label}{topic}{hit.summary}"
 
 
 def _day_label(day: date, today: date) -> str:
