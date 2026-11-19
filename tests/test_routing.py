@@ -93,7 +93,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(DEFAULTS["local_planner"]["model"], "qwen2.5:3b-instruct")
         self.assertTrue(DEFAULTS["cloud_llm"]["enabled"])
         self.assertIn("proxyapi", DEFAULTS["cloud_llm"]["base_url"])
-        self.assertEqual(DEFAULTS["cloud_llm"]["model"], "anthropic/claude-haiku-5-5")
+        self.assertEqual(DEFAULTS["cloud_llm"]["model"], "openai/gpt-6-luna")
 
 
 if __name__ == "__main__":
