@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .durability import PERMANENT
+from .durability import PERMANENT, TRAIT
 from .session import DialogSession, Message, SessionMemory
 
 log = logging.getLogger(__name__)
@@ -71,7 +71,9 @@ CREATE TABLE IF NOT EXISTS memory_facts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'trait',
     durability TEXT NOT NULL DEFAULT 'permanent',
+    event_at TEXT NOT NULL DEFAULT '',
     fact_key TEXT NOT NULL,
     text TEXT NOT NULL,
     evidence TEXT NOT NULL,
@@ -94,7 +96,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_facts_session
 
 FACT_FIELDS = (
     "kind",
+    "scope",
     "durability",
+    "event_at",
     "fact_key",
     "text",
     "evidence",
@@ -241,7 +245,9 @@ class SessionStore:
         *,
         session_id: str,
         kind: str,
+        scope: str = TRAIT,
         durability: str = PERMANENT,
+        event_at: str = "",
         fact_key: str,
         text: str,
         evidence: str,
@@ -263,15 +269,17 @@ class SessionStore:
             cursor = conn.execute(
                 """
                 INSERT INTO memory_facts
-                    (session_id, kind, durability, fact_key, text, evidence,
-                     importance, confidence, status, created_at, updated_at,
-                     replaced_by, conflict_with, resolved_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (session_id, kind, scope, durability, event_at, fact_key,
+                     text, evidence, importance, confidence, status, created_at,
+                     updated_at, replaced_by, conflict_with, resolved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
                     kind,
+                    scope,
                     durability,
+                    event_at,
                     fact_key,
                     text,
                     evidence,
@@ -316,9 +324,9 @@ class SessionStore:
     def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
         """Факты памяти, свежие сверху. ``status`` фильтрует active/superseded."""
         query = """
-            SELECT id, session_id, kind, durability, fact_key, text, evidence,
-                   importance, confidence, status, created_at, updated_at,
-                   replaced_by, conflict_with, resolved_by
+            SELECT id, session_id, kind, scope, durability, event_at, fact_key,
+                   text, evidence, importance, confidence, status, created_at,
+                   updated_at, replaced_by, conflict_with, resolved_by
             FROM memory_facts
         """
         params: list[Any] = []
@@ -336,9 +344,9 @@ class SessionStore:
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT id, session_id, kind, durability, fact_key, text, evidence,
-                       importance, confidence, status, created_at, updated_at,
-                       replaced_by, conflict_with, resolved_by
+                SELECT id, session_id, kind, scope, durability, event_at, fact_key,
+                       text, evidence, importance, confidence, status, created_at,
+                       updated_at, replaced_by, conflict_with, resolved_by
                 FROM memory_facts
                 WHERE id = ?
                 """,
@@ -623,6 +631,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE memory_facts ADD COLUMN durability TEXT NOT NULL DEFAULT 'permanent'"
         )
+    if fact_columns and "scope" not in fact_columns:
+        # Старые записи дозаполнит MemoryManager.maintain() по тексту.
+        conn.execute("ALTER TABLE memory_facts ADD COLUMN scope TEXT NOT NULL DEFAULT 'trait'")
+    if fact_columns and "event_at" not in fact_columns:
+        # Пустая дата означает «не событие»; для событий её ставит менеджер.
+        conn.execute("ALTER TABLE memory_facts ADD COLUMN event_at TEXT NOT NULL DEFAULT ''")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position

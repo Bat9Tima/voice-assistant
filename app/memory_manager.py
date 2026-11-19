@@ -30,7 +30,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-from .durability import PERMANENT, TEMPORARY, classify_durability
+from .durability import (
+    EVENT,
+    PERMANENT,
+    STATE,
+    TEMPORARY,
+    TRAIT,
+    classify_scope,
+)
 from .importance import HIGH, MEDIUM, WEIGHT, classify, explicit_remember
 from .summary_schema import StructuredSummary, SummaryItem
 
@@ -61,9 +68,9 @@ REVIEW_HEADER = (
     "Не утверждай ни один вариант как факт. Если тема важна, мягко уточни "
     "у пользователя."
 )
-STABLE_HEADER = "Устойчивое:"
-FRESH_HEADER = "Свежее:"
-TOPIC_HEADER = "По теме:"
+STABLE_HEADER = "Устойчивое о тебе:"
+FRESH_HEADER = "Свежие ситуации:"
+TOPIC_HEADER = "Релевантное запросу:"
 TASKS_HEADER = "Открытые темы:"
 # Явные маркеры смены состояния: «выздоровел», «больше не», «теперь».
 # Только с ними система решается заменить старый факт без проверки.
@@ -129,6 +136,10 @@ _UNFINISHED_GAP = (
     "остался непонят",
     "остались непонят",
     "остались неясн",
+    "что произошло",
+    "что именно",
+    "из-за чего",
+    "по какой причин",
     "смысл и обстоятельства",
     "ассистент не уверен",
     "ассистент не стала",
@@ -449,10 +460,21 @@ class MemoryManager:
                     # «Пользователь не ответил…» — не задача, а шум.
                     continue
                 importance, confidence = classify(kind, item)
-                durability = classify_durability(item.text)
+                scope = TRAIT if kind != "fact" else classify_scope(item.text)
+                durability = TEMPORARY if scope == STATE else PERMANENT
+                event_at = stamp if scope == EVENT else ""
                 key = memory_key(kind, item.text)
                 merged = self._merge(
-                    active, kind, key, item, importance, confidence, durability, stamp
+                    active,
+                    kind,
+                    key,
+                    item,
+                    importance,
+                    confidence,
+                    durability,
+                    stamp,
+                    scope=scope,
+                    event_at=event_at,
                 )
                 if merged is not None:
                     result.merged += 1
@@ -471,6 +493,8 @@ class MemoryManager:
                             confidence,
                             durability,
                             stamp,
+                            scope=scope,
+                            event_at=event_at,
                             conflict_with=conflict["id"],
                         )
                         self.store.update_memory_fact(
@@ -495,6 +519,8 @@ class MemoryManager:
                             durability,
                             stamp,
                             conflict["id"],
+                            scope=scope,
+                            event_at=event_at,
                         )
                         self._dismiss_reviews(kind, key, stamp)
                     else:
@@ -509,6 +535,8 @@ class MemoryManager:
                             confidence,
                             durability,
                             stamp,
+                            scope=scope,
+                            event_at=event_at,
                             status=NEEDS_REVIEW,
                             conflict_with=conflict["id"],
                         )
@@ -534,6 +562,8 @@ class MemoryManager:
                             stamp,
                             conflict["id"],
                             status=NEEDS_REVIEW,
+                            scope=scope,
+                            event_at=event_at,
                         )
                     continue
                 new_id = self._add(
@@ -545,6 +575,8 @@ class MemoryManager:
                     confidence,
                     durability,
                     stamp,
+                    scope=scope,
+                    event_at=event_at,
                 )
                 result.added += 1
                 self._remember(
@@ -558,6 +590,8 @@ class MemoryManager:
                     confidence,
                     durability,
                     stamp,
+                    scope=scope,
+                    event_at=event_at,
                 )
                 # Новое активное утверждение важнее незакрытого спора.
                 self._dismiss_reviews(kind, key, stamp)
@@ -601,27 +635,38 @@ class MemoryManager:
             log.info("Память: поднята важность фактов по просьбе «запомни»: %s", updated)
         return updated
 
-    def remembered(self, limit: int = 8) -> list[dict]:
-        """Устойчивые факты о пользователе для ответа «что ты помнишь»."""
+    def portrait(self, limit: int = 8) -> list[dict]:
+        """Компактный портрет: подтверждённые устойчивые факты о человеке.
+
+        Это view поверх ``memory_facts``, а не отдельное хранилище. Сюда
+        не попадают состояния, события и задачи: они живут в своих слоях
+        промпта. Порядок детерминированный, поэтому портрет не «прыгает»
+        от вопроса к вопросу.
+        """
         if limit <= 0:
             return []
         rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
-        rows = [
+        stable = [
             row
             for row in rows
             if row["kind"] in ("fact", "decision")
-            and row["durability"] != TEMPORARY
             and row["importance"] in (HIGH, MEDIUM)
+            and _row_scope(row) == TRAIT
         ]
-        rows.sort(
+        stable.sort(
             key=lambda row: (
                 WEIGHT.get(row["importance"], 2),
                 str(row.get("updated_at") or ""),
+                int(row.get("id") or 0),
                 float(row["confidence"]),
             ),
             reverse=True,
         )
-        return rows[:limit]
+        return stable[:limit]
+
+    def remembered(self, limit: int = 8) -> list[dict]:
+        """Совместимость: «что ты обо мне помнишь» показывает портрет."""
+        return self.portrait(limit)
 
     def forget(self, query: str) -> list[dict]:
         """Закрывает факты, которые пользователь просит забыть.
@@ -658,7 +703,8 @@ class MemoryManager:
         compacted = self.compact()
         expired = self.expire_temporary(now=moment)
         pruned = self.prune_unfinished(now=moment)
-        return repaired + compacted + expired + pruned
+        trimmed = self._trim_unfinished()
+        return repaired + compacted + expired + pruned + trimmed
 
     def compact(self) -> int:
         """Схлопывает активные дубли внутри одной темы.
@@ -707,8 +753,59 @@ class MemoryManager:
                     continue
                 self._absorb(parent, row)
                 merged += 1
+        merged += self._compact_unfinished(rows)
         if merged:
             log.info("Память: схлопнуто дублей фактов: %s", merged)
+        return merged
+
+    def _compact_unfinished(self, rows: list[dict]) -> int:
+        """Схлопывает задачи об одном человеке или сущности.
+
+        «Что произошло с Максимом» и «Что Максим сделал» — одна открытая
+        тема, а не две. Задачи без имён не трогаем: «позвонить маме» и
+        «купить продукты» должны остаться разными.
+        """
+        groups: list[tuple[set[str], list[dict]]] = []
+        merged = 0
+        for row in rows:
+            if row["kind"] != "unfinished" or row["status"] != "active":
+                continue
+            text = str(row.get("text") or "")
+            if _is_gap_task(text):
+                # Пробел в разговоре — не задача, даже если рядом есть имя.
+                self.store.update_memory_fact(row["id"], status=DISMISSED)
+                merged += 1
+                continue
+            names = _unfinished_names(text)
+            if not names:
+                continue
+            for known, items in groups:
+                if known & names:
+                    known |= names
+                    items.append(row)
+                    break
+            else:
+                groups.append((names, [row]))
+        for _, group in groups:
+            if len(group) < 2:
+                continue
+            group.sort(
+                key=lambda row: (
+                    len(_token_set(str(row.get("text") or ""))),
+                    str(row.get("updated_at") or ""),
+                    int(row.get("id") or 0),
+                ),
+                reverse=True,
+            )
+            parent = group[0]
+            for row in group[1:]:
+                if not (
+                    _contained(str(row["text"]), str(parent["text"]))
+                    or _similarity(str(row["text"]), str(parent["text"])) >= 0.35
+                ):
+                    continue
+                self._absorb(parent, row)
+                merged += 1
         return merged
 
     def _compact_style(self, group: list[dict]) -> int:
@@ -729,14 +826,15 @@ class MemoryManager:
         parent, rest = group[0], group[1:]
         summary = _style_summary(traits)
         confidence = max(float(row["confidence"]) for row in group)
-        durability = _stricter(str(group[0]["durability"]), str(group[-1]["durability"]))
         updated = max(str(row.get("updated_at") or "") for row in group)
         self.store.update_memory_fact(
             parent["id"],
             text=summary,
             importance=HIGH,
             confidence=confidence,
-            durability=durability,
+            scope=TRAIT,
+            durability=PERMANENT,
+            event_at="",
             updated_at=updated,
         )
         for row in rest:
@@ -759,7 +857,16 @@ class MemoryManager:
         )
         importance = _higher(str(parent["importance"]), str(child["importance"]))
         confidence = max(float(parent["confidence"]), float(child["confidence"]))
-        durability = _stricter(str(parent["durability"]), str(child["durability"]))
+        scope = _row_scope(child) if choose_child else _row_scope(parent)
+        durability = TEMPORARY if scope == STATE else PERMANENT
+        event_at = ""
+        if scope == EVENT:
+            event_at = str(
+                (child if choose_child else parent).get("event_at")
+                or parent.get("created_at")
+                or child.get("created_at")
+                or ""
+            )
         updated = max(str(parent.get("updated_at") or ""), str(child.get("updated_at") or ""))
         self.store.update_memory_fact(
             parent["id"],
@@ -767,7 +874,9 @@ class MemoryManager:
             evidence=merged_evidence,
             importance=importance,
             confidence=confidence,
+            scope=scope,
             durability=durability,
+            event_at=event_at,
             updated_at=updated,
         )
         self.store.update_memory_fact(child["id"], status="superseded", replaced_by=parent["id"])
@@ -784,7 +893,11 @@ class MemoryManager:
         rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
         closed = 0
         for row in rows:
-            if row["kind"] != "fact" or row["durability"] != TEMPORARY:
+            if row["kind"] != "fact":
+                continue
+            # Старые записи могли остаться с durability=temporary, но без
+            # заполненного scope: их всё равно надо скрыть по сроку.
+            if _row_scope(row) != STATE and row["durability"] != TEMPORARY:
                 continue
             age = _age_days(str(row.get("updated_at") or ""), moment)
             if age is None or age < self.temporary_ttl_days:
@@ -818,23 +931,49 @@ class MemoryManager:
         return closed
 
     def _reclassify_temporary(self) -> int:
-        """Переводит старые ситуативные факты в ``temporary``.
+        """Дозаполняет scope и дату события у старых фактов.
 
-        Раньше «сосед ужинает» считалось постоянным фактом и не уставало.
-        Текст не меняется, поэтому достаточно поправить длительность;
-        срок жизни начнёт считаться от последнего обновления.
+        Раньше «сосед ужинает» считалось постоянным фактом и не уставало,
+        а событие не отличалось от текущего состояния. Текст не меняется:
+        достаточно поправить scope, длительность и дату. Временные записи
+        не «повышаем» до черты: иначе старый шум вернулся бы в портрет.
         """
         rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
         updated = 0
         for row in rows:
-            if row["kind"] != "fact" or row["durability"] == TEMPORARY:
+            if row["kind"] != "fact":
                 continue
-            if classify_durability(str(row.get("text") or "")) != TEMPORARY:
+            text = str(row.get("text") or "")
+            scope = str(row.get("scope") or "")
+            durability = str(row.get("durability") or PERMANENT)
+            event_at = str(row.get("event_at") or "")
+            if scope in (EVENT, STATE):
+                # Явно назначенный scope не пересматриваем: текст мог
+                # случайно задеть маркер другого слоя («любимая группа»
+                # внутри события).
+                new_scope = scope
+            elif durability == TEMPORARY:
+                # Старые временные записи по определению описывают состояние.
+                new_scope = STATE
+            else:
+                new_scope = classify_scope(text)
+            new_event = event_at
+            if new_scope == EVENT and not new_event:
+                new_event = str(row.get("created_at") or row.get("updated_at") or "")
+            elif new_scope != EVENT:
+                new_event = ""
+            new_durability = TEMPORARY if new_scope == STATE else PERMANENT
+            if (new_scope, new_durability, new_event) == (scope, durability, event_at):
                 continue
-            self.store.update_memory_fact(row["id"], durability=TEMPORARY)
+            self.store.update_memory_fact(
+                row["id"],
+                scope=new_scope,
+                durability=new_durability,
+                event_at=new_event,
+            )
             updated += 1
         if updated:
-            log.info("Память: ситуативные факты стали временными: %s", updated)
+            log.info("Память: уточнены scope и даты старых фактов: %s", updated)
         return updated
 
     def _trim_unfinished(self) -> int:
@@ -884,8 +1023,11 @@ class MemoryManager:
                 reverse=True,
             )
         else:
+            # Общий вопрос не должен вытесняться свежим шумом: сначала
+            # устойчивые черты, потом состояния и события.
             rows.sort(
                 key=lambda row: (
+                    _row_scope(row) == TRAIT and row["kind"] != "unfinished",
                     str(row["updated_at"]),
                     WEIGHT.get(row["importance"], 2),
                     float(row["confidence"]),
@@ -953,7 +1095,7 @@ class MemoryManager:
                 topic.append(row)
             elif row["kind"] == "unfinished":
                 tasks.append(row)
-            elif row["durability"] == TEMPORARY:
+            elif _row_scope(row) in (STATE, EVENT):
                 fresh.append(row)
             else:
                 stable.append(row)
@@ -975,8 +1117,7 @@ class MemoryManager:
             body: list[str] = []
             used = total + len(header) + 1
             for row in rows:
-                moment = _short_date(str(row.get("updated_at") or ""))
-                line = f"- {moment}{row['text']}" if moment else f"- {row['text']}"
+                line = _fact_line(row)
                 if self.facts_max_chars and used + len(line) + 1 > self.facts_max_chars:
                     break
                 body.append(line)
@@ -1055,6 +1196,9 @@ class MemoryManager:
         confidence: float,
         durability: str,
         stamp: str,
+        *,
+        scope: str = TRAIT,
+        event_at: str = "",
     ) -> dict | None:
         best: dict | None = None
         best_score = 0.0
@@ -1076,14 +1220,21 @@ class MemoryManager:
         evidence = item.evidence if choose_new else best["evidence"]
         merged_importance = _higher(best["importance"], importance)
         merged_confidence = max(float(best["confidence"]), confidence)
-        merged_durability = _stricter(best["durability"], durability)
+        merged_scope = scope if choose_new else _row_scope(best)
+        merged_durability = TEMPORARY if merged_scope == STATE else PERMANENT
+        merged_event = ""
+        if merged_scope == EVENT:
+            dates = [value for value in (best.get("event_at"), event_at) if value]
+            merged_event = min(dates) if dates else ""
         self.store.update_memory_fact(
             best["id"],
             text=text,
             evidence=evidence,
             importance=merged_importance,
             confidence=merged_confidence,
+            scope=merged_scope,
             durability=merged_durability,
+            event_at=merged_event,
             updated_at=stamp,
         )
         best.update(
@@ -1091,7 +1242,9 @@ class MemoryManager:
             evidence=evidence,
             importance=merged_importance,
             confidence=merged_confidence,
+            scope=merged_scope,
             durability=merged_durability,
+            event_at=merged_event,
             updated_at=stamp,
         )
         return best
@@ -1123,13 +1276,17 @@ class MemoryManager:
         durability: str,
         stamp: str,
         *,
+        scope: str = TRAIT,
+        event_at: str = "",
         status: str = "active",
         conflict_with: int | None = None,
     ) -> int:
         return self.store.add_memory_fact(
             session_id=session_id,
             kind=kind,
+            scope=scope,
             durability=durability,
+            event_at=event_at,
             fact_key=key,
             text=item.text,
             evidence=item.evidence,
@@ -1155,12 +1312,17 @@ class MemoryManager:
         stamp: str,
         conflict_with: int | None = None,
         status: str = "active",
+        *,
+        scope: str = TRAIT,
+        event_at: str = "",
     ) -> dict:
         row = {
             "id": fact_id,
             "session_id": session_id,
             "kind": kind,
+            "scope": scope,
             "durability": durability,
+            "event_at": event_at,
             "fact_key": key,
             "text": item.text,
             "evidence": item.evidence,
@@ -1254,11 +1416,6 @@ def _is_later(previous: str, current: str) -> bool:
         return datetime.fromisoformat(current) > datetime.fromisoformat(previous)
     except (TypeError, ValueError):
         return False
-
-
-def _stricter(left: str, right: str) -> str:
-    """Постоянное предпочтение осторожнее временного состояния."""
-    return TEMPORARY if left == TEMPORARY and right == TEMPORARY else PERMANENT
 
 
 def _opposes(left: str, right: str) -> bool:
@@ -1463,12 +1620,115 @@ def _age_days(value: str, now: datetime) -> float | None:
     return (now - moment).total_seconds() / 86400
 
 
+def _row_scope(row: dict) -> str:
+    """Scope записи с поправкой на старые строки без заполненного поля."""
+    scope = str(row.get("scope") or "")
+    text = str(row.get("text") or "")
+    if scope == EVENT:
+        return EVENT
+    if scope == STATE or row.get("durability") == TEMPORARY:
+        return STATE
+    if scope == TRAIT:
+        # Старая база по умолчанию хранит trait. Событие, записанное до
+        # появления scope, всё равно должно иметь дату и не звучать как
+        # «сейчас», поэтому проверяем текст.
+        return EVENT if classify_scope(text) == EVENT else TRAIT
+    return classify_scope(text)
+
+
+def _fact_line(row: dict) -> str:
+    """Строка факта: у события дата в прошлом, у состояния — свежая."""
+    text = str(row.get("text") or "")
+    scope = _row_scope(row)
+    if scope == EVENT:
+        moment = _short_date(
+            str(row.get("event_at") or row.get("created_at") or row.get("updated_at") or "")
+        )
+        return f"- {moment} (было): {text}" if moment else f"- (было): {text}"
+    moment = _short_date(str(row.get("updated_at") or ""))
+    return f"- {moment}: {text}" if moment else f"- {text}"
+
+
 def _short_date(value: str) -> str:
     try:
         moment = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return ""
-    return moment.strftime("%d.%m.%Y: ")
+    return moment.strftime("%d.%m.%Y")
+
+
+# Слова, с которых начинается фраза, а не имя собственное.
+_NON_NAME_STARTS = frozenset(
+    {
+        "что",
+        "кто",
+        "как",
+        "почему",
+        "зачем",
+        "где",
+        "когда",
+        "куда",
+        "откуда",
+        "позвонить",
+        "позвони",
+        "купить",
+        "купи",
+        "закончить",
+        "закончи",
+        "проверить",
+        "проверь",
+        "спросить",
+        "спроси",
+        "узнать",
+        "узнай",
+        "написать",
+        "напиши",
+        "сделать",
+        "сделай",
+        "выяснить",
+        "выясни",
+        "поговорить",
+        "поговори",
+        "сходить",
+        "сходи",
+        "поехать",
+        "поезжай",
+        "решить",
+        "реши",
+        "подготовить",
+        "подготовь",
+        "посмотреть",
+        "посмотри",
+        "прочитать",
+        "прочитай",
+        "найти",
+        "найди",
+        "пользователь",
+        "пользователю",
+        "ассистент",
+        "луна",
+        "сегодня",
+        "вчера",
+        "завтра",
+    }
+)
+_NAME_SUFFIXES = ("ами", "ями", "ом", "ем", "а", "я", "у", "ю", "е", "ы", "и")
+
+
+def _unfinished_names(text: str) -> set[str]:
+    """Имена в задаче: по ним задачи об одном человеке схлопываются."""
+    names: set[str] = set()
+    for match in re.finditer(r"[А-ЯЁ][а-яё]+", text or ""):
+        word = match.group(0)
+        low = word.lower().replace("ё", "е")
+        if low in _NON_NAME_STARTS:
+            continue
+        for suffix in _NAME_SUFFIXES:
+            if len(low) > len(suffix) + 3 and low.endswith(suffix):
+                low = low[: -len(suffix)]
+                break
+        names.add(low)
+    return names
 
 
 def _now() -> datetime:

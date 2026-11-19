@@ -5,6 +5,7 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.durability import EVENT, STATE
 from app.memory_manager import (
     DISMISSED,
     EXPIRED,
@@ -62,16 +63,21 @@ class MemoryManagerTest(unittest.TestCase):
         text: str,
         *,
         kind: str = "fact",
+        scope: str = "trait",
         durability: str = "permanent",
+        event_at: str = "",
         moment: datetime | None = None,
         fact_key: str | None = None,
         importance: str = "medium",
+        session_id: str = "s1",
     ) -> int:
         stamp = (moment or at()).isoformat()
         return store.add_memory_fact(
-            session_id="s1",
+            session_id=session_id,
             kind=kind,
+            scope=scope,
             durability=durability,
+            event_at=event_at,
             fact_key=fact_key or text,
             text=text,
             evidence=text,
@@ -247,6 +253,132 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertEqual(store.memory_fact(old)["status"], EXPIRED)
         self.assertEqual(store.memory_fact(fresh)["status"], "active")
 
+    def test_event_keeps_date_and_does_not_expire(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь вчера сдал экзамен", "вчера сдал экзамен")]),
+            created_at=at(),
+        )
+
+        row = next(row for row in store.memory_facts() if row["text"].endswith("сдал экзамен"))
+        self.assertEqual(row["scope"], EVENT)
+        self.assertEqual(row["event_at"], at().isoformat())
+        self.assertIn(
+            "17.11.2026 (было): Пользователь вчера сдал экзамен", manager.block("экзамен")
+        )
+
+        closed = manager.expire_temporary(now=datetime(2026, 11, 25, 12, 0, tzinfo=UTC))
+
+        self.assertEqual(closed, 0)
+        self.assertEqual(store.memory_fact(row["id"])["status"], "active")
+
+    def test_merge_keeps_legacy_temporary_state_temporary(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        state = self.add_fact(
+            store,
+            "Пользователь устал",
+            fact_key="health",
+            durability="temporary",
+            importance="high",
+            session_id="s2",
+        )
+
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь устал", "устал")]),
+            created_at=at(5),
+        )
+
+        row = store.memory_fact(state)
+        self.assertEqual(row["scope"], STATE)
+        self.assertEqual(row["durability"], "temporary")
+
+    def test_portrait_excludes_events_states_and_tasks(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        stable = self.add_fact(store, "Пользователь любит кофе", importance="high")
+        self.add_fact(
+            store,
+            "Пользователь вчера сдал экзамен",
+            scope=EVENT,
+            event_at=at().isoformat(),
+            importance="high",
+        )
+        self.add_fact(
+            store,
+            "Пользователь сегодня устал",
+            scope=STATE,
+            durability="temporary",
+            importance="high",
+        )
+        self.add_fact(store, "Позвонить маме", kind="unfinished", importance="high")
+
+        self.assertEqual([row["id"] for row in manager.portrait()], [stable])
+        self.assertEqual([row["id"] for row in manager.remembered()], [stable])
+
+    def test_general_query_puts_stable_before_fresh_noise(self) -> None:
+        manager, store = self.make(facts_limit=2)
+        self.add_session(store, "s1")
+        stable = self.add_fact(
+            store,
+            "Пользователь любит кофе",
+            importance="high",
+            moment=datetime(2026, 11, 10, 12, 0, tzinfo=UTC),
+        )
+        fresh = self.add_fact(
+            store,
+            "Пользователь сегодня устал",
+            scope=STATE,
+            durability="temporary",
+            importance="high",
+            moment=at(),
+        )
+
+        rows = manager.facts()
+
+        self.assertEqual([row["id"] for row in rows], [stable, fresh])
+
+    def test_compact_unfinished_by_person(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        short = self.add_fact(
+            store,
+            "Позвонить Максиму насчёт встречи",
+            kind="unfinished",
+        )
+        long = self.add_fact(
+            store,
+            "Позвонить Максиму насчёт встречи в субботу",
+            kind="unfinished",
+        )
+        other = self.add_fact(store, "Купить продукты", kind="unfinished")
+
+        merged = manager.compact()
+
+        self.assertEqual(merged, 1)
+        self.assertEqual(store.memory_fact(short)["status"], "superseded")
+        self.assertEqual(store.memory_fact(long)["status"], "active")
+        self.assertEqual(store.memory_fact(other)["status"], "active")
+
+    def test_compact_drops_unfinished_gaps_with_names(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        gap = self.add_fact(
+            store,
+            "Что произошло между пользователем и Максимом",
+            kind="unfinished",
+        )
+        task = self.add_fact(store, "Позвонить Максиму", kind="unfinished")
+
+        manager.compact()
+
+        self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
+        self.assertEqual(store.memory_fact(task)["status"], "active")
+
     def test_prune_unfinished_drops_gaps_and_old_tasks(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")
@@ -365,6 +497,32 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertEqual(situation_row["status"], EXPIRED)
         self.assertEqual(store.memory_fact(stable)["status"], "active")
         self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
+
+    def test_maintain_fills_scope_and_event_date(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        event = self.add_fact(
+            store,
+            "Пользователь вчера сдал экзамен",
+            moment=datetime(2026, 11, 16, 12, 0, tzinfo=UTC),
+        )
+        state = self.add_fact(
+            store,
+            "Пользователь сегодня устал",
+            durability="temporary",
+            moment=at(),
+        )
+
+        manager.maintain(now=at())
+
+        event_row = store.memory_fact(event)
+        self.assertEqual(event_row["scope"], EVENT)
+        self.assertEqual(
+            event_row["event_at"], datetime(2026, 11, 16, 12, 0, tzinfo=UTC).isoformat()
+        )
+        state_row = store.memory_fact(state)
+        self.assertEqual(state_row["scope"], STATE)
+        self.assertEqual(state_row["durability"], "temporary")
 
     def test_meta_uncertainty_is_not_stored_as_fact(self) -> None:
         manager, store = self.make()
