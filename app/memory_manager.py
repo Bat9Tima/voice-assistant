@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .durability import PERMANENT, TEMPORARY, classify_durability
-from .importance import HIGH, MEDIUM, WEIGHT, classify
+from .importance import HIGH, MEDIUM, WEIGHT, classify, explicit_remember
 from .summary_schema import StructuredSummary, SummaryItem
 
 log = logging.getLogger(__name__)
@@ -518,6 +518,26 @@ class MemoryManager:
                 result.resolved,
             )
         return result
+
+    def promote_remembered(self) -> int:
+        """Поднимает важность фактов, которые пользователь просил запомнить.
+
+        Правило уже действует при записи, но старые записи лежат в базе с
+        прежней важностью. Проход при старте чинит их без ручной правки
+        SQLite.
+        """
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        updated = 0
+        for row in rows:
+            if row["importance"] == HIGH:
+                continue
+            if not explicit_remember(str(row.get("evidence") or "")):
+                continue
+            self.store.update_memory_fact(row["id"], importance=HIGH)
+            updated += 1
+        if updated:
+            log.info("Память: поднята важность фактов по просьбе «запомни»: %s", updated)
+        return updated
 
     # ------------------------------------------------------------------- read
     def facts(self, query: str = "", limit: int | None = None) -> list[dict]:

@@ -162,6 +162,7 @@ class Assistant:
                 self.memory_manager = MemoryManager.from_config(
                     self.session_store, cfg.get("memory")
                 )
+                self.memory_manager.promote_remembered()
                 self.memory = MemoryService.from_config(
                     cfg, self.session_store, manager=self.memory_manager
                 )

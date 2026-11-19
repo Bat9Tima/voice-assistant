@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .summary_schema import SummaryItem
 
 HIGH = "high"
@@ -117,6 +119,9 @@ _LEISURE = (
 )
 _DECISION_STRONG = ("решил", "договор", "выбрал", "принял", "точно")
 _SPECULATION = ("наверное", "возможно", "кажется", "может быть", "вроде")
+# Прямая просьба сохранить факт. Только повелительная форма: «я запомнил»
+# и «запомнил бы» — это не просьба и важность не поднимают.
+_REMEMBER = re.compile(r"\bзапомн(?:и|ите|ить)\b|\bне забудь(?:те)?\b")
 
 
 def classify(kind: str, item: SummaryItem) -> tuple[str, float]:
@@ -125,6 +130,9 @@ def classify(kind: str, item: SummaryItem) -> tuple[str, float]:
     evidence = _flat(item.evidence)
     confidence = _confidence(evidence, text)
 
+    if explicit_remember(evidence):
+        # Пользователь сам попросил это сохранить — это важнее категории.
+        return HIGH, confidence
     if kind == "decision":
         return (HIGH if _has(text, _DECISION_STRONG) else MEDIUM), confidence
     if kind == "unfinished":
@@ -140,6 +148,15 @@ def classify(kind: str, item: SummaryItem) -> tuple[str, float]:
     if _has(text, _LEISURE):
         return LOW, confidence
     return MEDIUM, confidence
+
+
+def explicit_remember(evidence: str) -> bool:
+    """Просил ли пользователь явно запомнить факт.
+
+    Проверяется цитата, а не пересказ модели: просьба должна быть в
+    словах пользователя, иначе модель припишет её любому факту.
+    """
+    return bool(_REMEMBER.search(_flat(evidence)))
 
 
 def _confidence(evidence: str, text: str) -> float:

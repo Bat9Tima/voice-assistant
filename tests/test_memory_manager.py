@@ -74,6 +74,50 @@ class MemoryManagerTest(unittest.TestCase):
         )
         self.assertEqual(low["importance"], "low")
 
+    def test_remember_request_raises_importance(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+
+        manager.ingest(
+            "s1",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь играет в Fortnite",
+                        "играю в фортнайт, запомни пожалуйста",
+                    )
+                ]
+            ),
+            created_at=at(),
+        )
+
+        row = store.memory_facts()[0]
+        self.assertEqual(row["importance"], "high")
+        self.assertEqual(
+            [item["text"] for item in manager.facts()],
+            ["Пользователь играет в Fortnite"],
+        )
+
+    def test_promote_remembered_fixes_old_facts(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        stamp = at().isoformat()
+        fact_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="fact:fortnite",
+            text="Пользователь играет в Fortnite",
+            evidence="играю в фортнайт, запомни пожалуйста",
+            importance="low",
+            confidence=0.75,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+        self.assertEqual(manager.promote_remembered(), 1)
+        self.assertEqual(store.memory_fact(fact_id)["importance"], "high")
+        self.assertEqual(manager.promote_remembered(), 0)
+
     def test_meta_uncertainty_is_not_stored_as_fact(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")
