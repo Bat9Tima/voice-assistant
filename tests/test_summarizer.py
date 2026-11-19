@@ -83,8 +83,9 @@ class SummarizerTest(unittest.TestCase):
                 "summary": "Говорили о C++ и циклах.",
                 "created_at": store.summary("s1")["created_at"],
                 "model": "fake-model",
-                "prompt_version": 2,
+                "prompt_version": 3,
                 "data": {},
+                "started_at": at().isoformat(),
             },
         )
         call = llm.calls[0]
@@ -123,7 +124,8 @@ class SummarizerTest(unittest.TestCase):
                         '{"facts": ['
                         '{"text": "Пользователю очень плохо", "evidence": "мне очень плохо"},'
                         '{"text": "Пользователь любит кофе", "evidence": "обожаю кофе"}'
-                        '], "topics": ["самочувствие"], '
+                        '], "topics": [{"title": "самочувствие", '
+                        '"text": "Пользователю плохо, он любит кофе."}], '
                         '"summary": "Говорили о самочувствии."}'
                     )
                 return "нет фактов"
@@ -131,9 +133,20 @@ class SummarizerTest(unittest.TestCase):
         class FakeMemory:
             def __init__(self) -> None:
                 self.saved: list[tuple[str, str]] = []
+                self.topics: list[dict] = []
+                self.created_at: datetime | None = None
 
-            def remember(self, session_id: str, summary: str) -> bool:
+            def remember(
+                self,
+                session_id: str,
+                summary: str,
+                *,
+                topics: list[dict] | None = None,
+                created_at: datetime | None = None,
+            ) -> bool:
                 self.saved.append((session_id, summary))
+                self.topics = topics or []
+                self.created_at = created_at
                 return True
 
         directory = tempfile.TemporaryDirectory()
@@ -162,7 +175,7 @@ class SummarizerTest(unittest.TestCase):
         )
         saved = store.summary("s1")
         self.assertEqual(saved["summary"], text)
-        self.assertEqual(saved["prompt_version"], 2)
+        self.assertEqual(saved["prompt_version"], 3)
         self.assertEqual(
             saved["data"]["facts"],
             [
@@ -170,7 +183,16 @@ class SummarizerTest(unittest.TestCase):
                 {"text": "Пользователь любит кофе", "evidence": "обожаю кофе"},
             ],
         )
+        self.assertEqual(
+            saved["data"]["topics"],
+            [{"title": "самочувствие", "text": "Пользователю плохо, он любит кофе."}],
+        )
         self.assertEqual(memory.saved, [("s1", text)])
+        self.assertEqual(
+            memory.topics,
+            [{"title": "самочувствие", "text": "Пользователю плохо, он любит кофе."}],
+        )
+        self.assertEqual(memory.created_at, at())
 
     def test_unconfirmed_fact_is_not_saved(self) -> None:
         answer = (
@@ -340,7 +362,14 @@ class SummarizerTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.saved: list[tuple[str, str]] = []
 
-            def remember(self, session_id: str, summary: str) -> bool:
+            def remember(
+                self,
+                session_id: str,
+                summary: str,
+                *,
+                topics: list[dict] | None = None,
+                created_at: datetime | None = None,
+            ) -> bool:
                 self.saved.append((session_id, summary))
                 return True
 
@@ -358,7 +387,14 @@ class SummarizerTest(unittest.TestCase):
 
     def test_memory_failure_does_not_block_summary(self) -> None:
         class BrokenMemory:
-            def remember(self, session_id: str, summary: str) -> bool:
+            def remember(
+                self,
+                session_id: str,
+                summary: str,
+                *,
+                topics: list[dict] | None = None,
+                created_at: datetime | None = None,
+            ) -> bool:
                 raise RuntimeError("Chroma умерла")
 
         directory = tempfile.TemporaryDirectory()
@@ -427,7 +463,14 @@ class SummarizerTest(unittest.TestCase):
 
     def test_from_config_passes_memory(self) -> None:
         class FakeMemory:
-            def remember(self, session_id: str, summary: str) -> bool:
+            def remember(
+                self,
+                session_id: str,
+                summary: str,
+                *,
+                topics: list[dict] | None = None,
+                created_at: datetime | None = None,
+            ) -> bool:
                 return True
 
         memory = FakeMemory()

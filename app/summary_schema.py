@@ -5,6 +5,10 @@
 ``evidence`` — дословная цитата пользователя. Пункт без подтверждения
 отбрасывается: память не должна пополняться догадками модели.
 
+С версии 3 тема — это объект ``{"title", "text"}``: название и краткое
+описание, которое индексируется отдельным вектором. Старый формат
+(список строк) разбирается так же, но без описания.
+
 В SQLite структура хранится целиком в ``summaries.data``, а в
 ``summaries.summary`` лежит обычный текст. Текст нужен для эмбеддинга,
 поиска и совместимости со старыми записями, у которых поля ещё не было.
@@ -38,6 +42,17 @@ class SummaryItem:
     evidence: str
 
 
+@dataclass(frozen=True)
+class SummaryTopic:
+    """Тема разговора: короткое название и 1–2 предложения по существу."""
+
+    title: str
+    text: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {"title": self.title, "text": self.text}
+
+
 @dataclass
 class StructuredSummary:
     """Разобранное резюме сессии. Пустые списки — нормальный результат."""
@@ -45,7 +60,7 @@ class StructuredSummary:
     facts: list[SummaryItem] = field(default_factory=list)
     decisions: list[SummaryItem] = field(default_factory=list)
     unfinished: list[SummaryItem] = field(default_factory=list)
-    topics: list[str] = field(default_factory=list)
+    topics: list[SummaryTopic] = field(default_factory=list)
     summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,7 +73,7 @@ class StructuredSummary:
             "unfinished": [
                 {"text": item.text, "evidence": item.evidence} for item in self.unfinished
             ],
-            "topics": list(self.topics),
+            "topics": [topic.to_dict() for topic in self.topics],
             "summary": self.summary,
         }
 
@@ -103,7 +118,7 @@ def render_summary(summary: StructuredSummary) -> str:
         lines.append(title)
         lines.extend(f"- {item.text}" for item in items)
     if summary.topics:
-        lines.append("Темы: " + ", ".join(summary.topics))
+        lines.append("Темы: " + ", ".join(topic.title for topic in summary.topics))
     if summary.summary:
         lines.append(summary.summary)
     return "\n".join(lines).strip()
@@ -187,18 +202,27 @@ def _items(value: Any, user_text: str) -> list[SummaryItem]:
     return found
 
 
-def _topics(value: Any) -> list[str]:
+def _topics(value: Any) -> list[SummaryTopic]:
+    """Темы в порядке обсуждения. Строка — старый формат без описания."""
     if not isinstance(value, list):
         return []
-    topics: list[str] = []
+    topics: list[SummaryTopic] = []
     seen: set[str] = set()
     for raw in value:
-        topic = _text(raw)
-        key = _normalize(topic)
-        if not topic or not key or key in seen:
+        if isinstance(raw, str):
+            title, text = _text(raw), ""
+        elif isinstance(raw, dict):
+            title = _text(raw.get("title"))
+            text = _text(raw.get("text"))
+            if not title and text:
+                title = text[:80]
+        else:
+            continue
+        key = _normalize(title)
+        if not key or key in seen:
             continue
         seen.add(key)
-        topics.append(topic)
+        topics.append(SummaryTopic(title=title, text=text))
         if len(topics) >= MAX_TOPICS:
             break
     return topics

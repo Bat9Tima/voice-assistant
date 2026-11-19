@@ -450,13 +450,16 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def summary(self, session_id: str) -> dict[str, Any] | None:
-        """Резюме одной сессии или ``None``."""
+        """Резюме одной сессии с временем её начала или ``None``."""
         with self._connection() as conn:
             row = conn.execute(
                 """
-                SELECT session_id, summary, created_at, model, prompt_version, data
-                FROM summaries
-                WHERE session_id = ?
+                SELECT
+                    m.session_id, m.summary, m.created_at, m.model,
+                    m.prompt_version, m.data, s.started_at
+                FROM summaries m
+                LEFT JOIN sessions s ON s.id = m.session_id
+                WHERE m.session_id = ?
                 """,
                 (session_id,),
             ).fetchone()
@@ -465,9 +468,12 @@ class SessionStore:
     def summaries(self, limit: int | None = 20) -> list[dict[str, Any]]:
         """Последние резюме, новые сверху. ``None`` — все резюме."""
         query = """
-            SELECT session_id, summary, created_at, model, prompt_version, data
-            FROM summaries
-            ORDER BY created_at DESC, rowid DESC
+            SELECT
+                m.session_id, m.summary, m.created_at, m.model,
+                m.prompt_version, m.data, s.started_at
+            FROM summaries m
+            LEFT JOIN sessions s ON s.id = m.session_id
+            ORDER BY m.created_at DESC, m.rowid DESC
         """
         params: tuple[Any, ...] = ()
         if limit is not None:

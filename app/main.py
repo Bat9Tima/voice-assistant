@@ -23,7 +23,7 @@ from .duck import AppVolumeDucker
 from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
 from .memory_manager import MemoryManager
-from .persona import PersonaMemory
+from .persona import DEFAULT_MAX_FACTS, PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
 from .server import ControlServer
@@ -150,12 +150,20 @@ class Assistant:
             persona = PersonaMemory(
                 dialog_cfg.get("persona_path"),
                 limit=int(dialog_cfg.get("persona_chars") or 2000),
+                max_facts=(
+                    DEFAULT_MAX_FACTS
+                    if dialog_cfg.get("persona_max_facts") is None
+                    else int(dialog_cfg["persona_max_facts"])
+                ),
             )
+            persona.compact()
             if db_path:
                 self.session_store = SessionStore(db_path)
                 self.memory_manager = MemoryManager.from_config(
                     self.session_store, cfg.get("memory")
                 )
+                self.memory_manager.promote_remembered()
+                self.memory_manager.maintain()
                 self.memory = MemoryService.from_config(
                     cfg, self.session_store, manager=self.memory_manager
                 )
@@ -266,7 +274,7 @@ class Assistant:
             log.exception("Память: восстановление индекса упало")
             return
         if restored:
-            log.info("Память: восстановлено резюме %s", restored)
+            log.info("Память: восстановлено векторов %s", restored)
 
     # ------------------------------------------------------------------- state
     @property

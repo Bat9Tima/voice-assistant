@@ -6,9 +6,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.memory_manager import (
+    DISMISSED,
+    EXPIRED,
     FACTS_HEADER,
+    FRESH_HEADER,
     NEEDS_REVIEW,
     REVIEW_HEADER,
+    STABLE_HEADER,
+    TASKS_HEADER,
+    TOPIC_HEADER,
     MemoryManager,
     memory_key,
 )
@@ -50,6 +56,31 @@ class MemoryManagerTest(unittest.TestCase):
         session.finish(at=at(minute + 2))
         store.save(session)
 
+    def add_fact(
+        self,
+        store: SessionStore,
+        text: str,
+        *,
+        kind: str = "fact",
+        durability: str = "permanent",
+        moment: datetime | None = None,
+        fact_key: str | None = None,
+        importance: str = "medium",
+    ) -> int:
+        stamp = (moment or at()).isoformat()
+        return store.add_memory_fact(
+            session_id="s1",
+            kind=kind,
+            durability=durability,
+            fact_key=fact_key or text,
+            text=text,
+            evidence=text,
+            importance=importance,
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
     def test_ingest_stores_facts_and_hides_low(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")
@@ -73,6 +104,267 @@ class MemoryManagerTest(unittest.TestCase):
             row for row in store.memory_facts() if row["text"] == "Пользователь играет в Fortnite"
         )
         self.assertEqual(low["importance"], "low")
+
+    def test_remember_request_raises_importance(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+
+        manager.ingest(
+            "s1",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь играет в Fortnite",
+                        "играю в фортнайт, запомни пожалуйста",
+                    )
+                ]
+            ),
+            created_at=at(),
+        )
+
+        row = store.memory_facts()[0]
+        self.assertEqual(row["importance"], "high")
+        self.assertEqual(
+            [item["text"] for item in manager.facts()],
+            ["Пользователь играет в Fortnite"],
+        )
+
+    def test_promote_remembered_fixes_old_facts(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        stamp = at().isoformat()
+        fact_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="fact:fortnite",
+            text="Пользователь играет в Fortnite",
+            evidence="играю в фортнайт, запомни пожалуйста",
+            importance="low",
+            confidence=0.75,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+        self.assertEqual(manager.promote_remembered(), 1)
+        self.assertEqual(store.memory_fact(fact_id)["importance"], "high")
+        self.assertEqual(manager.promote_remembered(), 0)
+
+    def test_compact_merges_nested_duplicates_only(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        short = self.add_fact(
+            store,
+            "Пользователь любит Достоевского",
+            fact_key="preference",
+        )
+        full = self.add_fact(
+            store,
+            "Пользователь очень любит Достоевского, особенно «Игрока»",
+            fact_key="preference",
+        )
+        coffee = self.add_fact(store, "Пользователь любит кофе", fact_key="preference")
+        tea = self.add_fact(store, "Пользователь любит чай", fact_key="preference")
+
+        self.assertEqual(manager.compact(), 1)
+
+        self.assertEqual(store.memory_fact(short)["status"], "superseded")
+        self.assertEqual(store.memory_fact(short)["replaced_by"], full)
+        self.assertEqual(store.memory_fact(full)["status"], "active")
+        self.assertEqual(store.memory_fact(coffee)["status"], "active")
+        self.assertEqual(store.memory_fact(tea)["status"], "active")
+
+    def test_compact_merges_communication_style_into_one_line(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        mat = self.add_fact(
+            store,
+            "Пользователь просит поддерживать в общении мат и продолжать в таком стиле.",
+            fact_key="fact:мат",
+        )
+        jokes = self.add_fact(
+            store,
+            "Пользователь предпочитает, чтобы в ответах были маты, шутки и ирония.",
+            fact_key="preference",
+            importance="high",
+        )
+        direct = self.add_fact(
+            store,
+            "Общаться прямо и по-свойски, используя брань, когда она уместна.",
+            kind="decision",
+            fact_key="decision:общаться",
+        )
+        upset = self.add_fact(
+            store,
+            "Пользователь расстроен тем, что ассистент не хочет материться.",
+            fact_key="fact:расстроен",
+        )
+
+        self.assertEqual(manager.compact(), 2)
+
+        active = {row["id"]: row for row in store.memory_facts(status="active", limit=20)}
+        self.assertIn(jokes, active)
+        self.assertNotIn(mat, active)
+        self.assertNotIn(direct, active)
+        text = active[jokes]["text"]
+        self.assertIn("прямой", text)
+        self.assertIn("мат", text)
+        self.assertIn("шутки", text)
+        self.assertIn("ирони", text)
+        self.assertEqual(store.memory_fact(mat)["replaced_by"], jokes)
+        self.assertEqual(store.memory_fact(direct)["replaced_by"], jokes)
+        self.assertEqual(store.memory_fact(upset)["status"], "active")
+
+    def test_compact_does_not_merge_opposites(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        liked = self.add_fact(store, "Пользователь любит кофе", fact_key="preference")
+        disliked = self.add_fact(store, "Пользователь не любит кофе", fact_key="preference")
+
+        self.assertEqual(manager.compact(), 0)
+
+        self.assertEqual(store.memory_fact(liked)["status"], "active")
+        self.assertEqual(store.memory_fact(disliked)["status"], "active")
+
+    def test_expire_temporary_closes_old_states(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        old = self.add_fact(
+            store,
+            "Пользователь выспался",
+            durability="temporary",
+            moment=datetime(2026, 11, 16, 12, 0, tzinfo=UTC),
+        )
+        fresh = self.add_fact(
+            store,
+            "Пользователь собирается ложиться спать",
+            durability="temporary",
+            moment=datetime(2026, 11, 17, 2, 0, tzinfo=UTC),
+        )
+
+        closed = manager.expire_temporary(now=datetime(2026, 11, 17, 13, 0, tzinfo=UTC))
+
+        self.assertEqual(closed, 1)
+        self.assertEqual(store.memory_fact(old)["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(fresh)["status"], "active")
+
+    def test_prune_unfinished_drops_gaps_and_old_tasks(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        gap = self.add_fact(
+            store,
+            "Пользователь не ответил, какой роман Достоевского любит больше всего",
+            kind="unfinished",
+        )
+        old_task = self.add_fact(
+            store,
+            "Позвонить маме",
+            kind="unfinished",
+            moment=datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
+        )
+        task = self.add_fact(store, "Закончить проект", kind="unfinished")
+
+        closed = manager.prune_unfinished(now=at())
+
+        self.assertEqual(closed, 2)
+        self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
+        self.assertEqual(store.memory_fact(old_task)["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(task)["status"], "active")
+
+    def test_ingest_skips_gap_unfinished_and_caps_tasks(self) -> None:
+        manager, store = self.make(unfinished_limit=3)
+        self.add_session(store, "s1")
+
+        manager.ingest(
+            "s1",
+            make_summary(
+                unfinished=[
+                    ("Пользователь не ответил, как прошёл вечер", "не ответил"),
+                    ("Закончить проект", "закончу проект"),
+                    ("Позвонить маме", "позвоню маме"),
+                    ("Купить продукты", "куплю продукты"),
+                    ("Проверить почту", "проверю почту"),
+                ]
+            ),
+            created_at=at(),
+        )
+
+        active = [
+            row
+            for row in store.memory_facts(status="active", limit=20)
+            if row["kind"] == "unfinished"
+        ]
+        self.assertEqual(len(active), 3)
+        self.assertNotIn(
+            "Пользователь не ответил, как прошёл вечер",
+            {row["text"] for row in active},
+        )
+
+    def test_remembered_returns_only_stable_facts(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        stable = self.add_fact(store, "Пользователь любит кофе", importance="high")
+        self.add_fact(
+            store,
+            "Пользователь сегодня устал",
+            durability="temporary",
+        )
+        self.add_fact(store, "Позвонить маме", kind="unfinished")
+        self.add_fact(store, "Пользователь смотрел фильм", importance="low")
+
+        remembered = manager.remembered()
+
+        self.assertEqual([row["id"] for row in remembered], [stable])
+        self.assertEqual(manager.remembered(0), [])
+
+    def test_forget_closes_matching_facts_only(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        coffee = self.add_fact(store, "Пользователь любит кофе", importance="high")
+        tea = self.add_fact(store, "Пользователь любит чай", importance="high")
+        neighbor = self.add_fact(store, "Соседа зовут Матвей", importance="high")
+
+        closed = manager.forget("забудь, что я люблю кофе")
+
+        self.assertEqual([row["id"] for row in closed], [coffee])
+        self.assertEqual(store.memory_fact(coffee)["status"], DISMISSED)
+        self.assertEqual(store.memory_fact(tea)["status"], "active")
+        self.assertEqual(store.memory_fact(neighbor)["status"], "active")
+
+    def test_forget_without_target_changes_nothing(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        fact = self.add_fact(store, "Пользователь любит кофе", importance="high")
+
+        self.assertEqual(manager.forget("забудь всё"), [])
+        self.assertEqual(store.memory_fact(fact)["status"], "active")
+
+    def test_maintain_repairs_old_situations(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        situation = self.add_fact(
+            store,
+            "Пользователь ещё не лёг спать и сидит дома",
+            moment=datetime(2026, 11, 16, 2, 0, tzinfo=UTC),
+        )
+        stable = self.add_fact(
+            store,
+            "Пользователь работает программистом",
+            moment=datetime(2026, 11, 16, 2, 0, tzinfo=UTC),
+        )
+        gap = self.add_fact(
+            store,
+            "Осталось выяснить, что пользователь имел в виду",
+            kind="unfinished",
+        )
+
+        repaired = manager.maintain(now=at())
+
+        self.assertGreaterEqual(repaired, 3)
+        situation_row = store.memory_fact(situation)
+        self.assertEqual(situation_row["durability"], "temporary")
+        self.assertEqual(situation_row["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(stable)["status"], "active")
+        self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
 
     def test_meta_uncertainty_is_not_stored_as_fact(self) -> None:
         manager, store = self.make()
@@ -400,6 +692,61 @@ class MemoryManagerTest(unittest.TestCase):
         refreshed = next(row for row in store.memory_facts(limit=10) if row["kind"] == "unfinished")
         self.assertEqual(refreshed["status"], "resolved")
 
+    def test_vague_query_puts_fresh_facts_first(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь болеет", "я болею")]),
+            created_at=at(),
+        )
+        manager.ingest(
+            "s2",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь работает над проектом Луна",
+                        "работаю над проектом луна",
+                    )
+                ]
+            ),
+            created_at=at(5),
+        )
+
+        facts = manager.facts("что мы обсуждали?")
+
+        self.assertEqual(
+            [row["text"] for row in facts],
+            ["Пользователь работает над проектом Луна", "Пользователь болеет"],
+        )
+
+    def test_specific_query_keeps_relevant_fact_first(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        self.add_session(store, "s2", minute=5)
+        manager.ingest(
+            "s1",
+            make_summary(facts=[("Пользователь болеет", "я болею")]),
+            created_at=at(),
+        )
+        manager.ingest(
+            "s2",
+            make_summary(
+                facts=[
+                    (
+                        "Пользователь работает над проектом Луна",
+                        "работаю над проектом луна",
+                    )
+                ]
+            ),
+            created_at=at(5),
+        )
+
+        facts = manager.facts("я болею")
+
+        self.assertEqual(facts[0]["text"], "Пользователь болеет")
+
     def test_block_has_header_and_skips_low(self) -> None:
         manager, store = self.make()
         self.add_session(store, "s1")
@@ -420,6 +767,58 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertIn("17.11.2026", block)
         self.assertIn("Пользователь любит кофе", block)
         self.assertNotIn("смотрел фильм", block)
+
+    def test_block_splits_stable_fresh_and_tasks(self) -> None:
+        manager, store = self.make(facts_limit=4)
+        self.add_session(store, "s1")
+        stable = self.add_fact(
+            store,
+            "Пользователь любит кофе",
+            importance="high",
+        )
+        fresh = self.add_fact(
+            store,
+            "Пользователь сегодня устал",
+            durability="temporary",
+        )
+        task = self.add_fact(
+            store,
+            "Позвонить маме",
+            kind="unfinished",
+        )
+
+        block = manager.block("кофе")
+
+        self.assertTrue(block.startswith(FACTS_HEADER))
+        self.assertLess(block.index(STABLE_HEADER), block.index(FRESH_HEADER))
+        self.assertLess(block.index(FRESH_HEADER), block.index(TASKS_HEADER))
+        self.assertIn(store.memory_fact(stable)["text"], block)
+        self.assertIn(store.memory_fact(fresh)["text"], block)
+        self.assertIn(store.memory_fact(task)["text"], block)
+
+    def test_block_marks_semantic_findings_as_topic(self) -> None:
+        manager, store = self.make(facts_limit=2)
+        self.add_session(store, "s1")
+        tea = self.add_fact(store, "Пользователь любит чай", importance="high")
+        coffee = self.add_fact(store, "Пользователь любит кофе", importance="high")
+        cpp = self.add_fact(
+            store,
+            "Пользователь изучает C++",
+            importance="high",
+            moment=datetime(2026, 11, 17, 10, 0, tzinfo=UTC),
+        )
+
+        block = manager.block(
+            "что я пью по утрам",
+            related=[store.memory_fact(cpp)],
+        )
+
+        self.assertIn(TOPIC_HEADER, block)
+        self.assertIn(store.memory_fact(cpp)["text"], block)
+        self.assertIn(STABLE_HEADER, block)
+        self.assertTrue(
+            store.memory_fact(coffee)["text"] in block or store.memory_fact(tea)["text"] in block
+        )
 
     def test_block_is_empty_without_important_facts(self) -> None:
         manager, store = self.make()
@@ -459,15 +858,91 @@ class MemoryManagerTest(unittest.TestCase):
 
         self.assertEqual(manager.block(), "")
 
+    def test_block_uses_related_facts_after_keyword_matches(self) -> None:
+        manager, store = self.make(facts_limit=2)
+        self.add_session(store, "s1")
+        stamp = at(10).isoformat()
+        coffee_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="preference",
+            text="Пользователь любит кофе",
+            evidence="обожаю кофе",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        cpp_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="study",
+            text="Пользователь изучает C++",
+            evidence="изучаю C++",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        coffee = store.memory_fact(coffee_id)
+        cpp = store.memory_fact(cpp_id)
+
+        block = manager.block("кофе", related=[cpp, coffee])
+
+        self.assertLess(block.index("кофе"), block.index("C++"))
+        self.assertEqual(block.count("Пользователь любит кофе"), 1)
+
+    def test_block_puts_related_first_on_paraphrase(self) -> None:
+        manager, store = self.make(facts_limit=1)
+        self.add_session(store, "s1")
+        stamp = at(10).isoformat()
+        coffee_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="preference",
+            text="Пользователь любит кофе",
+            evidence="обожаю кофе",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="study",
+            text="Пользователь изучает C++",
+            evidence="изучаю C++",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+        block = manager.block("что я пью по утрам", related=[store.memory_fact(coffee_id)])
+
+        self.assertIn("Пользователь любит кофе", block)
+        self.assertNotIn("C++", block)
+
     def test_from_config_reads_limits(self) -> None:
         manager, _ = self.make()
         configured = MemoryManager.from_config(
-            manager.store, {"facts_limit": 2, "facts_max_chars": 100}
+            manager.store,
+            {
+                "facts_limit": 2,
+                "facts_max_chars": 100,
+                "temporary_ttl_days": 2.5,
+                "unfinished_ttl_days": 7,
+                "unfinished_limit": 3,
+            },
         )
 
         self.assertEqual(configured.facts_limit, 2)
         self.assertEqual(configured.facts_max_chars, 100)
         self.assertEqual(configured.merge_similarity, 0.4)
+        self.assertEqual(configured.temporary_ttl_days, 2.5)
+        self.assertEqual(configured.unfinished_ttl_days, 7)
+        self.assertEqual(configured.unfinished_limit, 3)
 
     def test_memory_key_groups_topics(self) -> None:
         self.assertEqual(memory_key("fact", "Пользователь любит кофе"), "preference")

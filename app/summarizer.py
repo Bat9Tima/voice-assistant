@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from datetime import datetime
 from typing import Any
 
 from .persona import PersonaMemory, parse_facts
@@ -231,7 +232,7 @@ class Summarizer:
         log.info("Резюме сессии %s сохранено: %s символов", session.id, len(summary))
         if structured is not None:
             self._update_facts(session.id, structured)
-        self._remember(session.id, summary)
+        self._remember(session.id, summary, structured, session.started_at)
         self._remember_self(session, transcript)
         return summary
 
@@ -253,13 +254,38 @@ class Summarizer:
             result.review,
             result.resolved,
         )
+        self._sync_fact_index()
 
-    def _remember(self, session_id: str, summary: str) -> None:
-        """Индексирует резюме для семантического поиска. Сбой не критичен."""
+    def _sync_fact_index(self) -> None:
+        """Переносит изменения фактов в векторный индекс. Сбой не критичен."""
         if self.memory is None:
             return
+        sync = getattr(self.memory, "sync_facts", None)
+        if not callable(sync):
+            return
         try:
-            self.memory.remember(session_id, summary)
+            sync()
+        except Exception:  # noqa: BLE001
+            log.exception("Индекс фактов не обновлён")
+
+    def _remember(
+        self,
+        session_id: str,
+        summary: str,
+        structured: StructuredSummary | None,
+        started_at: datetime,
+    ) -> None:
+        """Индексирует темы разговора. Сбой не критичен."""
+        if self.memory is None:
+            return
+        topics = structured.to_dict().get("topics") if structured is not None else None
+        try:
+            self.memory.remember(
+                session_id,
+                summary,
+                topics=topics,
+                created_at=started_at,
+            )
         except Exception:  # noqa: BLE001
             log.exception("Резюме сессии %s не попало в память", session_id)
 
@@ -277,7 +303,8 @@ class Summarizer:
                 model=self.model or None,
             )
             facts = parse_facts(answer or "")
-            added = self.persona.merge(facts) if facts else 0
+            # Пустой список тоже полезен: merge заодно чистит старые повторы.
+            added = self.persona.merge(facts)
         except Exception:  # noqa: BLE001
             log.exception("Факты о Луне не сохранены для сессии %s", session.id)
             return

@@ -333,6 +333,7 @@ class SummaryStoreTest(unittest.TestCase):
                 "model": "test-model",
                 "prompt_version": 2,
                 "data": {},
+                "started_at": at(0).isoformat(),
             },
         )
 

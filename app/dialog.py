@@ -39,6 +39,20 @@ DEFAULT_EXIT_PHRASES = (
 )
 # Вводные слова, с которых начинается устная фраза: «ну давай поговорим».
 _ENTRY_FILLERS = ("ну", "ладно", "окей", "ок", "так", "хорошо", "давай")
+# Общие вопросы о памяти отвечаем сами: модель может пересказать факты
+# неточно, а тут важен именно список сохранённого.
+_MEMORY_QUESTIONS = frozenset(
+    {
+        "что ты обо мне помнишь",
+        "что ты помнишь обо мне",
+        "что ты про меня помнишь",
+        "что ты знаешь обо мне",
+        "что ты знаешь про меня",
+        "что ты помнишь",
+        "расскажи что ты помнишь",
+    }
+)
+_FORGET_STARTS = ("забудь", "забудьте", "сотри", "удали")
 
 
 def _limit(value: Any, default: int) -> int:
@@ -292,6 +306,47 @@ class DialogService:
         self.sessions.finish()
         self.rolling.reset()
 
+    def memory_command(self, text: str) -> str | None:
+        """Прямой ответ на «что ты помнишь» и «забудь …».
+
+        Возвращает ``None``, если это обычная реплика: тогда отвечает
+        модель. Память может быть выключена или не уметь эти команды.
+        """
+        if self.memory is None:
+            return None
+        normalized = normalize(text)
+        words = normalized.split()
+        if not words:
+            return None
+        remembered = getattr(self.memory, "remembered", None)
+        if normalized in _MEMORY_QUESTIONS and callable(remembered):
+            try:
+                rows = remembered(6)
+            except Exception:  # noqa: BLE001
+                log.warning("Память: список фактов недоступен", exc_info=True)
+                return None
+            if not rows:
+                return "Пока я почти ничего о тебе не помню."
+            facts = "; ".join(
+                str(row.get("text") or "").rstrip(" .") for row in rows if row.get("text")
+            )
+            return f"Вот что я помню: {facts}."
+        forget = getattr(self.memory, "forget_facts", None)
+        if words[0] in _FORGET_STARTS and callable(forget):
+            try:
+                rows = forget(normalized)
+            except Exception:  # noqa: BLE001
+                log.warning("Память: не удалось забыть факты", exc_info=True)
+                return None
+            if not rows:
+                return "Не нашла, что именно забыть. Скажи точнее."
+            texts = [str(row.get("text") or "").rstrip(" .") for row in rows if row.get("text")]
+            if len(texts) > 3:
+                head = "; ".join(texts[:3])
+                return f"Забыла: {head}, и ещё {len(texts) - 3}."
+            return f"Забыла: {'; '.join(texts)}."
+        return None
+
     def reply(self, text: str, on_chunk: Callable[[str], None] | None = None) -> str:
         """Один ход: окно истории + текущая реплика.
 
@@ -306,25 +361,30 @@ class DialogService:
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
-        built = self.context.build(
-            parts=self.system_parts(),
-            history=self.sessions.history(),
-            user_text=text,
-            memory=self._memory_block(text),
-        )
-        if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
-            answer = self._reply_stream(built, on_chunk)
+        answer = self.memory_command(text)
+        if answer is not None:
+            if on_chunk is not None:
+                on_chunk(answer)
         else:
-            answer = self.llm.chat(
-                built.messages,
-                system=built.system,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                timeout=self.timeout,
+            built = self.context.build(
+                parts=self.system_parts(),
+                history=self.sessions.history(),
+                user_text=text,
+                memory=self._memory_block(text),
             )
-            answer = " ".join((answer or "").split())
-            if not answer:
-                raise ValueError("модель вернула пустой ответ")
+            if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
+                answer = self._reply_stream(built, on_chunk)
+            else:
+                answer = self.llm.chat(
+                    built.messages,
+                    system=built.system,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    timeout=self.timeout,
+                )
+                answer = " ".join((answer or "").split())
+                if not answer:
+                    raise ValueError("модель вернула пустой ответ")
         self.sessions.add("user", text)
         self.sessions.add("assistant", answer)
         self.rolling.observe(self.sessions.current, self.sessions.window_start())

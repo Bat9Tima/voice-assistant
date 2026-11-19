@@ -60,6 +60,34 @@ class ImportanceTest(unittest.TestCase):
             MEDIUM,
         )
 
+    def test_explicit_remember_is_high(self) -> None:
+        self.assertEqual(
+            classify(
+                "fact",
+                item(
+                    "Соседа зовут Матвей",
+                    "его зовут не дмитрий а матвей запомни пожалуйста",
+                ),
+            )[0],
+            HIGH,
+        )
+        self.assertEqual(
+            classify(
+                "fact",
+                item("Пользователь играет в Fortnite", "играю в фортнайт, не забудь"),
+            )[0],
+            HIGH,
+        )
+
+    def test_remembered_past_tense_is_not_a_request(self) -> None:
+        self.assertEqual(
+            classify(
+                "fact",
+                item("Пользователь играет в Fortnite", "я запомнил этот день"),
+            )[0],
+            LOW,
+        )
+
     def test_confidence_grows_with_evidence(self) -> None:
         short = classify("fact", item("Пользователь любит кофе", "люблю кофе"))[1]
         long = classify(

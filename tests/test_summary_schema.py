@@ -6,6 +6,7 @@ from app.summary_schema import (
     StructuredSummary,
     SummaryFormatError,
     SummaryItem,
+    SummaryTopic,
     parse_summary,
     render_summary,
 )
@@ -39,7 +40,7 @@ class ParseSummaryTest(unittest.TestCase):
             [SummaryItem("Решили вернуться к теме", "давай вернёмся к этому")],
         )
         self.assertEqual(summary.unfinished, [])
-        self.assertEqual(summary.topics, ["самочувствие"])
+        self.assertEqual(summary.topics, [SummaryTopic("самочувствие")])
         self.assertEqual(summary.summary, "Говорили о самочувствии.")
 
     def test_item_without_confirmed_evidence_is_dropped(self) -> None:
@@ -112,7 +113,34 @@ class ParseSummaryTest(unittest.TestCase):
             '"учёба", "семья", "погода", "спорт"]}'
         )
         topics = parse_summary(answer, "").topics
-        self.assertEqual(topics, ["работа", "дом", "отдых", "планы", "учёба", "семья", "погода"])
+        self.assertEqual(
+            topics,
+            [
+                SummaryTopic("работа"),
+                SummaryTopic("дом"),
+                SummaryTopic("отдых"),
+                SummaryTopic("планы"),
+                SummaryTopic("учёба"),
+                SummaryTopic("семья"),
+                SummaryTopic("погода"),
+            ],
+        )
+
+    def test_topics_with_text_keep_order_and_description(self) -> None:
+        answer = (
+            '{"topics": ['
+            '{"title": "работа", "text": "Обсудили дедлайн."},'
+            '{"title": "планы", "text": "Собрались в отпуск."}'
+            "]}"
+        )
+        topics = parse_summary(answer, "").topics
+        self.assertEqual(
+            topics,
+            [
+                SummaryTopic("работа", "Обсудили дедлайн."),
+                SummaryTopic("планы", "Собрались в отпуск."),
+            ],
+        )
 
     def test_wrong_types_do_not_break_parsing(self) -> None:
         answer = '{"facts": "нет", "topics": "нет", "summary": 42}'
@@ -122,7 +150,7 @@ class ParseSummaryTest(unittest.TestCase):
     def test_to_dict_is_json_friendly(self) -> None:
         summary = StructuredSummary(
             facts=[SummaryItem("Пользователь устал", "я устал")],
-            topics=["самочувствие"],
+            topics=[SummaryTopic("самочувствие")],
             summary="Короткий разговор.",
         )
         self.assertEqual(
@@ -131,7 +159,7 @@ class ParseSummaryTest(unittest.TestCase):
                 "facts": [{"text": "Пользователь устал", "evidence": "я устал"}],
                 "decisions": [],
                 "unfinished": [],
-                "topics": ["самочувствие"],
+                "topics": [{"title": "самочувствие", "text": ""}],
                 "summary": "Короткий разговор.",
             },
         )
@@ -143,7 +171,7 @@ class RenderSummaryTest(unittest.TestCase):
             facts=[SummaryItem("Пользователю было плохо", "мне очень плохо")],
             decisions=[SummaryItem("Решили вернуться", "давай вернёмся")],
             unfinished=[SummaryItem("Не договорили о планах", "потом расскажу")],
-            topics=["самочувствие", "планы"],
+            topics=[SummaryTopic("самочувствие"), SummaryTopic("планы")],
             summary="Говорили о самочувствии.",
         )
 
