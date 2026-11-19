@@ -16,6 +16,7 @@ from .actions import ActionRouter
 from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
+from .character import CharacterMemory
 from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
@@ -142,6 +143,7 @@ class Assistant:
         self.memory_manager: MemoryManager | None = None
         dialog_cfg = cfg.get("dialog") or {}
         if bool(dialog_cfg.get("enabled", True)):
+            character = None
             profile = Profile(
                 dialog_cfg.get("profile_path"),
                 limit=int(dialog_cfg.get("profile_chars") or 4000),
@@ -167,12 +169,16 @@ class Assistant:
                 self.memory = MemoryService.from_config(
                     cfg, self.session_store, manager=self.memory_manager
                 )
+                character = CharacterMemory.from_config(
+                    self.session_store, dialog_cfg.get("character")
+                )
             self.dialog = DialogService(
                 cfg,
                 self.llm,
                 profile,
                 memory=self.memory,
                 persona=persona,
+                character=character,
             )
             if self.session_store is not None:
                 self.session_store.attach(self.dialog.sessions)

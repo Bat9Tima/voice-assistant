@@ -672,6 +672,60 @@ class MemoryFactsStoreTest(unittest.TestCase):
 
         self.assertFalse(store.update_memory_fact(fact_id, entirely_unknown="x"))
 
+    def test_character_versions_roundtrip(self) -> None:
+        store = self.make()
+        first = store.add_character_version(
+            created_at=at().isoformat(),
+            source="stable",
+            quote="не матерись",
+            style={"profanity": "off"},
+            moment={},
+            moment_date="",
+            summary="без мата",
+        )
+        second = store.add_character_version(
+            created_at=at(5).isoformat(),
+            source="moment",
+            quote="сегодня без шуток",
+            style={"profanity": "off"},
+            moment={"humor": "off"},
+            moment_date="2026-11-16",
+            summary="без шуток",
+        )
+
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 2)
+        latest = store.latest_character()
+        self.assertEqual(latest["version"], 2)
+        self.assertEqual(latest["style"], {"profanity": "off"})
+        self.assertEqual(latest["moment"], {"humor": "off"})
+        self.assertEqual(latest["moment_date"], "2026-11-16")
+        history = store.character_history()
+        self.assertEqual([row["version"] for row in history], [2, 1])
+        self.assertEqual(history[1]["quote"], "не матерись")
+        self.assertEqual(history[1]["style"], {"profanity": "off"})
+
+    def test_character_history_limit(self) -> None:
+        store = self.make()
+        for index in range(3):
+            store.add_character_version(
+                created_at=at(index).isoformat(),
+                source="stable",
+                quote=f"просьба {index}",
+                style={"length": "short"},
+                moment={},
+                moment_date="",
+                summary=f"версия {index}",
+            )
+
+        self.assertEqual([row["version"] for row in store.character_history(2)], [3, 2])
+
+    def test_empty_character(self) -> None:
+        store = self.make()
+
+        self.assertIsNone(store.latest_character())
+        self.assertEqual(store.character_history(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

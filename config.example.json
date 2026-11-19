@@ -168,6 +168,9 @@
     "persona_chars": 2000,
     "persona_max_facts": 100,
     "db_path": "state/dialog.db",
+    "character": {
+      "enabled": true
+    },
     "summary": {
       "enabled": true,
       "model": "",

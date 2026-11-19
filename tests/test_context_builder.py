@@ -124,6 +124,22 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertEqual(built.messages[-1]["content"], "u" * 100)
         self.assertEqual(built.stats.tokens, 600)
 
+    def test_tail_follows_memory_and_is_kept(self) -> None:
+        built = self.make(350).build(
+            parts=[part("rules", 100, required=True), part("profile", 100)],
+            history=[],
+            user_text="u" * 50,
+            memory="m" * 100,
+            tail=[ContextPart("character", "c" * 100, required=True)],
+        )
+
+        blocks = built.system.split("\n\n")
+        self.assertEqual(blocks[-1], "c" * 100)
+        self.assertNotIn("memory", built.stats.parts)
+        self.assertIn("character", built.stats.parts)
+        self.assertEqual(built.stats.trimmed, ["memory"])
+        self.assertEqual(built.stats.tokens, 350)
+
     def test_zero_budget_disables_trimming(self) -> None:
         built = self.make(0).build(
             parts=[part("rules", 500, required=True)],

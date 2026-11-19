@@ -1,4 +1,4 @@
-"""Сохранение разговоров диалога в SQLite.
+"""Состояние диалога в SQLite: сессии, резюме, факты и манера общения.
 
 Запись идёт по ходу разговора, а не одной пачкой в конце:
 
@@ -92,6 +92,17 @@ CREATE INDEX IF NOT EXISTS idx_memory_facts_status
 
 CREATE INDEX IF NOT EXISTS idx_memory_facts_session
     ON memory_facts(session_id);
+
+CREATE TABLE IF NOT EXISTS character_versions (
+    version INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    quote TEXT NOT NULL,
+    style TEXT NOT NULL DEFAULT '{}',
+    moment TEXT NOT NULL DEFAULT '{}',
+    moment_date TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT ''
+);
 """
 
 FACT_FIELDS = (
@@ -319,6 +330,61 @@ class SessionStore:
         with self._connection() as conn:
             cursor = conn.execute("DELETE FROM memory_facts WHERE session_id = ?", (session_id,))
         return cursor.rowcount
+
+    # ------------------------------------------------------------- character
+    def add_character_version(
+        self,
+        *,
+        created_at: str,
+        source: str,
+        quote: str,
+        style: dict[str, Any],
+        moment: dict[str, Any],
+        moment_date: str,
+        summary: str,
+    ) -> int:
+        """Добавляет версию манеры общения и возвращает её номер.
+
+        Каждая явная просьба пользователя — новая версия со снимком обоих
+        слоёв. История не переписывается, поэтому откат всегда возможен.
+        """
+        payload_style = json.dumps(style or {}, ensure_ascii=False, sort_keys=True)
+        payload_moment = json.dumps(moment or {}, ensure_ascii=False, sort_keys=True)
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO character_versions
+                    (created_at, source, quote, style, moment, moment_date, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    str(source or ""),
+                    str(quote or ""),
+                    payload_style,
+                    payload_moment,
+                    str(moment_date or ""),
+                    str(summary or ""),
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def latest_character(self) -> dict[str, Any] | None:
+        """Последняя версия манеры или ``None``, если просьб ещё не было."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM character_versions ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+        return _character_row(row) if row is not None else None
+
+    def character_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Версии манеры, новые сверху."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM character_versions ORDER BY version DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [_character_row(row) for row in rows]
 
     # ------------------------------------------------------------------- read
     def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
@@ -644,6 +710,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP INDEX IF EXISTS idx_messages_session")
+
+
+def _character_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Версия манеры с разобранными JSON-слоями."""
+    result = dict(row)
+    result["style"] = _parse_data(result.get("style"))
+    result["moment"] = _parse_data(result.get("moment"))
+    return result
 
 
 def _summary_row(row: sqlite3.Row) -> dict[str, Any]:

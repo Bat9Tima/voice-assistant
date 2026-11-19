@@ -85,12 +85,18 @@ class ContextBuilder:
         history: Iterable[dict[str, str]],
         user_text: str,
         memory: str = "",
+        tail: Iterable[ContextPart] = (),
     ) -> BuiltContext:
-        """Собирает контекст и при переполнении режет его по приоритетам."""
+        """Собирает контекст и при переполнении режет его по приоритетам.
+
+        ``tail`` идёт после памяти: свежая явная просьба пользователя
+        должна быть последней, иначе старый факт памяти спорит с ней.
+        """
         system_parts = [part for part in parts if part.text.strip()]
         if memory.strip():
-            # Память — последняя в промпте и первая под нож.
+            # Память — последняя из обычных блоков и первая под нож.
             system_parts.append(ContextPart("memory", memory.strip()))
+        system_parts.extend(part for part in tail if part.text.strip())
         messages = [item for item in history if str(item.get("content") or "").strip()]
 
         total = sum(self.estimate(part.text) for part in system_parts)

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .character import CharacterMemory
 from .context_builder import (
     DEFAULT_BUDGET_TOKENS,
     DEFAULT_CHARS_PER_TOKEN,
@@ -207,6 +208,7 @@ class DialogService:
         sessions: SessionMemory | None = None,
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
+        character: CharacterMemory | None = None,
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
@@ -214,6 +216,8 @@ class DialogService:
         # Факты Луны о себе: отдельный блок, не смешивается с профилем
         # пользователя и эпизодической памятью.
         self.persona = persona
+        # Адаптивная манера: явные просьбы пользователя поверх ядра.
+        self.character = character
         # Эпизодическая память: резюме прошлых разговоров. Подключается
         # только в режиме диалога — сюда не ходят разовые команды.
         self.memory = memory
@@ -292,9 +296,26 @@ class DialogService:
             parts.append(ContextPart("dialog", block))
         return parts
 
+    def character_part(self) -> ContextPart | None:
+        """Свежая манера общения: последний блок промпта, не режется."""
+        if self.character is None:
+            return None
+        try:
+            block = self.character.block()
+        except Exception:  # noqa: BLE001
+            log.warning("Манера: блок недоступен", exc_info=True)
+            return None
+        if not block:
+            return None
+        return ContextPart("character", block, required=True)
+
     def system_prompt(self) -> str:
-        """Правила + дата и время + профиль пользователя + факты Луны."""
-        return "\n\n".join(part.text for part in self.system_parts())
+        """Правила, дата, профиль, факты Луны и текущая манера общения."""
+        parts = self.system_parts()
+        character = self.character_part()
+        if character is not None:
+            parts.append(character)
+        return "\n\n".join(part.text for part in parts)
 
     def start(self) -> None:
         """Начинает разговор с чистого листа: прошлая сессия закрывается."""
@@ -305,6 +326,23 @@ class DialogService:
         """Закрывает сессию. Сейчас она просто уходит в ``on_finish``."""
         self.sessions.finish()
         self.rolling.reset()
+
+    def character_command(self, text: str) -> str | None:
+        """Прямой ответ на просьбы о манере и команды отката.
+
+        Возвращает ``None``, если это обычная реплика: тогда отвечает
+        модель. Сбой разбора не должен ломать разговор.
+        """
+        if self.character is None:
+            return None
+        handler = getattr(self.character, "handle", None)
+        if not callable(handler):
+            return None
+        try:
+            return handler(text)
+        except Exception:  # noqa: BLE001
+            log.warning("Манера: команда не применена", exc_info=True)
+            return None
 
     def memory_command(self, text: str) -> str | None:
         """Прямой ответ на «что ты помнишь» и «забудь …».
@@ -361,16 +399,20 @@ class DialogService:
         text = " ".join((text or "").split())
         if not text:
             raise ValueError("пустая реплика")
-        answer = self.memory_command(text)
+        answer = self.character_command(text)
+        if answer is None:
+            answer = self.memory_command(text)
         if answer is not None:
             if on_chunk is not None:
                 on_chunk(answer)
         else:
+            character = self.character_part()
             built = self.context.build(
                 parts=self.system_parts(),
                 history=self.sessions.history(),
                 user_text=text,
                 memory=self._memory_block(text),
+                tail=[character] if character is not None else [],
             )
             if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
                 answer = self._reply_stream(built, on_chunk)
