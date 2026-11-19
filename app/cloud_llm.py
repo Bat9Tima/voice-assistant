@@ -4,6 +4,11 @@
 OpenAI-совместимый API ProxyAPI. Если основная модель недоступна или
 вернула пустой ответ, пробуем запасные модели из конфига. Локальной
 модели в этом пути нет.
+
+У моделей разные ограничения на параметры запроса: например, GPT-6 Luna
+не принимает ``temperature`` и не понимает ``reasoning_effort: minimal``.
+Такие отличия задаются в ``cloud_llm.model_params`` по ID модели, а не
+кодом: значение переопределяет поле запроса, ``null`` убирает его.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from .prompts import (
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.proxyapi.ru/v1"
-DEFAULT_MODEL = "anthropic/claude-haiku-5-5"
+DEFAULT_MODEL = "openai/gpt-6-luna"
 DEFAULT_FALLBACK_MODELS = ("xiaomi/mimo-v2.6-flash",)
 
 # Рассуждающие модели тратят часть лимита на скрытые размышления.
@@ -91,6 +96,16 @@ class CloudLLM:
             if str(item).strip() and str(item).strip() != self.model
         ]
         self.reasoning_effort = str(section.get("reasoning_effort") or "minimal").strip()
+        # Отличия конкретных моделей. Ключ — ID модели, значение — поля
+        # запроса; null убирает поле. Пример:
+        # {"openai/gpt-6-luna": {"temperature": null,
+        #                        "reasoning_effort": "none"}}
+        raw_params = section.get("model_params") or {}
+        self.model_params: dict[str, dict[str, Any]] = {
+            str(name): dict(values)
+            for name, values in raw_params.items()
+            if isinstance(values, dict)
+        }
         self.max_completion_tokens = max(
             int(section.get("max_completion_tokens") or MIN_COMPLETION_TOKENS),
             MIN_COMPLETION_TOKENS,
@@ -327,6 +342,32 @@ class CloudLLM:
         raise LLMError(f"модель не ответила: {detail}")
 
     # ------------------------------------------------------------------- HTTP
+    def _payload(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Собирает тело запроса с учётом ограничений конкретной модели."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": int(max_tokens),
+            "temperature": float(temperature),
+            "stream": stream,
+        }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        for key, value in self.model_params.get(model, {}).items():
+            if value is None:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
+        return payload
+
     def _complete(
         self,
         model: str,
@@ -357,15 +398,13 @@ class CloudLLM:
         temperature: float,
         timeout: float,
     ) -> str:
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "max_completion_tokens": int(max_tokens),
-            "temperature": float(temperature),
-            "stream": False,
-        }
-        if self.reasoning_effort:
-            payload["reasoning_effort"] = self.reasoning_effort
+        payload: dict[str, Any] = self._payload(
+            model,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+        )
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -431,15 +470,13 @@ class CloudLLM:
         timeout: float,
     ) -> Iterator[str]:
         """Читает SSE-поток и отдаёт только текстовые куски ответа."""
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "max_completion_tokens": int(max_tokens),
-            "temperature": float(temperature),
-            "stream": True,
-        }
-        if self.reasoning_effort:
-            payload["reasoning_effort"] = self.reasoning_effort
+        payload: dict[str, Any] = self._payload(
+            model,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
         headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",

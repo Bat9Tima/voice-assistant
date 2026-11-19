@@ -434,6 +434,42 @@ class CloudLLMHttpTest(unittest.TestCase):
         self.assertNotIn("max_tokens", payload)
         self.assertEqual(captured["timeout"], 30)
 
+    def test_model_params_override_and_remove_fields(self) -> None:
+        llm = make_llm(
+            model_params={
+                "openai/gpt-6-luna": {
+                    "temperature": None,
+                    "reasoning_effort": "none",
+                }
+            }
+        )
+
+        payload = llm._payload(
+            "openai/gpt-6-luna",
+            [{"role": "user", "content": "привет"}],
+            max_tokens=2000,
+            temperature=0.2,
+            stream=False,
+        )
+
+        self.assertNotIn("temperature", payload)
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertEqual(payload["max_completion_tokens"], 2000)
+
+    def test_model_params_do_not_affect_other_models(self) -> None:
+        llm = make_llm(model_params={"openai/gpt-6-luna": {"temperature": None}})
+
+        payload = llm._payload(
+            "xiaomi/mimo-v2.6-flash",
+            [{"role": "user", "content": "привет"}],
+            max_tokens=2000,
+            temperature=0.2,
+            stream=False,
+        )
+
+        self.assertEqual(payload["temperature"], 0.2)
+        self.assertEqual(payload["reasoning_effort"], "minimal")
+
     def test_content_parts_are_joined(self) -> None:
         body = json.dumps(
             {
