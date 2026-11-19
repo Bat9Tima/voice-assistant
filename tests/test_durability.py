@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import unittest
 
-from app.durability import PERMANENT, TEMPORARY, classify_durability
+from app.durability import (
+    EVENT,
+    PERMANENT,
+    STATE,
+    TEMPORARY,
+    TRAIT,
+    classify_durability,
+    classify_scope,
+)
 
 
 class DurabilityTest(unittest.TestCase):
@@ -39,6 +47,23 @@ class DurabilityTest(unittest.TestCase):
     def test_unclear_fact_defaults_to_permanent(self) -> None:
         self.assertEqual(classify_durability("Пользователь работает программистом"), PERMANENT)
         self.assertEqual(classify_durability(""), PERMANENT)
+
+
+class ScopeTest(unittest.TestCase):
+    def test_preference_is_trait(self) -> None:
+        self.assertEqual(classify_scope("Пользователь любит кофе"), TRAIT)
+        self.assertEqual(classify_scope("Пользователь сегодня любит кофе"), TRAIT)
+        self.assertEqual(classify_scope("Пользователь работает программистом"), TRAIT)
+
+    def test_past_action_is_event(self) -> None:
+        self.assertEqual(classify_scope("Пользователь вчера сдал экзамен"), EVENT)
+        self.assertEqual(classify_scope("Пользователь ходил в кино"), EVENT)
+        self.assertEqual(classify_scope("Пользователь был на встрече"), EVENT)
+
+    def test_current_situation_is_state(self) -> None:
+        self.assertEqual(classify_scope("Сосед ужинает"), STATE)
+        self.assertEqual(classify_scope("Пользователь сегодня устал"), STATE)
+        self.assertEqual(classify_scope("Пользователь болеет"), STATE)
 
 
 if __name__ == "__main__":

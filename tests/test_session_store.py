@@ -526,6 +526,23 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertEqual(store.memory_fact(default_id)["durability"], "permanent")
         self.assertEqual(store.memory_fact(temporary_id)["durability"], "temporary")
 
+    def test_scope_and_event_date_roundtrip(self) -> None:
+        store = self.make()
+        store.save(make_session())
+        default_id = self.add(store)
+        event_id = self.add(
+            store,
+            fact_key="event",
+            text="Пользователь вчера сдал экзамен",
+            scope="event",
+            event_at=at(2).isoformat(),
+        )
+
+        self.assertEqual(store.memory_fact(default_id)["scope"], "trait")
+        self.assertEqual(store.memory_fact(default_id)["event_at"], "")
+        self.assertEqual(store.memory_fact(event_id)["scope"], "event")
+        self.assertEqual(store.memory_fact(event_id)["event_at"], at(2).isoformat())
+
     def test_status_filter_and_newest_first(self) -> None:
         store = self.make()
         store.save(make_session())
@@ -621,7 +638,10 @@ class MemoryFactsStoreTest(unittest.TestCase):
 
         store = SessionStore(path)
 
-        self.assertEqual(store.memory_facts()[0]["durability"], "permanent")
+        migrated = store.memory_facts()[0]
+        self.assertEqual(migrated["durability"], "permanent")
+        self.assertEqual(migrated["scope"], "trait")
+        self.assertEqual(migrated["event_at"], "")
 
     def test_delete_by_session(self) -> None:
         store = self.make()
