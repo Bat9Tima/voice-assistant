@@ -290,6 +290,14 @@ DEFAULTS: dict[str, Any] = {
         # Лимит символов считается только по блоку фактов.
         "facts_limit": 6,
         "facts_max_chars": 900,
+        "facts_collection": "facts",
+        "facts_top_k": 4,
+        "facts_min_score": 0.42,
+        # Временные состояния и задачи не должны жить вечно. Ноль
+        # отключает соответствующий срок.
+        "temporary_ttl_days": 1,
+        "unfinished_ttl_days": 14,
+        "unfinished_limit": 5,
         "timeout_sec": 10,
         # Версия раскладки индекса: при изменении старые векторы не ищутся,
         # а пересчитываются из резюме при старте.

@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.memory_manager import (
+    DISMISSED,
+    EXPIRED,
     FACTS_HEADER,
     NEEDS_REVIEW,
     REVIEW_HEADER,
@@ -49,6 +51,29 @@ class MemoryManagerTest(unittest.TestCase):
         session.add("assistant", "здравствуй", at=at(minute + 1))
         session.finish(at=at(minute + 2))
         store.save(session)
+
+    def add_fact(
+        self,
+        store: SessionStore,
+        text: str,
+        *,
+        kind: str = "fact",
+        durability: str = "permanent",
+        moment: datetime | None = None,
+    ) -> int:
+        stamp = (moment or at()).isoformat()
+        return store.add_memory_fact(
+            session_id="s1",
+            kind=kind,
+            durability=durability,
+            fact_key=text,
+            text=text,
+            evidence=text,
+            importance="medium",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
 
     def test_ingest_stores_facts_and_hides_low(self) -> None:
         manager, store = self.make()
@@ -117,6 +142,108 @@ class MemoryManagerTest(unittest.TestCase):
         self.assertEqual(manager.promote_remembered(), 1)
         self.assertEqual(store.memory_fact(fact_id)["importance"], "high")
         self.assertEqual(manager.promote_remembered(), 0)
+
+    def test_expire_temporary_closes_old_states(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        old = self.add_fact(
+            store,
+            "Пользователь выспался",
+            durability="temporary",
+            moment=datetime(2026, 11, 16, 12, 0, tzinfo=UTC),
+        )
+        fresh = self.add_fact(
+            store,
+            "Пользователь собирается ложиться спать",
+            durability="temporary",
+            moment=datetime(2026, 11, 17, 2, 0, tzinfo=UTC),
+        )
+
+        closed = manager.expire_temporary(now=datetime(2026, 11, 17, 13, 0, tzinfo=UTC))
+
+        self.assertEqual(closed, 1)
+        self.assertEqual(store.memory_fact(old)["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(fresh)["status"], "active")
+
+    def test_prune_unfinished_drops_gaps_and_old_tasks(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        gap = self.add_fact(
+            store,
+            "Пользователь не ответил, какой роман Достоевского любит больше всего",
+            kind="unfinished",
+        )
+        old_task = self.add_fact(
+            store,
+            "Позвонить маме",
+            kind="unfinished",
+            moment=datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
+        )
+        task = self.add_fact(store, "Закончить проект", kind="unfinished")
+
+        closed = manager.prune_unfinished(now=at())
+
+        self.assertEqual(closed, 2)
+        self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
+        self.assertEqual(store.memory_fact(old_task)["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(task)["status"], "active")
+
+    def test_ingest_skips_gap_unfinished_and_caps_tasks(self) -> None:
+        manager, store = self.make(unfinished_limit=3)
+        self.add_session(store, "s1")
+
+        manager.ingest(
+            "s1",
+            make_summary(
+                unfinished=[
+                    ("Пользователь не ответил, как прошёл вечер", "не ответил"),
+                    ("Закончить проект", "закончу проект"),
+                    ("Позвонить маме", "позвоню маме"),
+                    ("Купить продукты", "куплю продукты"),
+                    ("Проверить почту", "проверю почту"),
+                ]
+            ),
+            created_at=at(),
+        )
+
+        active = [
+            row
+            for row in store.memory_facts(status="active", limit=20)
+            if row["kind"] == "unfinished"
+        ]
+        self.assertEqual(len(active), 3)
+        self.assertNotIn(
+            "Пользователь не ответил, как прошёл вечер",
+            {row["text"] for row in active},
+        )
+
+    def test_maintain_repairs_old_situations(self) -> None:
+        manager, store = self.make()
+        self.add_session(store, "s1")
+        situation = self.add_fact(
+            store,
+            "Пользователь ещё не лёг спать и сидит дома",
+            moment=datetime(2026, 11, 16, 2, 0, tzinfo=UTC),
+        )
+        stable = self.add_fact(
+            store,
+            "Пользователь работает программистом",
+            moment=datetime(2026, 11, 16, 2, 0, tzinfo=UTC),
+        )
+        gap = self.add_fact(
+            store,
+            "Осталось выяснить, что пользователь имел в виду",
+            kind="unfinished",
+        )
+
+        repaired = manager.maintain(now=at())
+
+        self.assertGreaterEqual(repaired, 3)
+        situation_row = store.memory_fact(situation)
+        self.assertEqual(situation_row["durability"], "temporary")
+        self.assertEqual(situation_row["status"], EXPIRED)
+        self.assertEqual(store.memory_fact(stable)["status"], "active")
+        self.assertEqual(store.memory_fact(gap)["status"], DISMISSED)
 
     def test_meta_uncertainty_is_not_stored_as_fact(self) -> None:
         manager, store = self.make()
@@ -627,12 +754,22 @@ class MemoryManagerTest(unittest.TestCase):
     def test_from_config_reads_limits(self) -> None:
         manager, _ = self.make()
         configured = MemoryManager.from_config(
-            manager.store, {"facts_limit": 2, "facts_max_chars": 100}
+            manager.store,
+            {
+                "facts_limit": 2,
+                "facts_max_chars": 100,
+                "temporary_ttl_days": 2.5,
+                "unfinished_ttl_days": 7,
+                "unfinished_limit": 3,
+            },
         )
 
         self.assertEqual(configured.facts_limit, 2)
         self.assertEqual(configured.facts_max_chars, 100)
         self.assertEqual(configured.merge_similarity, 0.4)
+        self.assertEqual(configured.temporary_ttl_days, 2.5)
+        self.assertEqual(configured.unfinished_ttl_days, 7)
+        self.assertEqual(configured.unfinished_limit, 3)
 
     def test_memory_key_groups_topics(self) -> None:
         self.assertEqual(memory_key("fact", "Пользователь любит кофе"), "preference")

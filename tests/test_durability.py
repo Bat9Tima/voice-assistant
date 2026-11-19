@@ -20,6 +20,22 @@ class DurabilityTest(unittest.TestCase):
     def test_preference_wins_over_short_period(self) -> None:
         self.assertEqual(classify_durability("Пользователь сегодня любит кофе"), PERMANENT)
 
+    def test_current_situation_is_temporary(self) -> None:
+        self.assertEqual(classify_durability("Сосед ужинает"), TEMPORARY)
+        self.assertEqual(
+            classify_durability("Пользователь ещё не лёг спать и сидит дома"),
+            TEMPORARY,
+        )
+        self.assertEqual(
+            classify_durability("Рядом с пользователем включён звук"),
+            TEMPORARY,
+        )
+        self.assertEqual(classify_durability("Пользователь расстроен"), TEMPORARY)
+
+    def test_relationship_detail_stays_permanent(self) -> None:
+        self.assertEqual(classify_durability("Соседа зовут Матвей, а не Дмитрий"), PERMANENT)
+        self.assertEqual(classify_durability("У пользователя есть сосед"), PERMANENT)
+
     def test_unclear_fact_defaults_to_permanent(self) -> None:
         self.assertEqual(classify_durability("Пользователь работает программистом"), PERMANENT)
         self.assertEqual(classify_durability(""), PERMANENT)

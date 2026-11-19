@@ -39,9 +39,17 @@ log = logging.getLogger(__name__)
 DEFAULT_FACTS_LIMIT = 6
 DEFAULT_FACTS_MAX_CHARS = 900
 DEFAULT_MERGE_SIMILARITY = 0.4
+# Временное состояние живёт сутки: «выспался» и «сейчас всё нормально»
+# к следующему вечеру уже не описывают пользователя.
+DEFAULT_TEMPORARY_TTL_DAYS = 1.0
+# Незавершённая задача — не вечная: через две недели она либо закрыта,
+# либо потеряла смысл.
+DEFAULT_UNFINISHED_TTL_DAYS = 14.0
+DEFAULT_UNFINISHED_LIMIT = 5
 MAX_ACTIVE_FACTS = 500
 NEEDS_REVIEW = "needs_review"
 DISMISSED = "dismissed"
+EXPIRED = "expired"
 REVIEW_LIMIT = 2
 FACTS_HEADER = (
     "Ключевые факты из прошлых разговоров (важное, не текущий разговор):\n"
@@ -90,6 +98,39 @@ _META_FACT_PREFIXES = (
     "не проверено",
     "нет данных",
     "нет информации",
+)
+# Незавершённый пункт часто описывает не задачу, а пробел в разговоре:
+# «пользователь не ответил…», «осталось выяснить…». Такому не место в
+# памяти: через день это уже не задача, а шум.
+_UNFINISHED_GAP = (
+    "не ответил",
+    "не ответила",
+    "не рассказал",
+    "не рассказала",
+    "не уточнил",
+    "не уточнила",
+    "не объяснил",
+    "не объяснила",
+    "не сообщил",
+    "не сообщила",
+    "не назвал",
+    "не назвала",
+    "не подтвердил",
+    "не подтвердила",
+    "не продолжен",
+    "не восстановлен",
+    "осталось выяснить",
+    "осталось непонят",
+    "осталась непонят",
+    "остался непонят",
+    "остались непонят",
+    "остались неясн",
+    "смысл и обстоятельства",
+    "ассистент не уверен",
+    "ассистент не стала",
+    "на которую ассистент",
+    "ответа пока нет",
+    "пока нет",
 )
 
 _WORD = re.compile(r"[a-zа-я0-9]+")
@@ -342,11 +383,17 @@ class MemoryManager:
         facts_limit: int = DEFAULT_FACTS_LIMIT,
         facts_max_chars: int = DEFAULT_FACTS_MAX_CHARS,
         merge_similarity: float = DEFAULT_MERGE_SIMILARITY,
+        temporary_ttl_days: float = DEFAULT_TEMPORARY_TTL_DAYS,
+        unfinished_ttl_days: float = DEFAULT_UNFINISHED_TTL_DAYS,
+        unfinished_limit: int = DEFAULT_UNFINISHED_LIMIT,
     ) -> None:
         self.store = store
         self.facts_limit = max(0, int(facts_limit))
         self.facts_max_chars = max(0, int(facts_max_chars))
         self.merge_similarity = max(0.0, min(1.0, float(merge_similarity)))
+        self.temporary_ttl_days = max(0.0, float(temporary_ttl_days))
+        self.unfinished_ttl_days = max(0.0, float(unfinished_ttl_days))
+        self.unfinished_limit = max(0, int(unfinished_limit))
 
     @classmethod
     def from_config(cls, store: object, section: dict | None = None) -> MemoryManager:
@@ -355,6 +402,13 @@ class MemoryManager:
             store,
             facts_limit=_int(section.get("facts_limit"), DEFAULT_FACTS_LIMIT),
             facts_max_chars=_int(section.get("facts_max_chars"), DEFAULT_FACTS_MAX_CHARS),
+            temporary_ttl_days=_float(
+                section.get("temporary_ttl_days"), DEFAULT_TEMPORARY_TTL_DAYS
+            ),
+            unfinished_ttl_days=_float(
+                section.get("unfinished_ttl_days"), DEFAULT_UNFINISHED_TTL_DAYS
+            ),
+            unfinished_limit=_int(section.get("unfinished_limit"), DEFAULT_UNFINISHED_LIMIT),
         )
 
     # ------------------------------------------------------------------ write
@@ -386,6 +440,9 @@ class MemoryManager:
                 if kind == "fact" and _is_meta_fact(item.text):
                     # «Не ясно, есть ли...» — это пробел в знаниях модели,
                     # а не сообщённый пользователем факт.
+                    continue
+                if kind == "unfinished" and (self.unfinished_limit <= 0 or _is_gap_task(item.text)):
+                    # «Пользователь не ответил…» — не задача, а шум.
                     continue
                 importance, confidence = classify(kind, item)
                 durability = classify_durability(item.text)
@@ -508,6 +565,7 @@ class MemoryManager:
         ]
         result.resolved = self._resolve(active, decisions, stamp)
         result.active = sum(1 for row in active if row["status"] == "active")
+        self._trim_unfinished()
         if result.added or result.merged or result.superseded or result.resolved or result.review:
             log.info(
                 "Память: фактов +%s, объединено %s, обновлено %s, на проверку %s, закрыто задач %s",
@@ -538,6 +596,107 @@ class MemoryManager:
         if updated:
             log.info("Память: поднята важность фактов по просьбе «запомни»: %s", updated)
         return updated
+
+    def maintain(self, *, now: datetime | None = None) -> int:
+        """Чинит накопленные факты при старте.
+
+        Правила длительности со временем меняются, поэтому старые записи
+        стоит пересмотреть: ситуативное становится временным, временное
+        истекает, а пробелы в разговоре перестают числиться задачами.
+        Возвращает число исправленных или закрытых записей.
+        """
+        moment = now or _now()
+        repaired = self._reclassify_temporary()
+        expired = self.expire_temporary(now=moment)
+        pruned = self.prune_unfinished(now=moment)
+        return repaired + expired + pruned
+
+    def expire_temporary(self, *, now: datetime | None = None) -> int:
+        """Закрывает временные факты старше ``temporary_ttl_days``.
+
+        Ноль отключает срок. Задачи не трогаем: у них свой срок и своя
+        логика закрытия.
+        """
+        if self.temporary_ttl_days <= 0:
+            return 0
+        moment = now or _now()
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        closed = 0
+        for row in rows:
+            if row["kind"] != "fact" or row["durability"] != TEMPORARY:
+                continue
+            age = _age_days(str(row.get("updated_at") or ""), moment)
+            if age is None or age < self.temporary_ttl_days:
+                continue
+            self.store.update_memory_fact(row["id"], status=EXPIRED)
+            closed += 1
+        if closed:
+            log.info("Память: истекло временных фактов: %s", closed)
+        return closed
+
+    def prune_unfinished(self, *, now: datetime | None = None) -> int:
+        """Убирает из задач пробелы в разговоре и слишком старые записи."""
+        moment = now or _now()
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        closed = 0
+        for row in rows:
+            if row["kind"] != "unfinished":
+                continue
+            text = str(row.get("text") or "")
+            gap = _is_gap_task(text)
+            age = _age_days(str(row.get("updated_at") or ""), moment)
+            stale = (
+                self.unfinished_ttl_days > 0 and age is not None and age >= self.unfinished_ttl_days
+            )
+            if not gap and not stale:
+                continue
+            self.store.update_memory_fact(row["id"], status=DISMISSED if gap else EXPIRED)
+            closed += 1
+        if closed:
+            log.info("Память: закрыто незавершённых задач: %s", closed)
+        return closed
+
+    def _reclassify_temporary(self) -> int:
+        """Переводит старые ситуативные факты в ``temporary``.
+
+        Раньше «сосед ужинает» считалось постоянным фактом и не уставало.
+        Текст не меняется, поэтому достаточно поправить длительность;
+        срок жизни начнёт считаться от последнего обновления.
+        """
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        updated = 0
+        for row in rows:
+            if row["kind"] != "fact" or row["durability"] == TEMPORARY:
+                continue
+            if classify_durability(str(row.get("text") or "")) != TEMPORARY:
+                continue
+            self.store.update_memory_fact(row["id"], durability=TEMPORARY)
+            updated += 1
+        if updated:
+            log.info("Память: ситуативные факты стали временными: %s", updated)
+        return updated
+
+    def _trim_unfinished(self) -> int:
+        """Оставляет не больше ``unfinished_limit`` открытых задач."""
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        unfinished = [row for row in rows if row["kind"] == "unfinished"]
+        if len(unfinished) <= self.unfinished_limit:
+            return 0
+        unfinished.sort(
+            key=lambda row: (
+                WEIGHT.get(row["importance"], 0),
+                str(row.get("updated_at") or ""),
+                int(row.get("id") or 0),
+            ),
+            reverse=True,
+        )
+        closed = 0
+        for row in unfinished[self.unfinished_limit :]:
+            self.store.update_memory_fact(row["id"], status=DISMISSED)
+            closed += 1
+        if closed:
+            log.info("Память: закрыто лишних незавершённых задач: %s", closed)
+        return closed
 
     # ------------------------------------------------------------------- read
     def facts(self, query: str = "", limit: int | None = None) -> list[dict]:
@@ -976,6 +1135,24 @@ def _is_meta_fact(text: str) -> bool:
     return any(flat.startswith(prefix) for prefix in _META_FACT_PREFIXES)
 
 
+def _is_gap_task(text: str) -> bool:
+    """Незавершённый пункт — это не задача, а неотвеченный вопрос."""
+    flat = _flat(text)
+    if flat.startswith(("неясно", "непонятно", "неизвестно")):
+        return True
+    return any(marker in flat for marker in _UNFINISHED_GAP)
+
+
+def _age_days(value: str, now: datetime) -> float | None:
+    try:
+        moment = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=now.tzinfo)
+    return (now - moment).total_seconds() / 86400
+
+
 def _short_date(value: str) -> str:
     try:
         moment = datetime.fromisoformat(value)
@@ -993,5 +1170,14 @@ def _int(value: object, default: int) -> int:
         return default
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _float(value: object, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
