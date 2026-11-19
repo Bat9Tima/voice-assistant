@@ -350,6 +350,52 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(memory.queries, ["что я изучал?"])
         self.assertIn("Эпизодическая память: любит C++.", llm.calls[0][1]["system"])
 
+    def test_memory_question_is_answered_without_model(self) -> None:
+        class FakeMemory:
+            def remembered(self, limit: int = 8) -> list[dict[str, str]]:
+                return [{"text": "Пользователь любит кофе"}, {"text": "Соседа зовут Матвей"}]
+
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, memory=FakeMemory())
+
+        answer = service.reply("Что ты обо мне помнишь?")
+
+        self.assertIn("Пользователь любит кофе", answer)
+        self.assertIn("Соседа зовут Матвей", answer)
+        self.assertEqual(llm.calls, [])
+
+    def test_memory_question_about_person_goes_to_model(self) -> None:
+        class FakeMemory:
+            def remembered(self, limit: int = 8) -> list[dict[str, str]]:
+                return [{"text": "Пользователь любит кофе"}]
+
+        llm = FakeLLM("Модель ответила")
+        service = DialogService({"dialog": {}}, llm, memory=FakeMemory())
+
+        answer = service.reply("что ты помнишь о Максиме?")
+
+        self.assertEqual(answer, "Модель ответила")
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_forget_closes_facts_and_answers_directly(self) -> None:
+        class FakeMemory:
+            def __init__(self) -> None:
+                self.query = ""
+
+            def forget_facts(self, query: str) -> list[dict[str, str]]:
+                self.query = query
+                return [{"text": "Пользователь любит кофе"}]
+
+        memory = FakeMemory()
+        llm = FakeLLM()
+        service = DialogService({"dialog": {}}, llm, memory=memory)
+
+        answer = service.reply("Забудь, что я люблю кофе")
+
+        self.assertEqual(memory.query, "забудь что я люблю кофе")
+        self.assertIn("Пользователь любит кофе", answer)
+        self.assertEqual(llm.calls, [])
+
     def test_memory_failure_does_not_break_reply(self) -> None:
         class BrokenMemory:
             def block(self, query: str) -> str:

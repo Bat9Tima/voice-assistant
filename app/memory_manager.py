@@ -61,6 +61,10 @@ REVIEW_HEADER = (
     "Не утверждай ни один вариант как факт. Если тема важна, мягко уточни "
     "у пользователя."
 )
+STABLE_HEADER = "Устойчивое:"
+FRESH_HEADER = "Свежее:"
+TOPIC_HEADER = "По теме:"
+TASKS_HEADER = "Открытые темы:"
 # Явные маркеры смены состояния: «выздоровел», «больше не», «теперь».
 # Только с ними система решается заменить старый факт без проверки.
 _UPDATE_MARKERS = (
@@ -597,6 +601,50 @@ class MemoryManager:
             log.info("Память: поднята важность фактов по просьбе «запомни»: %s", updated)
         return updated
 
+    def remembered(self, limit: int = 8) -> list[dict]:
+        """Устойчивые факты о пользователе для ответа «что ты помнишь»."""
+        if limit <= 0:
+            return []
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        rows = [
+            row
+            for row in rows
+            if row["kind"] in ("fact", "decision")
+            and row["durability"] != TEMPORARY
+            and row["importance"] in (HIGH, MEDIUM)
+        ]
+        rows.sort(
+            key=lambda row: (
+                WEIGHT.get(row["importance"], 2),
+                str(row.get("updated_at") or ""),
+                float(row["confidence"]),
+            ),
+            reverse=True,
+        )
+        return rows[:limit]
+
+    def forget(self, query: str) -> list[dict]:
+        """Закрывает факты, которые пользователь просит забыть.
+
+        Ищем по содержательным словам: «забудь кофе» находит и «любит
+        кофе», и «не любит кофе». Пустой запрос ничего не закрывает:
+        «забудь всё» без уточнения слишком опасно для слуха.
+        """
+        tokens = _forget_tokens(query)
+        if not tokens:
+            return []
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        matched: list[dict] = []
+        for row in rows:
+            text_tokens = _token_set(str(row.get("text") or ""))
+            if all(any(_same_word(token, other) for other in text_tokens) for token in tokens):
+                matched.append(row)
+        for row in matched:
+            self.store.update_memory_fact(row["id"], status=DISMISSED)
+        if matched:
+            log.info("Память: забыто фактов по запросу: %s", len(matched))
+        return matched
+
     def maintain(self, *, now: datetime | None = None) -> int:
         """Чинит накопленные факты при старте.
 
@@ -607,9 +655,122 @@ class MemoryManager:
         """
         moment = now or _now()
         repaired = self._reclassify_temporary()
+        compacted = self.compact()
         expired = self.expire_temporary(now=moment)
         pruned = self.prune_unfinished(now=moment)
-        return repaired + expired + pruned
+        return repaired + compacted + expired + pruned
+
+    def compact(self) -> int:
+        """Схлопывает активные дубли внутри одной темы.
+
+        Обычная группа — одинаковые ``kind`` и ``fact_key``: короткий
+        текст считается пересказом, если все его содержательные слова уже
+        есть в длинном. «Любит кофе» и «любит чай» остаются разными.
+
+        Стиль общения — исключение: это повторяющиеся инструкции, а не
+        разные факты. Они сводятся в одну строку, где сохраняются все
+        найденные пожелания: прямота, мат, шутки, ирония.
+        """
+        rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            if row["kind"] not in ("fact", "decision"):
+                continue
+            groups.setdefault(_compact_key(row), []).append(row)
+        merged = 0
+        for key, group in groups.items():
+            if len(group) < 2:
+                continue
+            if key == ("style", "style"):
+                merged += self._compact_style(group)
+                continue
+            group.sort(
+                key=lambda row: (
+                    len(_token_set(str(row.get("text") or ""))),
+                    len(_flat(str(row.get("text") or ""))),
+                ),
+                reverse=True,
+            )
+            kept: list[dict] = []
+            for row in group:
+                parent = next(
+                    (
+                        candidate
+                        for candidate in kept
+                        if not _opposes(str(candidate["text"]), str(row["text"]))
+                        and _contained(str(row["text"]), str(candidate["text"]))
+                    ),
+                    None,
+                )
+                if parent is None:
+                    kept.append(row)
+                    continue
+                self._absorb(parent, row)
+                merged += 1
+        if merged:
+            log.info("Память: схлопнуто дублей фактов: %s", merged)
+        return merged
+
+    def _compact_style(self, group: list[dict]) -> int:
+        """Сводит инструкции о манере общения в одну запись."""
+        traits: set[str] = set()
+        for row in group:
+            traits |= _style_traits(str(row.get("text") or ""))
+        if not traits:
+            return 0
+        group.sort(
+            key=lambda row: (
+                WEIGHT.get(str(row["importance"]), 0),
+                str(row.get("updated_at") or ""),
+                len(_flat(str(row.get("text") or ""))),
+            ),
+            reverse=True,
+        )
+        parent, rest = group[0], group[1:]
+        summary = _style_summary(traits)
+        confidence = max(float(row["confidence"]) for row in group)
+        durability = _stricter(str(group[0]["durability"]), str(group[-1]["durability"]))
+        updated = max(str(row.get("updated_at") or "") for row in group)
+        self.store.update_memory_fact(
+            parent["id"],
+            text=summary,
+            importance=HIGH,
+            confidence=confidence,
+            durability=durability,
+            updated_at=updated,
+        )
+        for row in rest:
+            self.store.update_memory_fact(row["id"], status="superseded", replaced_by=parent["id"])
+        return len(rest)
+
+    def _absorb(
+        self,
+        parent: dict,
+        child: dict,
+        *,
+        text: str | None = None,
+        evidence: str | None = None,
+    ) -> None:
+        """Переносит содержимое дубля в оставленную запись и закрывает дубль."""
+        choose_child = len(_flat(str(child["text"]))) > len(_flat(str(parent["text"])))
+        merged_text = text or (str(child["text"]) if choose_child else str(parent["text"]))
+        merged_evidence = evidence or (
+            str(child["evidence"]) if choose_child else str(parent["evidence"])
+        )
+        importance = _higher(str(parent["importance"]), str(child["importance"]))
+        confidence = max(float(parent["confidence"]), float(child["confidence"]))
+        durability = _stricter(str(parent["durability"]), str(child["durability"]))
+        updated = max(str(parent.get("updated_at") or ""), str(child.get("updated_at") or ""))
+        self.store.update_memory_fact(
+            parent["id"],
+            text=merged_text,
+            evidence=merged_evidence,
+            importance=importance,
+            confidence=confidence,
+            durability=durability,
+            updated_at=updated,
+        )
+        self.store.update_memory_fact(child["id"], status="superseded", replaced_by=parent["id"])
 
     def expire_temporary(self, *, now: datetime | None = None) -> int:
         """Закрывает временные факты старше ``temporary_ttl_days``.
@@ -771,24 +932,49 @@ class MemoryManager:
     def block(self, query: str = "", *, related: list[dict] | None = None) -> str:
         """Готовый блок для системного промпта или пустая строка.
 
-        Активные факты идут первыми. Противоречия не выдаются за факты:
-        для них отдельный короткий блок с просьбой уточнить.
+        Внутри фактов три слоя: устойчивое (постоянные черты и решения),
+        свежее (временные состояния) и найденное по смыслу. Задачи не
+        выдаются за факты: для них отдельный короткий список.
 
         ``related`` — смысловые находки по запросу. Совпадение по словам
         надёжнее близости векторов, поэтому при точном совпадении находки
-        дополняют список, а при перефразировке — идут перед свежими
-        фактами. Дубли отбрасываются по id.
+        дополняют список, а при перефразировке — идут первыми. Дубли
+        отбрасываются по id.
         """
-        facts = self._with_related(self.facts(query), related, query)
+        base = self.facts(query)
+        chosen = self._with_related(base, related, query)
+        base_ids = {int(row["id"]) for row in base if row.get("id") is not None}
+        stable: list[dict] = []
+        fresh: list[dict] = []
+        tasks: list[dict] = []
+        topic: list[dict] = []
+        for row in chosen:
+            if int(row["id"]) not in base_ids:
+                topic.append(row)
+            elif row["kind"] == "unfinished":
+                tasks.append(row)
+            elif row["durability"] == TEMPORARY:
+                fresh.append(row)
+            else:
+                stable.append(row)
         reviews = self.reviews()
-        if not facts and not reviews:
+        if not (stable or fresh or tasks or topic) and not reviews:
             return ""
-        lines: list[str] = []
-        total = 0
-        if facts:
+        lines: list[str] = [FACTS_HEADER]
+        total = len(FACTS_HEADER) + 1
+        for header, rows in (
+            (STABLE_HEADER, stable),
+            (FRESH_HEADER, fresh),
+            (TASKS_HEADER, tasks),
+            (TOPIC_HEADER, topic),
+        ):
+            if not rows:
+                continue
+            if self.facts_max_chars and total + len(header) + 1 > self.facts_max_chars:
+                break
             body: list[str] = []
-            used = len(FACTS_HEADER) + 1
-            for row in facts:
+            used = total + len(header) + 1
+            for row in rows:
                 moment = _short_date(str(row.get("updated_at") or ""))
                 line = f"- {moment}{row['text']}" if moment else f"- {row['text']}"
                 if self.facts_max_chars and used + len(line) + 1 > self.facts_max_chars:
@@ -796,7 +982,7 @@ class MemoryManager:
                 body.append(line)
                 used += len(line) + 1
             if body:
-                lines.extend([FACTS_HEADER, *body])
+                lines.extend([header, *body])
                 total = used
         if reviews:
             body = []
@@ -813,7 +999,7 @@ class MemoryManager:
                 used += len(line) + 1
             if body:
                 lines.extend([REVIEW_HEADER, *body])
-        return "\n".join(lines)
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     # --------------------------------------------------------------- private
     def _with_related(
@@ -1031,6 +1217,13 @@ def _similarity(left: str, right: str) -> float:
     return _jaccard(_token_set(left), _token_set(right))
 
 
+def _contained(short: str, long: str) -> bool:
+    """Все содержательные слова короткого текста есть в длинном."""
+    left = _token_set(short) - _GENERIC_MERGE
+    right = _token_set(long) - _GENERIC_MERGE
+    return bool(left) and left <= right
+
+
 def _jaccard(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
@@ -1129,6 +1322,16 @@ def _flat(text: str) -> str:
     return " ".join((text or "").lower().replace("ё", "е").split())
 
 
+# Слова, которые не делают факт другим: «очень любит» и «любит» — одно
+# и то же. Нужны при проверке вложенности текстов при схлопывании дублей.
+_GENERIC_MERGE = frozenset(
+    _tokens(
+        "очень сам также еще уже просто свой который этот весь всего "
+        "любит любить нравится предпочитает обожает увлекается мечтает привык"
+    )
+)
+
+
 def _is_meta_fact(text: str) -> bool:
     """Пункт описывает пробел в знаниях, а не факт о пользователе."""
     flat = _flat(text)
@@ -1141,6 +1344,113 @@ def _is_gap_task(text: str) -> bool:
     if flat.startswith(("неясно", "непонятно", "неизвестно")):
         return True
     return any(marker in flat for marker in _UNFINISHED_GAP)
+
+
+def _forget_tokens(text: str) -> list[str]:
+    """Содержательные слова запроса «забудь …» без служебной обвязки."""
+    tokens = []
+    for token in _tokens(text):
+        if token.startswith(("забуд", "сотр", "удал", "пожалуйст")):
+            continue
+        if token in {"про", "об", "о", "вс"}:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _same_word(left: str, right: str) -> bool:
+    """Слова совпадают с точностью до грубого стемминга."""
+    if left == right:
+        return True
+    if len(left) < 3 or len(right) < 3:
+        return False
+    return left[:3] == right[:3]
+
+
+# Стиль общения — не набор разных фактов, а одна повторяемая просьба.
+# Важно не принять за неё жалобу («расстроен, что не хочет материться»).
+_STYLE_BAD = ("расстро", "не хочет", "отказ")
+_STYLE_INTENT = frozenset(
+    {
+        "предпочита",
+        "прос",
+        "просьб",
+        "общаться",
+        "общени",
+        "ответ",
+        "стил",
+        "использовать",
+        "чащ",
+        "продолжать",
+    }
+)
+
+
+def _style_traits(text: str) -> set[str]:
+    """Какие пожелания к манере общения есть в тексте."""
+    flat = _flat(text)
+    if any(marker in flat for marker in _STYLE_BAD):
+        return set()
+    tokens = _token_set(text)
+    intent = any(
+        token in _STYLE_INTENT or token.startswith(("предпочита", "прос", "общ"))
+        for token in tokens
+    )
+    if not intent:
+        return set()
+    traits: set[str] = set()
+    if tokens & {"прям", "свойск", "разговорн"}:
+        traits.add("direct")
+    if tokens & {"мат", "брань", "бран", "ругательств"} or any(
+        token.startswith(("материт", "ругатель")) for token in tokens
+    ):
+        traits.add("mat")
+    if any(token.startswith("шут") for token in tokens):
+        traits.add("humor")
+    if any(token.startswith("ирони") for token in tokens):
+        traits.add("irony")
+    return traits
+
+
+def _compact_key(row: dict) -> tuple[str, str]:
+    """Ключ группы при схлопывании: стиль общения общий для фактов и решений."""
+    kind = str(row.get("kind") or "")
+    if kind in ("fact", "decision"):
+        if _style_traits(str(row.get("text") or "")):
+            return ("style", "style")
+    return (kind, str(row.get("fact_key") or ""))
+
+
+def _style_summary(traits: set[str]) -> str:
+    """Одна строка из набора пожеланий к стилю общения."""
+    objects = []
+    if "mat" in traits:
+        objects.append("уместный мат")
+    if "humor" in traits:
+        objects.append("шутки")
+    if "irony" in traits:
+        objects.append("иронию")
+    if "direct" in traits:
+        head = "Пользователь предпочитает прямой, разговорный стиль общения"
+        if not objects:
+            return head + "."
+        nominative = []
+        if "mat" in traits:
+            nominative.append("мат")
+        if "humor" in traits:
+            nominative.append("шутки")
+        if "irony" in traits:
+            nominative.append("ирония")
+        return f"{head}; уместны {_join(nominative)}."
+    if not objects:
+        return ""
+    return f"Пользователь просит в общении {_join(objects)}."
+
+
+def _join(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " и " + items[-1]
 
 
 def _age_days(value: str, now: datetime) -> float | None:

@@ -638,6 +638,29 @@ class MemoryService:
             return False
         return True
 
+    def remembered(self, limit: int = 8) -> list[dict[str, Any]]:
+        """Устойчивые факты о пользователе для прямого ответа."""
+        if self.manager is None:
+            return []
+        try:
+            return self.manager.remembered(limit)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: факты для ответа недоступны: %s", exc)
+            return []
+
+    def forget_facts(self, query: str) -> list[dict[str, Any]]:
+        """Закрывает факты по просьбе «забудь …» и чинит индекс."""
+        if self.manager is None:
+            return []
+        try:
+            rows = self.manager.forget(query)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: не удалось забыть факты: %s", exc)
+            return []
+        if rows:
+            self.sync_facts()
+        return rows
+
     # ------------------------------------------------------------------- read
     def recall(
         self,
