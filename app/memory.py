@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .embeddings import EmbeddingError, VoyageEmbedder
-from .memory_manager import MemoryManager
+from .memory_manager import HIGH, MAX_ACTIVE_FACTS, MEDIUM, MemoryManager
 from .session_store import SessionStore
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,46 @@ DEFAULT_MIN_SCORE = 0.35
 DEFAULT_MIN_MARGIN = 0.05
 DEFAULT_MAX_CHARS = 2400
 DEFAULT_COLLECTION = "summaries"
+# Факты лежат отдельной коллекцией: у них короткий текст и другая шкала
+# близости, поэтому смешивать их с резюме в одном поиске нельзя.
+DEFAULT_FACTS_COLLECTION = "facts"
+DEFAULT_FACTS_TOP_K = 4
+DEFAULT_FACTS_MIN_SCORE = 0.42
+FACT_VECTOR_PREFIX = "fact:"
+# Общие вопросы о памяти не несут темы: смысловой поиск по ним вернул бы
+# случайные факты. Для них остаётся обычный список свежих фактов.
+_GENERAL_QUERY_WORDS = frozenset(
+    {
+        "а",
+        "было",
+        "был",
+        "была",
+        "были",
+        "вспомни",
+        "вспоминаешь",
+        "говорили",
+        "знаешь",
+        "и",
+        "какая",
+        "какие",
+        "какой",
+        "кто",
+        "мы",
+        "мне",
+        "обо",
+        "обсуждали",
+        "память",
+        "помни",
+        "помнишь",
+        "помню",
+        "расскажи",
+        "сказал",
+        "сказала",
+        "ты",
+        "что",
+        "я",
+    }
+)
 # Дневной дайджест: сегодняшние содержательные сессии добавляются к
 # семантическим находкам, даже если поиск их не выбрал.
 DEFAULT_DIGEST_MIN_MESSAGES = 6
@@ -251,6 +292,9 @@ class MemoryService:
         recent_limit: int = DEFAULT_RECENT_LIMIT,
         recent_item_chars: int = DEFAULT_RECENT_ITEM_CHARS,
         index_version: int = INDEX_VERSION,
+        facts_vectors: VectorStore | None = None,
+        facts_top_k: int = DEFAULT_FACTS_TOP_K,
+        facts_min_score: float = DEFAULT_FACTS_MIN_SCORE,
         manager: MemoryManager | None = None,
     ) -> None:
         self.embedder = embedder
@@ -259,6 +303,11 @@ class MemoryService:
         # Факты менеджера идут первыми: это уже проверенные утверждения,
         # а не пересказ целой сессии.
         self.manager = manager
+        # Отдельный индекс фактов. Он необязателен: без него факты
+        # работают по словам, как раньше.
+        self.facts_vectors = facts_vectors
+        self.facts_top_k = max(0, int(facts_top_k))
+        self.facts_min_score = float(facts_min_score)
         self.top_k = max(1, int(top_k))
         self.min_score = float(min_score)
         self.min_margin = max(0.0, float(min_margin))
@@ -294,6 +343,14 @@ class MemoryService:
         except Exception as exc:  # noqa: BLE001
             log.warning("Chroma недоступна, память выключена: %s", exc)
             return None
+        facts_vectors: ChromaVectorStore | None = None
+        try:
+            facts_vectors = ChromaVectorStore(
+                str(section.get("path") or "state/chroma"),
+                str(section.get("facts_collection") or DEFAULT_FACTS_COLLECTION),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Chroma фактов недоступна, поиск по смыслу выключен: %s", exc)
         return cls(
             embedder,
             store,
@@ -314,6 +371,9 @@ class MemoryService:
                 section.get("recent_item_chars"), DEFAULT_RECENT_ITEM_CHARS
             ),
             index_version=int(section.get("index_version") or INDEX_VERSION),
+            facts_vectors=facts_vectors,
+            facts_top_k=_int_setting(section.get("facts_top_k"), DEFAULT_FACTS_TOP_K),
+            facts_min_score=float(section.get("facts_min_score", DEFAULT_FACTS_MIN_SCORE)),
             manager=manager,
         )
 
@@ -361,8 +421,75 @@ class MemoryService:
             log.info("Память: сессия %s проиндексирована, тем %s", session_id, saved)
         return saved > 0
 
+    def sync_facts(self) -> int:
+        """Синхронизирует векторный индекс фактов с SQLite.
+
+        SQLite — источник правды. Индексируются только активные важные
+        факты; вытесненные, удалённые и потерявшие важность векторы
+        удаляются. Пересчитываются только изменившиеся тексты: обычное
+        резюме добавляет или меняет пару фактов, а не всю память.
+        """
+        if self.facts_vectors is None or self.manager is None or self.facts_top_k <= 0:
+            return 0
+        try:
+            indexed = self.facts_vectors.indexed()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: индекс фактов недоступен: %s", exc)
+            return 0
+        try:
+            rows = self.store.memory_facts(status="active", limit=MAX_ACTIVE_FACTS)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: факты для индекса недоступны: %s", exc)
+            return 0
+        expected = {
+            _fact_vector_id(row["id"]): row for row in rows if row["importance"] in (HIGH, MEDIUM)
+        }
+        for orphan in sorted(set(indexed) - set(expected)):
+            try:
+                self.facts_vectors.delete_id(orphan)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: устаревший вектор факта %s не удалён: %s", orphan, exc)
+        stale = [
+            vector_id
+            for vector_id, row in expected.items()
+            if not self._fact_current(indexed.get(vector_id), row)
+        ]
+        if not stale:
+            return 0
+        saved = 0
+        for start in range(0, len(stale), RESTORE_BATCH):
+            batch = stale[start : start + RESTORE_BATCH]
+            texts = [str(expected[vector_id]["text"]) for vector_id in batch]
+            try:
+                vectors = self.embedder.embed(texts, input_type="document")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: векторы фактов не пересчитаны: %s", exc)
+                break
+            for vector_id, vector in zip(batch, vectors, strict=False):
+                try:
+                    self.facts_vectors.upsert(
+                        vector_id,
+                        vector,
+                        self._fact_metadata(vector, expected[vector_id]),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Память: вектор факта %s не сохранён: %s", vector_id, exc)
+                    continue
+                saved += 1
+        if saved:
+            log.info("Память: фактов проиндексировано %s", saved)
+        return saved
+
     def restore(self) -> int:
-        """Достраивает индекс по резюме из SQLite. Возвращает число тем.
+        """Достраивает оба индекса по SQLite. Возвращает число векторов.
+
+        Темы и факты восстанавливаются независимо: сбой одного индекса
+        не мешает другому.
+        """
+        return self._restore_topics() + self.sync_facts()
+
+    def _restore_topics(self) -> int:
+        """Достраивает индекс тем по резюме из SQLite. Возвращает число тем.
 
         Пересчитывает только темы, чей вектор отсутствует или сделан
         другой моделью/версией. Устаревшие векторы без резюме удаляются.
@@ -458,6 +585,38 @@ class MemoryService:
             return False
         return version == self.index_version
 
+    def _fact_metadata(self, vector: list[float], row: dict[str, Any]) -> dict[str, Any]:
+        """Пометки вектора факта: модель, версия, id, важность и хеш текста."""
+        return {
+            "embedding_model": self.embedder.model,
+            "index_version": self.index_version,
+            "dim": len(vector),
+            "indexed_at": _now_iso(),
+            "fact_id": int(row["id"]),
+            "fact_importance": str(row.get("importance") or ""),
+            "fact_text_hash": _text_hash(str(row.get("text") or "")),
+        }
+
+    def _fact_current(self, metadata: dict[str, Any] | None, row: dict[str, Any]) -> bool:
+        """Совпадает ли вектор с текущей записью SQLite.
+
+        Дату не сравниваем: слияние может обновить уверенность, не меняя
+        текст. Хеш и важность ловят всё, что влияет на выдачу.
+        """
+        if not metadata:
+            return False
+        if str(metadata.get("embedding_model") or "") != self.embedder.model:
+            return False
+        try:
+            version = int(metadata.get("index_version") or 0)
+        except (TypeError, ValueError):
+            return False
+        if version != self.index_version:
+            return False
+        if str(metadata.get("fact_importance") or "") != str(row.get("importance") or ""):
+            return False
+        return str(metadata.get("fact_text_hash") or "") == _text_hash(str(row.get("text") or ""))
+
     def _index_filter(self, day: date | None = None) -> dict[str, Any]:
         """Фильтр Chroma: своя модель и версия, при необходимости — день."""
         clauses: list[dict[str, Any]] = [
@@ -535,6 +694,51 @@ class MemoryService:
             reverse=True,
         )
         return found[: self.top_k]
+
+    def recall_facts(self, query: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Ищет факты по смыслу. Возвращает строки SQLite с полем ``score``.
+
+        Поиск не заменяет совпадения по словам: он ловит перефразировки,
+        когда в вопросе нет точного слова из факта. Общие вопросы о памяти
+        пропускаются. Сбой эмбеддера или Chroma — пустой список.
+        """
+        if self.facts_vectors is None or self.manager is None:
+            return []
+        count = max(0, int(limit if limit is not None else self.facts_top_k))
+        text = " ".join((query or "").split())
+        if count <= 0 or not text or _is_general_query(text):
+            return []
+        try:
+            vector = self.embedder.embed([text], input_type="query")[0]
+            hits = self.facts_vectors.search(vector, count * 2, self._index_filter())
+        except EmbeddingError as exc:
+            log.warning("Поиск по фактам пропущен: %s", exc)
+            return []
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Chroma не ответила, поиск по фактам пропущен: %s", exc)
+            return []
+        found: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for hit in sorted(hits, key=lambda item: item.score, reverse=True):
+            if hit.score < self.facts_min_score:
+                continue
+            fact_id = _hit_fact_id(hit)
+            if fact_id is None or fact_id in seen:
+                continue
+            try:
+                row = self.store.memory_fact(fact_id)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Память: факт %s недоступен: %s", fact_id, exc)
+                continue
+            if row is None or row["status"] != "active":
+                continue
+            if row["importance"] not in (HIGH, MEDIUM):
+                continue
+            seen.add(fact_id)
+            found.append(dict(row, score=hit.score))
+            if len(found) >= count:
+                break
+        return found
 
     def _recency_bonus(self, created_at: str, now: datetime | None) -> float:
         """Небольшая надбавка за свежесть: максимум в день создания."""
@@ -691,11 +895,16 @@ class MemoryService:
         return found
 
     def facts_block(self, query: str = "") -> str:
-        """Факты менеджера. Сбой чтения не должен ломать системный промпт."""
+        """Факты менеджера и смысловые находки. Сбой не ломает промпт."""
         if self.manager is None:
             return ""
         try:
-            return self.manager.block(query)
+            related = self.recall_facts(query)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Память: смысловой поиск фактов недоступен: %s", exc)
+            related = []
+        try:
+            return self.manager.block(query, related=related)
         except Exception as exc:  # noqa: BLE001
             log.warning("Память: факты недоступны: %s", exc)
             return ""
@@ -741,14 +950,18 @@ class MemoryService:
         return found
 
     def close(self) -> None:
-        """Освобождает ресурсы индекса при выходе программы."""
-        close = getattr(self.vectors, "close", None)
-        if close is None:
-            return
-        try:
-            close()
-        except Exception:  # noqa: BLE001
-            log.warning("Не удалось закрыть хранилище памяти")
+        """Освобождает ресурсы индексов при выходе программы."""
+        stores = [self.vectors]
+        if self.facts_vectors is not None and self.facts_vectors is not self.vectors:
+            stores.append(self.facts_vectors)
+        for store in stores:
+            close = getattr(store, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                log.warning("Не удалось закрыть хранилище памяти")
 
 
 def _now_iso() -> str:
@@ -762,6 +975,30 @@ def _now() -> datetime:
 def _vector_id(session_id: str, topic_no: int) -> str:
     """Id вектора: сессия и номер темы. Сессии — hex, двоеточие безопасно."""
     return f"{session_id}:{int(topic_no)}"
+
+
+def _fact_vector_id(fact_id: int) -> str:
+    """Id вектора факта не пересекается с id тем резюме."""
+    return f"{FACT_VECTOR_PREFIX}{int(fact_id)}"
+
+
+def _hit_fact_id(hit: VectorHit) -> int | None:
+    try:
+        return int(hit.metadata.get("fact_id") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _text_hash(text: str) -> str:
+    """Короткий хеш текста: меняется текст — пересчитывается вектор."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_general_query(text: str) -> bool:
+    """Вопрос о памяти целиком, а не о конкретной теме."""
+    words = {word.strip(".,!?;:()[]{}\"'«»—–-") for word in text.lower().replace("ё", "е").split()}
+    words.discard("")
+    return not words or words <= _GENERAL_QUERY_WORDS
 
 
 def _summary_items(row: dict[str, Any]) -> list[dict[str, Any]]:

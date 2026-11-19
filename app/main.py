@@ -273,7 +273,7 @@ class Assistant:
             log.exception("Память: восстановление индекса упало")
             return
         if restored:
-            log.info("Память: восстановлено тем %s", restored)
+            log.info("Память: восстановлено векторов %s", restored)
 
     # ------------------------------------------------------------------- state
     @property

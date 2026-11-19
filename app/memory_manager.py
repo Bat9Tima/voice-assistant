@@ -609,13 +609,18 @@ class MemoryManager:
                 break
         return pairs
 
-    def block(self, query: str = "") -> str:
+    def block(self, query: str = "", *, related: list[dict] | None = None) -> str:
         """Готовый блок для системного промпта или пустая строка.
 
         Активные факты идут первыми. Противоречия не выдаются за факты:
         для них отдельный короткий блок с просьбой уточнить.
+
+        ``related`` — смысловые находки по запросу. Совпадение по словам
+        надёжнее близости векторов, поэтому при точном совпадении находки
+        дополняют список, а при перефразировке — идут перед свежими
+        фактами. Дубли отбрасываются по id.
         """
-        facts = self.facts(query)
+        facts = self._with_related(self.facts(query), related, query)
         reviews = self.reviews()
         if not facts and not reviews:
             return ""
@@ -652,6 +657,37 @@ class MemoryManager:
         return "\n".join(lines)
 
     # --------------------------------------------------------------- private
+    def _with_related(
+        self,
+        facts: list[dict],
+        related: list[dict] | None,
+        query: str,
+    ) -> list[dict]:
+        """Добавляет смысловые находки, не вытесняя точные совпадения."""
+        limit = max(0, self.facts_limit)
+        if not related or limit <= 0:
+            return facts[:limit]
+        query_tokens = _token_set(query)
+        exact = bool(query_tokens) and any(
+            query_tokens & _token_set(str(row.get("text") or "")) for row in facts
+        )
+        seen = {int(row["id"]) for row in facts if row.get("id") is not None}
+        extra: list[dict] = []
+        for row in related:
+            if row.get("id") is None:
+                continue
+            fact_id = int(row["id"])
+            if fact_id in seen:
+                continue
+            if row.get("importance") not in (HIGH, MEDIUM):
+                continue
+            if str(row.get("status") or "active") != "active":
+                continue
+            seen.add(fact_id)
+            extra.append(row)
+        merged = facts + extra if exact else extra + facts
+        return merged[:limit]
+
     def _dismiss_reviews(
         self,
         kind: str,

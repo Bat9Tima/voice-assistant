@@ -558,6 +558,72 @@ class MemoryManagerTest(unittest.TestCase):
 
         self.assertEqual(manager.block(), "")
 
+    def test_block_uses_related_facts_after_keyword_matches(self) -> None:
+        manager, store = self.make(facts_limit=2)
+        self.add_session(store, "s1")
+        stamp = at(10).isoformat()
+        coffee_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="preference",
+            text="Пользователь любит кофе",
+            evidence="обожаю кофе",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        cpp_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="study",
+            text="Пользователь изучает C++",
+            evidence="изучаю C++",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        coffee = store.memory_fact(coffee_id)
+        cpp = store.memory_fact(cpp_id)
+
+        block = manager.block("кофе", related=[cpp, coffee])
+
+        self.assertLess(block.index("кофе"), block.index("C++"))
+        self.assertEqual(block.count("Пользователь любит кофе"), 1)
+
+    def test_block_puts_related_first_on_paraphrase(self) -> None:
+        manager, store = self.make(facts_limit=1)
+        self.add_session(store, "s1")
+        stamp = at(10).isoformat()
+        coffee_id = store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="preference",
+            text="Пользователь любит кофе",
+            evidence="обожаю кофе",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+        store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="study",
+            text="Пользователь изучает C++",
+            evidence="изучаю C++",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+        block = manager.block("что я пью по утрам", related=[store.memory_fact(coffee_id)])
+
+        self.assertIn("Пользователь любит кофе", block)
+        self.assertNotIn("C++", block)
+
     def test_from_config_reads_limits(self) -> None:
         manager, _ = self.make()
         configured = MemoryManager.from_config(

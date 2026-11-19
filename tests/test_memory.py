@@ -13,6 +13,7 @@ from app.memory import (
     MemoryService,
     VectorHit,
 )
+from app.memory_manager import MemoryManager
 from app.session import DialogSession
 from app.session_store import SessionStore
 
@@ -109,9 +110,11 @@ class FakeManager:
         self.value = block
         self.error = error
         self.queries: list[str] = []
+        self.related: list[dict] = []
 
-    def block(self, query: str = "") -> str:
+    def block(self, query: str = "", *, related: list[dict] | None = None) -> str:
         self.queries.append(query)
+        self.related = related or []
         if self.error is not None:
             raise self.error
         return self.value
@@ -671,6 +674,75 @@ class MemoryServiceTest(unittest.TestCase):
 
         self.assertEqual(memory.block("что было вчера?", now=at(20)), "")
 
+    # ------------------------------------------------------------------ facts
+    def add_fact(
+        self,
+        store: SessionStore,
+        text: str,
+        *,
+        importance: str = "high",
+        status: str = "active",
+        moment: datetime | None = None,
+    ) -> int:
+        stamp = (moment or at(10)).isoformat()
+        return store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key=text,
+            text=text,
+            evidence=text,
+            importance=importance,
+            confidence=0.9,
+            status=status,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+    def test_sync_facts_indexes_only_active_important(self) -> None:
+        facts = FakeVectors()
+        memory, _, _, store = self.make(facts_vectors=facts, manager=FakeManager())
+        indexed = self.add_fact(store, "Пользователь изучает C++")
+        self.add_fact(store, "Пользователь смотрел фильм", importance="low")
+        old = self.add_fact(store, "Пользователь болеет", status="superseded")
+        facts.items[f"fact:{old}"] = (
+            [0.0, 1.0, 0.0],
+            {"embedding_model": "fake-voyage", "index_version": 2},
+        )
+
+        self.assertEqual(memory.sync_facts(), 1)
+
+        self.assertEqual(set(facts.items), {f"fact:{indexed}"})
+        _, metadata = facts.items[f"fact:{indexed}"]
+        self.assertEqual(metadata["fact_id"], indexed)
+        self.assertEqual(metadata["fact_importance"], "high")
+        self.assertEqual(memory.sync_facts(), 0)
+
+    def test_recall_facts_filters_threshold_and_general_question(self) -> None:
+        facts = FakeVectors()
+        memory, _, _, store = self.make(
+            facts_vectors=facts, manager=FakeManager(), facts_min_score=0.5
+        )
+        fact_id = self.add_fact(store, "Пользователь изучает C++")
+        facts.hits = [VectorHit(f"fact:{fact_id}", 0.9, {"fact_id": fact_id})]
+
+        found = memory.recall_facts("что я изучал?")
+
+        self.assertEqual([row["id"] for row in found], [fact_id])
+        self.assertEqual(found[0]["score"], 0.9)
+        self.assertEqual(memory.recall_facts("что ты обо мне помнишь"), [])
+        facts.hits = [VectorHit(f"fact:{fact_id}", 0.2, {"fact_id": fact_id})]
+        self.assertEqual(memory.recall_facts("что я изучал?"), [])
+
+    def test_facts_block_passes_semantic_hits_to_manager(self) -> None:
+        facts = FakeVectors()
+        manager = FakeManager(block="готовый блок")
+        memory, _, _, store = self.make(facts_vectors=facts, manager=manager, facts_min_score=0.5)
+        fact_id = self.add_fact(store, "Пользователь изучает C++")
+        facts.hits = [VectorHit(f"fact:{fact_id}", 0.9, {"fact_id": fact_id})]
+
+        self.assertEqual(memory.facts_block("что я изучал?"), "готовый блок")
+        self.assertEqual([row["id"] for row in manager.related], [fact_id])
+
     # ----------------------------------------------------------------- config
     def test_from_config_disabled(self) -> None:
         directory = tempfile.TemporaryDirectory()
@@ -774,6 +846,45 @@ class ChromaMemoryTest(unittest.TestCase):
             [hit.session_id for hit in memory.recall("что я изучал?")],
             ["s1"],
         )
+
+    def test_fact_search_roundtrip(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = SessionStore(Path(directory.name) / "dialog.db")
+        manager = MemoryManager(store)
+        path = Path(directory.name) / "chroma"
+        memory = MemoryService(
+            FakeEmbedder(),
+            store,
+            ChromaVectorStore(path),
+            facts_vectors=ChromaVectorStore(path, "facts"),
+            facts_min_score=0.5,
+            min_score=0.5,
+            manager=manager,
+        )
+        self.addCleanup(memory.close)
+        session = DialogSession(started_at=at(), id="s1")
+        session.add("user", "привет")
+        session.finish(at=at(9))
+        store.save(session)
+        stamp = at(10).isoformat()
+        store.add_memory_fact(
+            session_id="s1",
+            kind="fact",
+            fact_key="учёба",
+            text="Пользователь изучает C++",
+            evidence="изучаю C++",
+            importance="high",
+            confidence=0.9,
+            created_at=stamp,
+            updated_at=stamp,
+        )
+
+        self.assertEqual(memory.sync_facts(), 1)
+
+        hits = memory.recall_facts("что я изучал?")
+        self.assertEqual([hit["text"] for hit in hits], ["Пользователь изучает C++"])
+        self.assertIn("C++", memory.facts_block("что я изучал?"))
 
 
 if __name__ == "__main__":

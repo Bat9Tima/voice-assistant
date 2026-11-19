@@ -254,6 +254,19 @@ class Summarizer:
             result.review,
             result.resolved,
         )
+        self._sync_fact_index()
+
+    def _sync_fact_index(self) -> None:
+        """Переносит изменения фактов в векторный индекс. Сбой не критичен."""
+        if self.memory is None:
+            return
+        sync = getattr(self.memory, "sync_facts", None)
+        if not callable(sync):
+            return
+        try:
+            sync()
+        except Exception:  # noqa: BLE001
+            log.exception("Индекс фактов не обновлён")
 
     def _remember(
         self,
