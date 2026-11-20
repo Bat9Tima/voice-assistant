@@ -8,12 +8,11 @@
 
 | Роль | Модель | Почему |
 |---|---|---|
-| Основная | `openai/gpt-6-luna` | хорошо держит русский и JSON v3, отвечает без долгих рассуждений |
+| Основная | `x-ai/grok-4.3` | хорошо держит русский, принимает `temperature` и `reasoning_effort` |
 | Запасная | `xiaomi/mimo-v2.6-flash` | дешевле, включается при сбое основной |
 
-На пробном резюме GPT-6 Luna с `reasoning_effort: none` дала 3 темы за
-3,8 с, простой вопрос — за 2,6 с. Замеры ориентировочные: зависят от сети
-и загрузки ProxyAPI.
+Короткий запрос к Grok через ProxyAPI проверен. Замеры скорости зависят
+от сети и загрузки ProxyAPI.
 
 ## Поведение
 
@@ -27,9 +26,7 @@
   порогом 2000: иначе reasoning съедает лимит и ответ приходит пустым.
 - `reasoning_effort` задаётся глобально. `cloud_llm.model_params`
   переопределяет поля запроса для конкретной модели; `null` убирает поле.
-  GPT-6 Luna принимает только `temperature` по умолчанию и не понимает
-  `minimal`, поэтому для неё температура убирается, а режим — `none`.
-  Без этого каждый запрос падал бы с HTTP 400.
+  Для Grok отдельные переопределения не нужны.
 
 ## Конфиг
 
@@ -38,15 +35,9 @@
   "enabled": true,
   "base_url": "https://api.proxyapi.ru/v1",
   "api_key": "sk-...",
-  "model": "openai/gpt-6-luna",
+  "model": "x-ai/grok-4.3",
   "fallback_models": ["xiaomi/mimo-v2.6-flash"],
   "reasoning_effort": "minimal",
-  "model_params": {
-    "openai/gpt-6-luna": {
-      "temperature": null,
-      "reasoning_effort": "none"
-    }
-  },
   "max_completion_tokens": 2000,
   "temperature": 0.2,
   "timeout_sec": 90,

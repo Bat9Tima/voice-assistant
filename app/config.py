@@ -120,18 +120,9 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         "base_url": "https://api.proxyapi.ru/v1",
         "api_key": "",
-        "model": "openai/gpt-6-luna",
+        "model": "x-ai/grok-4.3",
         "fallback_models": ["xiaomi/mimo-v2.6-flash"],
         "reasoning_effort": "minimal",
-        # Ограничения конкретных моделей. null убирает поле из запроса.
-        # GPT-6 Luna принимает только temperature по умолчанию и не
-        # понимает minimal: без этого каждый запрос падал бы с HTTP 400.
-        "model_params": {
-            "openai/gpt-6-luna": {
-                "temperature": None,
-                "reasoning_effort": "none",
-            }
-        },
         "max_completion_tokens": 2000,
         "temperature": 0.2,
         "timeout_sec": 90,

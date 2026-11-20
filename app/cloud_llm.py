@@ -5,10 +5,9 @@ OpenAI-совместимый API ProxyAPI. Если основная модел
 вернула пустой ответ, пробуем запасные модели из конфига. Локальной
 модели в этом пути нет.
 
-У моделей разные ограничения на параметры запроса: например, GPT-6 Luna
-не принимает ``temperature`` и не понимает ``reasoning_effort: minimal``.
-Такие отличия задаются в ``cloud_llm.model_params`` по ID модели, а не
-кодом: значение переопределяет поле запроса, ``null`` убирает его.
+У моделей разные ограничения на параметры запроса. Такие отличия задаются
+в ``cloud_llm.model_params`` по ID модели, а не кодом: значение
+переопределяет поле запроса, ``null`` убирает его.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from .prompts import (
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.proxyapi.ru/v1"
-DEFAULT_MODEL = "openai/gpt-6-luna"
+DEFAULT_MODEL = "x-ai/grok-4.3"
 DEFAULT_FALLBACK_MODELS = ("xiaomi/mimo-v2.6-flash",)
 
 # Рассуждающие модели тратят часть лимита на скрытые размышления.
@@ -97,9 +96,8 @@ class CloudLLM:
         ]
         self.reasoning_effort = str(section.get("reasoning_effort") or "minimal").strip()
         # Отличия конкретных моделей. Ключ — ID модели, значение — поля
-        # запроса; null убирает поле. Пример:
-        # {"openai/gpt-6-luna": {"temperature": null,
-        #                        "reasoning_effort": "none"}}
+        # запроса; null убирает поле. Например, если модель не принимает
+        # temperature: {"provider/model": {"temperature": null}}.
         raw_params = section.get("model_params") or {}
         self.model_params: dict[str, dict[str, Any]] = {
             str(name): dict(values)
