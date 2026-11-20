@@ -739,6 +739,7 @@ class MemoryFactsStoreTest(unittest.TestCase):
             profanity_words=1,
             profanity_messages=1,
             rough_words=0,
+            polite_messages=1,
             humor_messages=1,
             irony_messages=0,
             question=1,
@@ -755,6 +756,7 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertEqual([row["id"] for row in rows], [second, first])
         self.assertEqual(rows[0]["words"], 2)
         self.assertEqual(rows[1]["profanity_words"], 1)
+        self.assertEqual(rows[1]["polite_messages"], 1)
         self.assertEqual(rows[1]["humor_messages"], 1)
         self.assertEqual(rows[1]["question"], 1)
         self.assertEqual(store.style_observations(1)[0]["id"], second)
@@ -805,6 +807,44 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertIsNotNone(latest)
         self.assertEqual(latest["style"], {"profanity": "off"})
         self.assertEqual(latest["auto"], {})
+
+    def test_style_polite_column_migrates(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """
+            CREATE TABLE style_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                words INTEGER NOT NULL,
+                chars INTEGER NOT NULL,
+                profanity_words INTEGER NOT NULL DEFAULT 0,
+                profanity_messages INTEGER NOT NULL DEFAULT 0,
+                rough_words INTEGER NOT NULL DEFAULT 0,
+                humor_messages INTEGER NOT NULL DEFAULT 0,
+                irony_messages INTEGER NOT NULL DEFAULT 0,
+                question INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO style_observations (created_at, words, chars, humor_messages)
+            VALUES (?, 5, 20, 1)
+            """,
+            (at().isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+
+        store = SessionStore(path)
+        rows = store.style_observations()
+
+        self.assertEqual(rows[0]["polite_messages"], 0)
+        self.assertEqual(rows[0]["humor_messages"], 1)
 
 
 if __name__ == "__main__":

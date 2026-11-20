@@ -3,7 +3,7 @@
 Слои:
 
 * ядро — ``DIALOG_SYSTEM``, его этот модуль не меняет;
-* автоматическая подстройка — мат и длина по профилю речи пользователя;
+* автоматическая подстройка — мат, длина, тон, шутки и ирония по речи;
 * устойчивые просьбы — явные команды без слов «сегодня» и «сейчас»;
 * ситуативная манера — просьба на сегодня, после смены даты не действует.
 
@@ -53,17 +53,39 @@ STABLE_HEADER = "Устойчиво:"
 AUTO_HEADER = "Автоматически, по речи пользователя:"
 MOMENT_HEADER = "На сегодня:"
 
-# Автоподстройка включается только по этим измерениям. Шутки, ирония и
-# тон пока остаются в тени: их признаки слишком легко спутать с эмоцией.
+# Автоподстройка: включаем черту только после 20 реплик и с запасом,
+# а держим при более слабом сигнале. Пороги асимметричные, чтобы манера
+# не дёргалась на одной эмоции.
 AUTO_MIN_MESSAGES = 20
+
 AUTO_PROFANITY_MIN_MESSAGES = 5
 AUTO_PROFANITY_RATE = 0.15
 AUTO_PROFANITY_KEEP_MESSAGES = 2
 AUTO_PROFANITY_KEEP_RATE = 0.05
+
 AUTO_LENGTH_SHORT_MAX = 4
 AUTO_LENGTH_SHORT_KEEP = 6
 AUTO_LENGTH_DETAILED_MIN = 12
 AUTO_LENGTH_DETAILED_KEEP = 10
+
+AUTO_HUMOR_MIN_MESSAGES = 4
+AUTO_HUMOR_RATE = 0.12
+AUTO_HUMOR_KEEP_MESSAGES = 2
+AUTO_HUMOR_KEEP_RATE = 0.05
+
+AUTO_IRONY_MIN_MESSAGES = 3
+AUTO_IRONY_RATE = 0.08
+AUTO_IRONY_KEEP_MESSAGES = 1
+AUTO_IRONY_KEEP_RATE = 0.03
+
+AUTO_TONE_DIRECT_WORDS = 5
+AUTO_TONE_DIRECT_RATE = 0.02
+AUTO_TONE_DIRECT_KEEP_WORDS = 2
+AUTO_TONE_DIRECT_KEEP_RATE = 0.01
+AUTO_TONE_SOFT_MIN_MESSAGES = 6
+AUTO_TONE_SOFT_RATE = 0.20
+AUTO_TONE_SOFT_KEEP_MESSAGES = 3
+AUTO_TONE_SOFT_KEEP_RATE = 0.10
 
 _LABELS = {
     (PROFANITY, "off"): "без мата",
@@ -83,6 +105,10 @@ _AUTO_LABELS = {
     (PROFANITY, "on"): "мат уместен",
     (LENGTH, "short"): "отвечаю короче",
     (LENGTH, "detailed"): "отвечаю подробнее",
+    (TONE, "direct"): "говорю жёстче и прямее",
+    (TONE, "soft"): "говорю мягче",
+    (HUMOR, "on"): "шутки уместны",
+    (IRONY, "on"): "ирония уместна",
 }
 
 # Явные просьбы. Фразы уже нормализованы: нижний регистр, без «ё» и
@@ -568,6 +594,9 @@ class CharacterMemory:
             summary="откат",
             now=moment_now,
         )
+        # Откат — ручная точка опоры: старое окно не должно пересчитать
+        # автослой следующей же репликой.
+        self._clear_observations()
         labels = (
             _labels(style)
             + _auto_labels(auto, skip={**style, **moment})
@@ -600,8 +629,8 @@ class CharacterMemory:
     def mirror(self, profile: Any, *, now: datetime | None = None) -> dict[str, str] | None:
         """Применяет автоподстройку по профилю речи.
 
-        Меняет только мат и длину, только при достаточном объёме данных и
-        с гистерезисом: включить труднее, чем удержать. Возвращает новый
+        Меняет только те черты, для которых хватает сигнала, и с
+        гистерезисом: включить труднее, чем удержать. Возвращает новый
         автоматический слой или ``None``, если он не изменился.
         """
         if not self.enabled:
@@ -630,6 +659,17 @@ class CharacterMemory:
             return False
         core = _command_core(normalize(text))
         return bool(core) and core in _RESET_PHRASES
+
+    def is_rollback(self, text: str) -> bool:
+        """Является ли реплика командой отката манеры."""
+        if not self.enabled:
+            return False
+        core = _command_core(normalize(text))
+        return bool(core) and core in _ROLLBACK_PHRASES
+
+    def resets_observations(self, text: str) -> bool:
+        """Команда, после которой историю стиля нужно начать заново."""
+        return self.is_reset(text) or self.is_rollback(text)
 
     def _clear_observations(self) -> None:
         """Сброс должен забыть наблюдения, иначе автоподстройка вернётся."""
@@ -762,7 +802,7 @@ def _labels(style: dict[str, str], *, skip: dict[str, str] | None = None) -> lis
 def _auto_labels(style: dict[str, str], *, skip: dict[str, str] | None = None) -> list[str]:
     """Подписи автоматического слоя. Явные значения его перекрывают."""
     labels: list[str] = []
-    for dimension in (PROFANITY, LENGTH):
+    for dimension in DIMENSIONS:
         value = style.get(dimension)
         if (dimension, value) not in _AUTO_LABELS:
             continue
@@ -794,48 +834,131 @@ def _render(style: dict[str, str], auto: dict[str, str], moment: dict[str, str])
 def _mirror_auto(profile: Any, current: dict[str, str]) -> dict[str, str]:
     """Решает автоматический слой по профилю речи.
 
-    Пороги асимметричные: чтобы включить мат, нужно 5 матерных сообщений
-    и 15% окна; чтобы выключить — меньше двух или меньше 5%. Длина
-    включается на краях (≤4 или ≥12 слов), а держится в более широком
-    коридоре (≤6 или ≥10), поэтому манера не дёргается на каждой реплике.
+    Включает только положительные черты: мат, короткую или подробную
+    длину, прямой или мягкий тон, шутки и иронию. «Выключение» — это
+    отсутствие черты, а не приказ модели. Пороги асимметричные: включить
+    труднее, чем удержать, поэтому манера не дёргается на одной реплике.
     """
     messages = _int_attr(profile, "messages")
     if messages < AUTO_MIN_MESSAGES:
         # Данных мало: не меняем уже принятое решение.
         return dict(current)
 
-    auto = {key: value for key, value in current.items() if key not in (PROFANITY, LENGTH)}
-
-    profanity_messages = _int_attr(profile, "profanity_messages")
-    profanity_rate = _float_attr(profile, "profanity_message_rate")
-    if current.get(PROFANITY) == "on":
-        if (
-            profanity_messages >= AUTO_PROFANITY_KEEP_MESSAGES
-            and profanity_rate >= AUTO_PROFANITY_KEEP_RATE
-        ):
-            auto[PROFANITY] = "on"
-    elif (
-        profanity_messages >= AUTO_PROFANITY_MIN_MESSAGES and profanity_rate >= AUTO_PROFANITY_RATE
+    auto: dict[str, str] = {}
+    if _binary_on(
+        profile,
+        current.get(PROFANITY) == "on",
+        count_attr="profanity_messages",
+        rate_attr="profanity_message_rate",
+        on_count=AUTO_PROFANITY_MIN_MESSAGES,
+        on_rate=AUTO_PROFANITY_RATE,
+        keep_count=AUTO_PROFANITY_KEEP_MESSAGES,
+        keep_rate=AUTO_PROFANITY_KEEP_RATE,
     ):
         auto[PROFANITY] = "on"
 
-    avg_words = _float_attr(profile, "avg_words")
-    length = current.get(LENGTH)
-    if length == "short":
-        if avg_words <= AUTO_LENGTH_SHORT_KEEP:
-            auto[LENGTH] = "short"
-        elif avg_words >= AUTO_LENGTH_DETAILED_MIN:
-            auto[LENGTH] = "detailed"
-    elif length == "detailed":
-        if avg_words >= AUTO_LENGTH_DETAILED_KEEP:
-            auto[LENGTH] = "detailed"
-        elif avg_words <= AUTO_LENGTH_SHORT_MAX:
-            auto[LENGTH] = "short"
-    elif avg_words <= AUTO_LENGTH_SHORT_MAX:
-        auto[LENGTH] = "short"
-    elif avg_words >= AUTO_LENGTH_DETAILED_MIN:
-        auto[LENGTH] = "detailed"
+    length = _mirror_length(profile, current.get(LENGTH))
+    if length:
+        auto[LENGTH] = length
+
+    tone = _mirror_tone(profile, current.get(TONE))
+    if tone:
+        auto[TONE] = tone
+
+    if _binary_on(
+        profile,
+        current.get(HUMOR) == "on",
+        count_attr="humor_messages",
+        rate_attr="humor_rate",
+        on_count=AUTO_HUMOR_MIN_MESSAGES,
+        on_rate=AUTO_HUMOR_RATE,
+        keep_count=AUTO_HUMOR_KEEP_MESSAGES,
+        keep_rate=AUTO_HUMOR_KEEP_RATE,
+    ):
+        auto[HUMOR] = "on"
+
+    if _binary_on(
+        profile,
+        current.get(IRONY) == "on",
+        count_attr="irony_messages",
+        rate_attr="irony_rate",
+        on_count=AUTO_IRONY_MIN_MESSAGES,
+        on_rate=AUTO_IRONY_RATE,
+        keep_count=AUTO_IRONY_KEEP_MESSAGES,
+        keep_rate=AUTO_IRONY_KEEP_RATE,
+    ):
+        auto[IRONY] = "on"
     return auto
+
+
+def _binary_on(
+    profile: Any,
+    was_on: bool,
+    *,
+    count_attr: str,
+    rate_attr: str,
+    on_count: int,
+    on_rate: float,
+    keep_count: int,
+    keep_rate: float,
+) -> bool:
+    """Порог включения выше порога удержания: так черта не мигает."""
+    count = _int_attr(profile, count_attr)
+    rate = _float_attr(profile, rate_attr)
+    if was_on:
+        return count >= keep_count and rate >= keep_rate
+    return count >= on_count and rate >= on_rate
+
+
+def _mirror_length(profile: Any, current: str | None) -> str | None:
+    """Короткая или подробная длина с мёртвой зоной между порогами."""
+    avg_words = _float_attr(profile, "avg_words")
+    if current == "short":
+        if avg_words <= AUTO_LENGTH_SHORT_KEEP:
+            return "short"
+        if avg_words >= AUTO_LENGTH_DETAILED_MIN:
+            return "detailed"
+    elif current == "detailed":
+        if avg_words >= AUTO_LENGTH_DETAILED_KEEP:
+            return "detailed"
+        if avg_words <= AUTO_LENGTH_SHORT_MAX:
+            return "short"
+    elif avg_words <= AUTO_LENGTH_SHORT_MAX:
+        return "short"
+    elif avg_words >= AUTO_LENGTH_DETAILED_MIN:
+        return "detailed"
+    return None
+
+
+def _mirror_tone(profile: Any, current: str | None) -> str | None:
+    """Прямой тон по грубости, мягкий — по вежливым формулировкам."""
+    rough_words = _int_attr(profile, "rough_words")
+    rough_rate = _float_attr(profile, "rough_rate")
+    if current == "direct":
+        direct = (
+            rough_words >= AUTO_TONE_DIRECT_KEEP_WORDS and rough_rate >= AUTO_TONE_DIRECT_KEEP_RATE
+        )
+    else:
+        direct = rough_words >= AUTO_TONE_DIRECT_WORDS and rough_rate >= AUTO_TONE_DIRECT_RATE
+    if direct:
+        return "direct"
+
+    polite_messages = _int_attr(profile, "polite_messages")
+    polite_rate = _float_attr(profile, "polite_rate")
+    clean = rough_words == 0 and _int_attr(profile, "profanity_messages") == 0
+    if current == "soft":
+        soft = (
+            polite_messages >= AUTO_TONE_SOFT_KEEP_MESSAGES
+            and polite_rate >= AUTO_TONE_SOFT_KEEP_RATE
+            and clean
+        )
+    else:
+        soft = (
+            polite_messages >= AUTO_TONE_SOFT_MIN_MESSAGES
+            and polite_rate >= AUTO_TONE_SOFT_RATE
+            and clean
+        )
+    return "soft" if soft else None
 
 
 def _int_attr(obj: Any, name: str) -> int:

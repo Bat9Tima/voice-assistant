@@ -75,6 +75,33 @@ class AnalyzeTest(unittest.TestCase):
         self.assertEqual(analyze("чистый сарказм").irony_messages, 1)
         self.assertEqual(analyze("ирония уместна").irony_messages, 1)
 
+    def test_polite_markers_are_counted(self) -> None:
+        self.assertEqual(analyze("пожалуйста, сделай это").polite_messages, 1)
+        self.assertEqual(analyze("спасибо, ты лучшая").polite_messages, 1)
+        self.assertEqual(analyze("сделай это").polite_messages, 0)
+
+    def test_negated_humor_is_not_humor(self) -> None:
+        for text in (
+            "без шуток, я устал",
+            "не шучу",
+            "это не шутка",
+            "не до шуток",
+            "мне не смешно",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(analyze(text).humor_messages, 0)
+
+    def test_negated_irony_is_not_irony(self) -> None:
+        for text in (
+            "без иронии",
+            "это не ирония",
+            "без сарказма",
+            "не иронизируй",
+            "мне не иронично",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(analyze(text).irony_messages, 0)
+
     def test_question_and_length(self) -> None:
         sample = analyze("как дела?")
 
@@ -140,6 +167,11 @@ class StyleProfileTest(unittest.TestCase):
         profile = self.profile(*(["говно и идиот"] * 5 + ["привет"] * 15))
 
         self.assertEqual(profile.suggestions().get("tone"), "direct")
+
+    def test_soft_tone_suggestion(self) -> None:
+        profile = self.profile(*(["пожалуйста, сделай это спокойно"] * 6 + ["привет"] * 14))
+
+        self.assertEqual(profile.suggestions().get("tone"), "soft")
 
     def test_summary_mentions_metrics(self) -> None:
         summary = self.profile(*(["сука"] * 20)).summary()
@@ -408,6 +440,54 @@ class DialogStyleTest(unittest.TestCase):
         service.reply("привет")
         system = llm.calls[-1][1]["system"]
         self.assertNotIn("Автоматически, по речи пользователя", system)
+
+    def test_auto_humor_appears_in_prompt(self) -> None:
+        service, llm, _, character, _ = self.make_mirror()
+        for _ in range(20):
+            service.reply("ахаха, ну ты выдал, это смешно")
+
+        system = llm.calls[-1][1]["system"]
+
+        self.assertIn("шутки уместны", system)
+        self.assertEqual(character.current()["auto"].get("humor"), "on")
+
+    def test_auto_irony_and_direct_tone_appear_in_prompt(self) -> None:
+        service, llm, _, character, _ = self.make_mirror()
+        for _ in range(20):
+            service.reply("ну конечно, чистая ирония, и ты ведёшь себя как идиот")
+
+        system = llm.calls[-1][1]["system"]
+
+        self.assertIn("ирония уместна", system)
+        self.assertIn("говорю жёстче и прямее", system)
+        self.assertEqual(character.current()["auto"].get("tone"), "direct")
+
+    def test_auto_soft_tone_appears_in_prompt(self) -> None:
+        service, llm, _, character, _ = self.make_mirror()
+        for _ in range(20):
+            service.reply("пожалуйста, сделай это спокойно и без спешки")
+
+        system = llm.calls[-1][1]["system"]
+
+        self.assertIn("говорю мягче", system)
+        self.assertEqual(character.current()["auto"].get("tone"), "soft")
+
+    def test_rollback_resets_style_window(self) -> None:
+        service, _, observer, character, store = self.make_mirror()
+        for _ in range(20):
+            service.reply("сука опять это говно не работает")
+        for _ in range(30):
+            service.reply("сегодня хорошая погода и мы гуляем в парке")
+        self.assertEqual(character.current()["auto"], {})
+
+        service.reply("верни прежнюю манеру")
+
+        self.assertEqual(character.current()["auto"].get("profanity"), "on")
+        self.assertEqual(store.style_observations(), [])
+        self.assertEqual(observer.recent_profile().messages, 0)
+
+        service.reply("привет")
+        self.assertEqual(character.current()["auto"].get("profanity"), "on")
 
     def test_mirror_failure_does_not_break_reply(self) -> None:
         class BrokenCharacter:

@@ -1,11 +1,9 @@
 """Наблюдатель стиля пользователя и автоподстройка манеры.
 
-Считает измеримые признаки: длину реплик, мат, грубость, шутки, иронию
-и вопросы. По короткому окну решает, включать ли мат и менять ли длину
-ответов; это применяет ``CharacterMemory.mirror()``. Остальные признаки
-пока только попадают в лог и агрегаты SQLite.
-
-Текст пользователя здесь не сохраняется: в базу пишутся только числа.
+Считает измеримые признаки: длину реплик, мат, грубость, вежливость,
+шутки, иронию и вопросы. По короткому окну решает, какие черты манеры
+включить; это применяет ``CharacterMemory.mirror()``. Текст пользователя
+здесь не сохраняется: в базу пишутся только числа.
 """
 
 from __future__ import annotations
@@ -101,6 +99,30 @@ _LAUGH_RE = re.compile(
 )
 _HUMOR_RE = re.compile(r"\b(?:шутк\w*|шучу|смешн\w*|юмор\w*)\b")
 _IRONY_RE = re.compile(r"\b(?:ирони\w*|сарказ\w*|саркастич\w*)\b")
+# Отрицания не должны включать шутки и иронию: «без шуток, я устал» —
+# это серьёзная реплика, а не признак юмора.
+_NO_HUMOR_RE = re.compile(
+    r"\b(?:без шуток|без юмора|без смеха|не шути|не шутить|не шучу|"
+    r"не смешн\w*|это не шутка|не до шуток|не до смеха|хватит шутить)\b"
+)
+_NO_IRONY_RE = re.compile(
+    r"\b(?:без иронии|без сарказма|не ирони\w*|"
+    r"это не ирония|не сарказм)\b"
+)
+# Вежливая, смягчённая речь: просьбы с «пожалуйста», извинения,
+# осторожные формулировки. Это сигнал для автоматического tone=soft.
+_POLITE_RE = re.compile(
+    r"\b(?:"
+    r"пожалуйста|спасибо|благодарю|"
+    r"извини(?:те)?|прости(?:те)?|"
+    r"будь добр(?:а)?|будь так добра|"
+    r"если можно|если тебе не сложно|если вам не сложно|"
+    r"если хочешь|если тебе удобно|как тебе удобно|как хочешь|"
+    r"не спеши|не торопись|не обязательно|по возможности|"
+    r"солнышко|милая|дорогая|"
+    r"не мог(?:ла)? бы ты"
+    r")\b"
+)
 
 
 def _now() -> datetime:
@@ -116,6 +138,7 @@ class StyleSample:
     profanity_words: int = 0
     profanity_messages: int = 0
     rough_words: int = 0
+    polite_messages: int = 0
     humor_messages: int = 0
     irony_messages: int = 0
     question: int = 0
@@ -129,6 +152,7 @@ class StyleSample:
             profanity_words=_int(row.get("profanity_words")),
             profanity_messages=_int(row.get("profanity_messages")),
             rough_words=_int(row.get("rough_words")),
+            polite_messages=_int(row.get("polite_messages")),
             humor_messages=_int(row.get("humor_messages")),
             irony_messages=_int(row.get("irony_messages")),
             question=_int(row.get("question")),
@@ -141,6 +165,7 @@ class StyleSample:
             "profanity_words": self.profanity_words,
             "profanity_messages": self.profanity_messages,
             "rough_words": self.rough_words,
+            "polite_messages": self.polite_messages,
             "humor_messages": self.humor_messages,
             "irony_messages": self.irony_messages,
             "question": self.question,
@@ -157,6 +182,7 @@ class StyleProfile:
     profanity_words: int = 0
     profanity_messages: int = 0
     rough_words: int = 0
+    polite_messages: int = 0
     humor_messages: int = 0
     irony_messages: int = 0
     question_messages: int = 0
@@ -175,6 +201,7 @@ class StyleProfile:
         self.profanity_words += sample.profanity_words
         self.profanity_messages += sample.profanity_messages
         self.rough_words += sample.rough_words
+        self.polite_messages += sample.polite_messages
         self.humor_messages += sample.humor_messages
         self.irony_messages += sample.irony_messages
         self.question_messages += sample.question
@@ -201,6 +228,10 @@ class StyleProfile:
     def rough_rate(self) -> float:
         """Доля грубых слов среди всех слов."""
         return self.rough_words / self.words if self.words else 0.0
+
+    @property
+    def polite_rate(self) -> float:
+        return self.polite_messages / self.messages if self.messages else 0.0
 
     @property
     def humor_rate(self) -> float:
@@ -236,12 +267,19 @@ class StyleProfile:
             result["length"] = "short"
         elif self.avg_words >= 12:
             result["length"] = "detailed"
-        if self.humor_rate >= 0.15:
+        if self.humor_rate >= 0.12:
             result["humor"] = "on"
-        if self.irony_rate >= 0.10:
+        if self.irony_rate >= 0.08:
             result["irony"] = "on"
         if self.rough_words >= 5 and self.rough_rate >= 0.02:
             result["tone"] = "direct"
+        elif (
+            self.polite_messages >= 6
+            and self.polite_rate >= 0.20
+            and self.rough_words == 0
+            and self.profanity_messages == 0
+        ):
+            result["tone"] = "soft"
         return result
 
     def summary(self) -> str:
@@ -254,6 +292,7 @@ class StyleProfile:
             f"слов {self.avg_words:.1f}, "
             f"мат {self.profanity_message_rate:.0%}, "
             f"грубость {self.rough_rate:.1%}, "
+            f"вежливость {self.polite_rate:.0%}, "
             f"шутки {self.humor_rate:.0%}, "
             f"ирония {self.irony_rate:.0%}, "
             f"вопросы {self.question_rate:.0%}, "
@@ -412,14 +451,20 @@ def analyze(text: str) -> StyleSample:
         return StyleSample()
     profanity = _PROFANITY_RE.findall(normalized)
     rough = _ROUGH_RE.findall(normalized)
+    humor = bool(
+        (_LAUGH_RE.search(normalized) or _HUMOR_RE.search(normalized))
+        and not _NO_HUMOR_RE.search(normalized)
+    )
+    irony = bool(_IRONY_RE.search(normalized) and not _NO_IRONY_RE.search(normalized))
     return StyleSample(
         words=len(words),
         chars=len(raw),
         profanity_words=len(profanity),
         profanity_messages=1 if profanity else 0,
         rough_words=len(rough),
-        humor_messages=1 if _LAUGH_RE.search(normalized) or _HUMOR_RE.search(normalized) else 0,
-        irony_messages=1 if _IRONY_RE.search(normalized) else 0,
+        polite_messages=1 if _POLITE_RE.search(normalized) else 0,
+        humor_messages=1 if humor else 0,
+        irony_messages=1 if irony else 0,
         question=1 if "?" in raw else 0,
     )
 

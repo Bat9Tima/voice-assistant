@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS style_observations (
     profanity_words INTEGER NOT NULL DEFAULT 0,
     profanity_messages INTEGER NOT NULL DEFAULT 0,
     rough_words INTEGER NOT NULL DEFAULT 0,
+    polite_messages INTEGER NOT NULL DEFAULT 0,
     humor_messages INTEGER NOT NULL DEFAULT 0,
     irony_messages INTEGER NOT NULL DEFAULT 0,
     question INTEGER NOT NULL DEFAULT 0
@@ -419,6 +420,7 @@ class SessionStore:
         profanity_words: int = 0,
         profanity_messages: int = 0,
         rough_words: int = 0,
+        polite_messages: int = 0,
         humor_messages: int = 0,
         irony_messages: int = 0,
         question: int = 0,
@@ -429,9 +431,9 @@ class SessionStore:
                 """
                 INSERT INTO style_observations
                     (created_at, session_id, words, chars, profanity_words,
-                     profanity_messages, rough_words, humor_messages,
-                     irony_messages, question)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     profanity_messages, rough_words, polite_messages,
+                     humor_messages, irony_messages, question)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -441,6 +443,7 @@ class SessionStore:
                     max(0, int(profanity_words)),
                     max(0, int(profanity_messages)),
                     max(0, int(rough_words)),
+                    max(0, int(polite_messages)),
                     max(0, int(humor_messages)),
                     max(0, int(irony_messages)),
                     1 if question else 0,
@@ -786,6 +789,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if character_columns and "auto" not in character_columns:
         # Старые версии знали только явные слои; автоподстройка пустая.
         conn.execute("ALTER TABLE character_versions ADD COLUMN auto TEXT NOT NULL DEFAULT '{}'")
+    style_columns = {row["name"] for row in conn.execute("PRAGMA table_info(style_observations)")}
+    if style_columns and "polite_messages" not in style_columns:
+        # Старые наблюдения не знали вежливости; считаем её нулевой.
+        conn.execute(
+            "ALTER TABLE style_observations ADD COLUMN polite_messages INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position

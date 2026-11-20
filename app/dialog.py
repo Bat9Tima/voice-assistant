@@ -371,7 +371,7 @@ class DialogService:
             log.warning("Манера: команда не применена", exc_info=True)
             return None
         if answer is not None and self.style is not None:
-            reset = getattr(self.character, "is_reset", None)
+            reset = getattr(self.character, "resets_observations", None)
             if callable(reset) and reset(text):
                 try:
                     self.style.reset()
