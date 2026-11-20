@@ -1172,6 +1172,7 @@ class DialogModeTest(unittest.TestCase):
         )
         assistant.set_state = lambda state: assistant.states.append(state)
         assistant.dialog = FakeDialog()
+        assistant.cfg = {"dialog": {"auto_start": "off"}}
         assistant._dialog_active = False
         assistant._dialog_last = 0.0
         assistant._dialog_errors = 0
@@ -1186,6 +1187,68 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.router.seen, [])
         self.assertIn(message, assistant.tts.said)
         self.assertEqual(assistant.dialog.started, 1)
+
+    def test_auto_start_always_enters_dialog_on_wake_speech(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "always"
+
+        message = assistant._process("как дела", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 1)
+        self.assertEqual(assistant.dialog.replied, ["как дела"])
+        self.assertEqual(message, "ответ диалога")
+        self.assertNotIn("Слушаю. О чём поговорим?", assistant.tts.said)
+
+    def test_auto_start_always_keeps_command_and_dialog(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.cfg["dialog"]["auto_start"] = "always"
+
+        message = assistant._process("открой ютуб", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.router.seen, ["открой ютуб"])
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_auto_start_conversation_does_not_enter_on_command(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.cfg["dialog"]["auto_start"] = "conversation"
+
+        message = assistant._process("открой ютуб", voiced=True, wake=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.dialog.started, 0)
+
+    def test_auto_start_off_does_not_enter_dialog(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "off"
+
+        assistant._process("как дела", voiced=True, wake=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 0)
+
+    def test_entry_phrase_still_greets_with_auto_start(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "always"
+        with patch("app.main.beep"):
+            message = assistant._process("давай поговорим", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(message, "Слушаю. О чём поговорим?")
+        self.assertIn(message, assistant.tts.said)
+
+    def test_start_dialog_without_greeting(self) -> None:
+        assistant = self.make()
+
+        message = assistant._start_dialog(greet=False)
+
+        self.assertEqual(message, "")
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 1)
+        self.assertEqual(assistant.tts.said, [])
 
     def test_exit_phrase_disables_dialog(self) -> None:
         assistant = self.make()

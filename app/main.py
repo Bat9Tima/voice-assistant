@@ -711,6 +711,8 @@ class Assistant:
     ) -> None:
         if self._paused or self.mic is None:
             return
+        # Горячая клавиша приходит без pre-roll, wake-слово — с ним.
+        from_wake = pre_roll is not None
         self.set_state("listening")
         # Новая команда: убираем результат предыдущей, не ждём, пока
         # системный центр уведомлений до неё доберётся. В разговоре
@@ -774,6 +776,8 @@ class Assistant:
                 log.info("Диалог: тишина, продолжаю слушать")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не услышал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -823,6 +827,8 @@ class Assistant:
                 log.info("Диалог: пустая реплика")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -836,6 +842,8 @@ class Assistant:
                 log.info("Диалог: после wake-фразы ничего не осталось")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -846,7 +854,7 @@ class Assistant:
         if not dialog:
             self.notify(f"«{text}»", "Услышал")
         try:
-            self._process(text, voiced=True)
+            self._process(text, voiced=True, wake=from_wake)
         finally:
             if self.mic is not None:
                 self.mic.flush()
@@ -973,8 +981,22 @@ class Assistant:
         if time.monotonic() - started >= 1.2:
             self.tts.phrase("done")
 
-    def _start_dialog(self) -> str:
-        """Включает непрерывный разговор и здоровается."""
+    def _auto_start_mode(self) -> str:
+        """Когда входить в разговор после wake: off, conversation, always."""
+        cfg = getattr(self, "cfg", None) or {}
+        dialog_cfg = cfg.get("dialog") or {}
+        mode = str(dialog_cfg.get("auto_start", "off")).strip().lower()
+        return mode if mode in {"conversation", "always"} else "off"
+
+    def _start_dialog_after_wake(self) -> bool:
+        """Входит в разговор, если wake прозвучал без команды."""
+        if self._auto_start_mode() not in {"conversation", "always"}:
+            return False
+        self._start_dialog()
+        return True
+
+    def _start_dialog(self, *, greet: bool = True) -> str:
+        """Включает непрерывный разговор. greet=False — без приветствия."""
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.start()
@@ -984,6 +1006,9 @@ class Assistant:
         self._dialog_turns = 0
         self._dialog_last = time.monotonic()
         self.set_state("idle")
+        if not greet:
+            log.info("Режим диалога включён")
+            return ""
         message = "Слушаю. О чём поговорим?"
         advisor = getattr(self, "intent", None)
         if advisor is not None:
@@ -1139,8 +1164,17 @@ class Assistant:
             return fallback
         return decision
 
-    def _process(self, text: str, *, voiced: bool = False) -> str:
+    def _process(self, text: str, *, voiced: bool = False, wake: bool = False) -> str:
         text = canonicalize(normalize(text))
+        if (
+            wake
+            and not getattr(self, "_dialog_active", False)
+            and self._auto_start_mode() == "always"
+        ):
+            dialog = getattr(self, "dialog", None)
+            if dialog is not None and not dialog.wants_entry(text) and not dialog.wants_exit(text):
+                # Wake-фраза с командой: выполняем её и остаёмся в разговоре.
+                self._start_dialog(greet=False)
         if voiced and getattr(self, "_dialog_active", False):
             decision = self._addressee_decision(text)
             # Любая услышанная речь продлевает разговор: фон не должен

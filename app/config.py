@@ -191,6 +191,9 @@ DEFAULTS: dict[str, Any] = {
     # Завершённые сессии пишутся в SQLite db_path.
     "dialog": {
         "enabled": True,
+        # off — вход только по entry-фразам; conversation — после wake,
+        # если команды не было; always — любой wake открывает разговор.
+        "auto_start": "off",
         "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
         "exit_phrases": [
             "хватит",
