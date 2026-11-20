@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS character_versions (
     source TEXT NOT NULL,
     quote TEXT NOT NULL,
     style TEXT NOT NULL DEFAULT '{}',
+    auto TEXT NOT NULL DEFAULT '{}',
     moment TEXT NOT NULL DEFAULT '{}',
     moment_date TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT ''
@@ -356,29 +357,33 @@ class SessionStore:
         source: str,
         quote: str,
         style: dict[str, Any],
+        auto: dict[str, Any] | None = None,
         moment: dict[str, Any],
         moment_date: str,
         summary: str,
     ) -> int:
         """Добавляет версию манеры общения и возвращает её номер.
 
-        Каждая явная просьба пользователя — новая версия со снимком обоих
-        слоёв. История не переписывается, поэтому откат всегда возможен.
+        Каждая явная просьба или автоматическая подстройка — новая версия
+        со снимком всех слоёв. История не переписывается, поэтому откат
+        всегда возможен.
         """
         payload_style = json.dumps(style or {}, ensure_ascii=False, sort_keys=True)
+        payload_auto = json.dumps(auto or {}, ensure_ascii=False, sort_keys=True)
         payload_moment = json.dumps(moment or {}, ensure_ascii=False, sort_keys=True)
         with self._connection() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO character_versions
-                    (created_at, source, quote, style, moment, moment_date, summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (created_at, source, quote, style, auto, moment, moment_date, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
                     str(source or ""),
                     str(quote or ""),
                     payload_style,
+                    payload_auto,
                     payload_moment,
                     str(moment_date or ""),
                     str(summary or ""),
@@ -451,6 +456,12 @@ class SessionStore:
                 (max(1, int(limit)),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def clear_style_observations(self) -> int:
+        """Забывает историю стиля: сброс манеры должен начать профиль заново."""
+        with self._connection() as conn:
+            cursor = conn.execute("DELETE FROM style_observations")
+        return cursor.rowcount
 
     # ------------------------------------------------------------------- read
     def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:
@@ -769,6 +780,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if fact_columns and "event_at" not in fact_columns:
         # Пустая дата означает «не событие»; для событий её ставит менеджер.
         conn.execute("ALTER TABLE memory_facts ADD COLUMN event_at TEXT NOT NULL DEFAULT ''")
+    character_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(character_versions)")
+    }
+    if character_columns and "auto" not in character_columns:
+        # Старые версии знали только явные слои; автоподстройка пустая.
+        conn.execute("ALTER TABLE character_versions ADD COLUMN auto TEXT NOT NULL DEFAULT '{}'")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_messages_position
@@ -782,6 +799,7 @@ def _character_row(row: sqlite3.Row) -> dict[str, Any]:
     """Версия манеры с разобранными JSON-слоями."""
     result = dict(row)
     result["style"] = _parse_data(result.get("style"))
+    result["auto"] = _parse_data(result.get("auto"))
     result["moment"] = _parse_data(result.get("moment"))
     return result
 

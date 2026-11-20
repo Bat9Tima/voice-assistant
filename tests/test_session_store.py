@@ -688,6 +688,7 @@ class MemoryFactsStoreTest(unittest.TestCase):
             source="moment",
             quote="сегодня без шуток",
             style={"profanity": "off"},
+            auto={"length": "short"},
             moment={"humor": "off"},
             moment_date="2026-11-16",
             summary="без шуток",
@@ -698,12 +699,14 @@ class MemoryFactsStoreTest(unittest.TestCase):
         latest = store.latest_character()
         self.assertEqual(latest["version"], 2)
         self.assertEqual(latest["style"], {"profanity": "off"})
+        self.assertEqual(latest["auto"], {"length": "short"})
         self.assertEqual(latest["moment"], {"humor": "off"})
         self.assertEqual(latest["moment_date"], "2026-11-16")
         history = store.character_history()
         self.assertEqual([row["version"] for row in history], [2, 1])
         self.assertEqual(history[1]["quote"], "не матерись")
         self.assertEqual(history[1]["style"], {"profanity": "off"})
+        self.assertEqual(history[1]["auto"], {})
 
     def test_character_history_limit(self) -> None:
         store = self.make()
@@ -755,6 +758,53 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertEqual(rows[1]["humor_messages"], 1)
         self.assertEqual(rows[1]["question"], 1)
         self.assertEqual(store.style_observations(1)[0]["id"], second)
+
+    def test_clear_style_observations(self) -> None:
+        store = self.make()
+        store.add_style_observation(created_at=at().isoformat(), words=3, chars=10)
+        store.add_style_observation(created_at=at(5).isoformat(), words=2, chars=7)
+
+        cleared = store.clear_style_observations()
+
+        self.assertEqual(cleared, 2)
+        self.assertEqual(store.style_observations(), [])
+
+    def test_character_auto_column_migrates(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """
+            CREATE TABLE character_versions (
+                version INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                quote TEXT NOT NULL,
+                style TEXT NOT NULL DEFAULT '{}',
+                moment TEXT NOT NULL DEFAULT '{}',
+                moment_date TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO character_versions
+                (created_at, source, quote, style, moment, moment_date, summary)
+            VALUES (?, 'stable', 'не матерись', '{"profanity": "off"}', '{}', '', 'без мата')
+            """,
+            (at().isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+
+        store = SessionStore(path)
+        latest = store.latest_character()
+
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["style"], {"profanity": "off"})
+        self.assertEqual(latest["auto"], {})
 
 
 if __name__ == "__main__":

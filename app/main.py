@@ -176,8 +176,9 @@ class Assistant:
             style = StyleObserver.from_config(self.session_store, dialog_cfg.get("style_observer"))
             if style.enabled:
                 log.info(
-                    "Наблюдатель стиля: теневой режим, окно %s сообщений",
+                    "Стиль: окно %s, решение по %s сообщениям",
                     style.window_messages,
+                    style.decision_messages,
                 )
             self.dialog = DialogService(
                 cfg,

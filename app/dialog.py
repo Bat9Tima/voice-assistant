@@ -220,7 +220,8 @@ class DialogService:
         self.persona = persona
         # Адаптивная манера: явные просьбы пользователя поверх ядра.
         self.character = character
-        # Наблюдатель стиля: только считает и пишет в лог, ответы не меняет.
+        # Наблюдатель стиля: считает манеру и обновляет автоподстройку
+        # перед сборкой промпта.
         self.style = style
         # Эпизодическая память: резюме прошлых разговоров. Подключается
         # только в режиме диалога — сюда не ходят разовые команды.
@@ -337,14 +338,21 @@ class DialogService:
                 log.warning("Стиль: итог разговора не записан", exc_info=True)
 
     def observe_style(self, text: str) -> None:
-        """Теневой наблюдатель: считает манеру, но не меняет ответ."""
+        """Считает манеру и обновляет автоподстройку перед ответом."""
         if self.style is None:
             return
         session = self.sessions.current
         try:
-            self.style.observe(text, session_id=session.id if session else "")
+            sample = self.style.observe(text, session_id=session.id if session else "")
         except Exception:  # noqa: BLE001
             log.warning("Стиль: реплика не учтена", exc_info=True)
+            return
+        if sample is None or self.character is None:
+            return
+        try:
+            self.character.mirror(self.style.recent_profile())
+        except Exception:  # noqa: BLE001
+            log.warning("Манера: автоподстройка не применена", exc_info=True)
 
     def character_command(self, text: str) -> str | None:
         """Прямой ответ на просьбы о манере и команды отката.
@@ -358,10 +366,18 @@ class DialogService:
         if not callable(handler):
             return None
         try:
-            return handler(text)
+            answer = handler(text)
         except Exception:  # noqa: BLE001
             log.warning("Манера: команда не применена", exc_info=True)
             return None
+        if answer is not None and self.style is not None:
+            reset = getattr(self.character, "is_reset", None)
+            if callable(reset) and reset(text):
+                try:
+                    self.style.reset()
+                except Exception:  # noqa: BLE001
+                    log.warning("Стиль: история наблюдений не сброшена", exc_info=True)
+        return answer
 
     def memory_command(self, text: str) -> str | None:
         """Прямой ответ на «что ты помнишь» и «забудь …».

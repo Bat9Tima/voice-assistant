@@ -1,9 +1,9 @@
-"""Наблюдатель стиля пользователя в теневом режиме.
+"""Наблюдатель стиля пользователя и автоподстройка манеры.
 
-Считает только измеримые признаки манеры: длину реплик, мат, грубость,
-шутки, иронию и вопросы. Ничего не меняет — ни промпт, ни характер.
-Результат уходит в лог и в агрегаты SQLite, чтобы потом включить
-зеркалирование по порогам, а не по наитию модели.
+Считает измеримые признаки: длину реплик, мат, грубость, шутки, иронию
+и вопросы. По короткому окну решает, включать ли мат и менять ли длину
+ответов; это применяет ``CharacterMemory.mirror()``. Остальные признаки
+пока только попадают в лог и агрегаты SQLite.
 
 Текст пользователя здесь не сохраняется: в базу пишутся только числа.
 """
@@ -23,6 +23,9 @@ from .text import normalize
 log = logging.getLogger(__name__)
 
 DEFAULT_WINDOW_MESSAGES = 200
+# Решения об автоподстройке принимаются по короткому окну: привычка
+# должна затухать за десятки реплик, а не за сотни.
+DEFAULT_DECISION_MESSAGES = 30
 DEFAULT_LOG_EVERY = 10
 # Ниже этого числа сообщений профиль слишком шумный для выводов.
 MIN_MESSAGES = 20
@@ -244,9 +247,9 @@ class StyleProfile:
     def summary(self) -> str:
         """Одна строка для лога: цифры и осторожное предложение."""
         if not self.messages:
-            return "Стиль (тень): данных пока нет."
+            return "Стиль: данных пока нет."
         line = (
-            "Стиль (тень): "
+            "Стиль: "
             f"сообщений {self.messages}, "
             f"слов {self.avg_words:.1f}, "
             f"мат {self.profanity_message_rate:.0%}, "
@@ -258,7 +261,7 @@ class StyleProfile:
         )
         suggestions = self.suggestions()
         if suggestions:
-            line += "; предлагаю: " + ", ".join(
+            line += "; кандидаты: " + ", ".join(
                 f"{name}={value}" for name, value in suggestions.items()
             )
         return line
@@ -278,13 +281,16 @@ class StyleObserver:
         *,
         enabled: bool = True,
         window_messages: int = DEFAULT_WINDOW_MESSAGES,
+        decision_messages: int = DEFAULT_DECISION_MESSAGES,
         log_every: int = DEFAULT_LOG_EVERY,
     ) -> None:
         self.store = store
         self.enabled = bool(enabled)
         self.window_messages = max(1, int(window_messages))
+        self.decision_messages = max(1, min(self.window_messages, int(decision_messages)))
         self.log_every = max(1, int(log_every))
         self._samples: deque[StyleSample] = deque(maxlen=self.window_messages)
+        self._recent: deque[StyleSample] = deque(maxlen=self.decision_messages)
         self._profile = StyleProfile()
         self._seen = 0
         if self.enabled:
@@ -299,6 +305,7 @@ class StyleObserver:
             store,
             enabled=bool(section.get("enabled", True)),
             window_messages=int(section.get("window_messages") or DEFAULT_WINDOW_MESSAGES),
+            decision_messages=int(section.get("decision_messages") or DEFAULT_DECISION_MESSAGES),
             log_every=int(section.get("log_every") or DEFAULT_LOG_EVERY),
         )
 
@@ -309,13 +316,14 @@ class StyleObserver:
         session_id: str = "",
         now: datetime | None = None,
     ) -> StyleSample | None:
-        """Добавляет реплику в окно и пишет агрегаты. Ответ не меняется."""
+        """Добавляет реплику в окно и пишет агрегаты."""
         if not self.enabled:
             return None
         sample = analyze(text)
         if not sample.words:
             return None
         self._samples.append(sample)
+        self._recent.append(sample)
         self._profile = StyleProfile.from_samples(self._samples)
         self._seen += 1
         self._save(sample, session_id=session_id, now=now or _now())
@@ -334,6 +342,26 @@ class StyleObserver:
         """Текущий профиль. Копия: вызывающий не должен править окно."""
         return replace(self._profile)
 
+    def recent_profile(self) -> StyleProfile:
+        """Профиль короткого окна для автоподстройки."""
+        return StyleProfile.from_samples(self._recent)
+
+    def reset(self) -> None:
+        """Забывает историю стиля: сброс манеры начинает профиль заново."""
+        self._samples.clear()
+        self._recent.clear()
+        self._profile = StyleProfile()
+        self._seen = 0
+        if self.store is None:
+            return
+        clearer = getattr(self.store, "clear_style_observations", None)
+        if not callable(clearer):
+            return
+        try:
+            clearer()
+        except Exception:  # noqa: BLE001
+            log.warning("Стиль: история наблюдений не сброшена", exc_info=True)
+
     # ---------------------------------------------------------------- private
     def _load(self) -> None:
         if self.store is None:
@@ -348,7 +376,9 @@ class StyleObserver:
             return
         # Хранилище отдаёт новые сверху; окно наполняем в хронологии.
         for row in reversed(rows):
-            self._samples.append(StyleSample.from_row(row))
+            sample = StyleSample.from_row(row)
+            self._samples.append(sample)
+            self._recent.append(sample)
         self._profile = StyleProfile.from_samples(self._samples)
 
     def _save(

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.character import (
+    AUTO_HEADER,
     CHARACTER_HEADER,
     HUMOR,
     LENGTH,
@@ -19,10 +20,27 @@ from app.character import (
 )
 from app.dialog import DialogService
 from app.session_store import SessionStore
+from app.style_observer import StyleProfile
 
 
 def at(day: int = 20) -> datetime:
     return datetime(2026, 11, day, 12, 0, tzinfo=UTC)
+
+
+def profile(
+    *,
+    messages: int = 30,
+    words: int | None = None,
+    profanity_messages: int = 0,
+    profanity_words: int = 0,
+) -> StyleProfile:
+    """Профиль с заданными средними; по умолчанию 5 слов на реплику."""
+    return StyleProfile(
+        messages=messages,
+        words=messages * 5 if words is None else words,
+        profanity_messages=profanity_messages,
+        profanity_words=profanity_words,
+    )
 
 
 class FakeLLM:
@@ -276,6 +294,167 @@ class CharacterMemoryTest(unittest.TestCase):
         answer = memory.handle("ну пожалуйста, не матерись", now=at())
 
         self.assertIn("без мата", answer)
+
+    def test_mirror_needs_minimum_messages(self) -> None:
+        memory, store = self.make()
+
+        auto = memory.mirror(profile(messages=19, profanity_messages=19), now=at())
+
+        self.assertIsNone(auto)
+        self.assertEqual(store.character_history(), [])
+
+    def test_mirror_enables_profanity(self) -> None:
+        memory, store = self.make()
+
+        auto = memory.mirror(
+            profile(messages=20, profanity_messages=5, profanity_words=5),
+            now=at(),
+        )
+
+        self.assertEqual(auto, {PROFANITY: "on"})
+        self.assertEqual(memory.current(now=at())["auto"], {PROFANITY: "on"})
+        block = memory.block(now=at())
+        self.assertIn(AUTO_HEADER, block)
+        self.assertIn("мат уместен", block)
+        history = store.character_history()
+        self.assertEqual(history[0]["source"], "auto")
+        self.assertEqual(history[0]["quote"], "")
+        self.assertEqual(history[0]["auto"], {PROFANITY: "on"})
+
+    def test_mirror_hysteresis_keeps_then_turns_off_profanity(self) -> None:
+        memory, _ = self.make()
+        memory.mirror(
+            profile(messages=30, profanity_messages=5, profanity_words=5),
+            now=at(),
+        )
+
+        # 2 из 30 — это 6.7%: выше порога удержания 5%.
+        self.assertIsNone(
+            memory.mirror(
+                profile(messages=30, profanity_messages=2, profanity_words=2),
+                now=at(),
+            )
+        )
+        self.assertEqual(memory.current(now=at())["auto"], {PROFANITY: "on"})
+
+        # 1 из 30 — 3.3%: пора выключать.
+        auto = memory.mirror(
+            profile(messages=30, profanity_messages=1, profanity_words=1),
+            now=at(),
+        )
+
+        self.assertEqual(auto, {})
+        self.assertEqual(memory.current(now=at())["auto"], {})
+
+    def test_mirror_length_short_and_detailed(self) -> None:
+        memory, _ = self.make()
+
+        short = memory.mirror(profile(messages=30, words=90), now=at())
+        detailed = memory.mirror(profile(messages=30, words=420), now=at())
+
+        self.assertEqual(short, {LENGTH: "short"})
+        self.assertEqual(detailed, {LENGTH: "detailed"})
+        self.assertIn("отвечаю подробнее", memory.block(now=at()))
+
+    def test_mirror_length_has_dead_zone(self) -> None:
+        memory, _ = self.make()
+
+        auto = memory.mirror(profile(messages=30, words=240), now=at())
+
+        self.assertIsNone(auto)
+        self.assertEqual(memory.current(now=at())["auto"], {})
+
+    def test_mirror_does_not_repeat_version(self) -> None:
+        memory, store = self.make()
+        data = profile(messages=30, profanity_messages=5, profanity_words=5)
+        memory.mirror(data, now=at())
+
+        again = memory.mirror(data, now=at())
+
+        self.assertIsNone(again)
+        self.assertEqual(len(store.character_history()), 1)
+
+    def test_explicit_request_hides_automatic_layer(self) -> None:
+        memory, _ = self.make()
+        memory.handle("не матерись", now=at())
+        memory.mirror(
+            profile(messages=30, profanity_messages=10, profanity_words=10),
+            now=at(),
+        )
+
+        block = memory.block(now=at())
+        description = memory.describe(now=at())
+
+        self.assertIn("без мата", block)
+        self.assertNotIn("мат уместен", block)
+        self.assertNotIn("Автоматически", description)
+        self.assertEqual(memory.current(now=at())["auto"], {PROFANITY: "on"})
+
+    def test_describe_reports_automatic_layer(self) -> None:
+        memory, _ = self.make()
+        memory.mirror(
+            profile(messages=30, profanity_messages=10, profanity_words=10),
+            now=at(),
+        )
+
+        description = memory.describe(now=at())
+
+        self.assertIn("Автоматически", description)
+        self.assertIn("мат уместен", description)
+
+    def test_rollback_restores_automatic_layer(self) -> None:
+        memory, _ = self.make()
+        memory.mirror(
+            profile(messages=30, profanity_messages=10, profanity_words=10),
+            now=at(),
+        )
+        memory.handle("не матерись", now=at())
+
+        answer = memory.rollback("верни прежнюю манеру", now=at())
+
+        current = memory.current(now=at())
+        self.assertIn("мат уместен", answer)
+        self.assertEqual(current["style"], {})
+        self.assertEqual(current["auto"], {PROFANITY: "on"})
+        self.assertIn("мат уместен", memory.block(now=at()))
+
+    def test_reset_clears_auto_and_observations(self) -> None:
+        memory, store = self.make()
+        store.add_style_observation(
+            created_at=at().isoformat(),
+            words=5,
+            chars=20,
+            profanity_words=1,
+            profanity_messages=1,
+        )
+        memory.mirror(
+            profile(messages=30, profanity_messages=10, profanity_words=10),
+            now=at(),
+        )
+
+        answer = memory.reset("верни обычную манеру", now=at())
+
+        self.assertIn("обычной манере", answer)
+        self.assertEqual(memory.current(now=at())["auto"], {})
+        self.assertEqual(store.style_observations(), [])
+        self.assertEqual(memory.block(now=at()), "")
+
+    def test_reset_without_adaptations_clears_observations(self) -> None:
+        memory, store = self.make()
+        store.add_style_observation(created_at=at().isoformat(), words=3, chars=10)
+
+        answer = memory.reset("верни обычную манеру", now=at())
+
+        self.assertIn("как обычно", answer)
+        self.assertEqual(store.style_observations(), [])
+
+    def test_disabled_character_does_not_mirror(self) -> None:
+        memory, store = self.make(enabled=False)
+
+        auto = memory.mirror(profile(messages=30, profanity_messages=10), now=at())
+
+        self.assertIsNone(auto)
+        self.assertEqual(store.character_history(), [])
 
 
 class DialogCharacterTest(unittest.TestCase):

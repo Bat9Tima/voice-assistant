@@ -144,7 +144,7 @@ class StyleProfileTest(unittest.TestCase):
     def test_summary_mentions_metrics(self) -> None:
         summary = self.profile(*(["сука"] * 20)).summary()
 
-        self.assertIn("Стиль (тень)", summary)
+        self.assertIn("Стиль:", summary)
         self.assertIn("мат 100%", summary)
         self.assertIn("profanity=on", summary)
 
@@ -156,11 +156,17 @@ class StyleObserverTest(unittest.TestCase):
     def test_from_config(self) -> None:
         observer = StyleObserver.from_config(
             None,
-            {"enabled": False, "window_messages": 5, "log_every": 2},
+            {
+                "enabled": False,
+                "window_messages": 5,
+                "decision_messages": 3,
+                "log_every": 2,
+            },
         )
 
         self.assertFalse(observer.enabled)
         self.assertEqual(observer.window_messages, 5)
+        self.assertEqual(observer.decision_messages, 3)
         self.assertEqual(observer.log_every, 2)
 
     def test_from_config_defaults(self) -> None:
@@ -168,7 +174,41 @@ class StyleObserverTest(unittest.TestCase):
 
         self.assertTrue(observer.enabled)
         self.assertEqual(observer.window_messages, 200)
+        self.assertEqual(observer.decision_messages, 30)
         self.assertEqual(observer.log_every, 10)
+
+    def test_recent_profile_uses_decision_window(self) -> None:
+        observer = StyleObserver(None, window_messages=10, decision_messages=3)
+        for text in ("сука", "привет", "привет", "привет"):
+            observer.observe(text)
+
+        self.assertEqual(observer.profile().messages, 4)
+        self.assertEqual(observer.profile().profanity_messages, 1)
+        self.assertEqual(observer.recent_profile().messages, 3)
+        self.assertEqual(observer.recent_profile().profanity_messages, 0)
+
+    def test_load_fills_recent_window(self) -> None:
+        store = make_store(self)
+        first = StyleObserver(store)
+        for text in ("сука", "привет", "привет"):
+            first.observe(text)
+
+        second = StyleObserver(store, window_messages=10, decision_messages=2)
+
+        self.assertEqual(second.profile().messages, 3)
+        self.assertEqual(second.recent_profile().messages, 2)
+        self.assertEqual(second.recent_profile().profanity_messages, 0)
+
+    def test_reset_clears_history(self) -> None:
+        store = make_store(self)
+        observer = StyleObserver(store)
+        observer.observe("сука")
+
+        observer.reset()
+
+        self.assertEqual(observer.profile().messages, 0)
+        self.assertEqual(observer.recent_profile().messages, 0)
+        self.assertEqual(store.style_observations(), [])
 
     def test_observe_accumulates_and_saves(self) -> None:
         store = make_store(self)
@@ -247,7 +287,7 @@ class StyleObserverTest(unittest.TestCase):
             observer.observe("привет")
 
         self.assertEqual(len(logs.records), 1)
-        self.assertIn("Стиль (тень)", logs.records[0].getMessage())
+        self.assertIn("Стиль:", logs.records[0].getMessage())
 
     def test_flush_logs_partial_window(self) -> None:
         observer = StyleObserver(None, log_every=10)
@@ -314,6 +354,83 @@ class DialogStyleTest(unittest.TestCase):
         system = llm.calls[0][1]["system"]
         self.assertIn("Манера общения", system)
         self.assertEqual(observer.profile().messages, 1)
+
+    def make_mirror(
+        self,
+    ) -> tuple[DialogService, FakeLLM, StyleObserver, CharacterMemory, SessionStore]:
+        store = make_store(self)
+        character = CharacterMemory(store)
+        observer = StyleObserver(store)
+        llm = FakeLLM()
+        # Резюме в фоне тоже зовёт llm.chat и сбивает проверку последнего
+        # вызова. Для автоподстройки оно не нужно.
+        service = DialogService(
+            {"dialog": {"context": {"rolling_summary": {"enabled": False}}}},
+            llm,
+            character=character,
+            style=observer,
+        )
+        return service, llm, observer, character, store
+
+    def test_auto_mirroring_appears_in_prompt(self) -> None:
+        service, llm, _, character, _ = self.make_mirror()
+        for _ in range(20):
+            service.reply("сука опять это говно не работает")
+
+        system = llm.calls[-1][1]["system"]
+
+        self.assertIn("Автоматически, по речи пользователя", system)
+        self.assertIn("мат уместен", system)
+        self.assertEqual(character.current()["auto"].get("profanity"), "on")
+
+    def test_explicit_command_overrides_auto_mirroring(self) -> None:
+        service, llm, _, character, _ = self.make_mirror()
+        for _ in range(20):
+            service.reply("сука опять это говно не работает")
+        service.reply("не матерись")
+
+        service.reply("сука опять это говно не работает")
+
+        system = llm.calls[-1][1]["system"]
+        self.assertIn("без мата", system)
+        self.assertNotIn("мат уместен", system)
+        self.assertEqual(character.current()["auto"].get("profanity"), "on")
+
+    def test_reset_clears_auto_mirroring(self) -> None:
+        service, llm, _, character, store = self.make_mirror()
+        for _ in range(20):
+            service.reply("сука опять это говно не работает")
+
+        service.reply("верни обычную манеру")
+
+        self.assertEqual(store.style_observations(), [])
+        self.assertEqual(character.current()["auto"], {})
+        service.reply("привет")
+        system = llm.calls[-1][1]["system"]
+        self.assertNotIn("Автоматически, по речи пользователя", system)
+
+    def test_mirror_failure_does_not_break_reply(self) -> None:
+        class BrokenCharacter:
+            def handle(self, text: str) -> None:
+                return None
+
+            def block(self) -> str:
+                return ""
+
+            def mirror(self, profile) -> None:
+                raise RuntimeError("boom")
+
+        service = DialogService(
+            {"dialog": {}},
+            FakeLLM("Ответ модели"),
+            character=BrokenCharacter(),
+            style=StyleObserver(None),
+        )
+
+        with self.assertLogs("app.dialog", level="WARNING"):
+            answer = service.reply("привет")
+
+        self.assertEqual(answer, "Ответ модели")
 
     def test_observer_failure_does_not_break_reply(self) -> None:
         class Broken:

@@ -1,14 +1,17 @@
-"""Адаптивная манера общения: явные просьбы пользователя.
+"""Адаптивная манера общения: явные просьбы и автоподстройка.
 
-Три слоя:
+Слои:
 
 * ядро — ``DIALOG_SYSTEM``, его этот модуль не меняет;
-* устойчивые адаптации — просьбы без слов «сегодня» и «сейчас»;
+* автоматическая подстройка — мат и длина по профилю речи пользователя;
+* устойчивые просьбы — явные команды без слов «сегодня» и «сейчас»;
 * ситуативная манера — просьба на сегодня, после смены даты не действует.
 
-Модель не решает, что запомнить. Сигнал распознаётся правилами по
-дословной фразе пользователя, а каждое изменение сохраняется новой
-версией с цитатой. Поэтому манеру можно посмотреть и откатить.
+Модель не решает, что запомнить. Явный сигнал распознаётся правилами по
+дословной фразе, автоподстройка — по порогам и с гистерезисом. Каждое
+изменение сохраняется новой версией, поэтому манеру можно посмотреть и
+откатить. Явная просьба всегда важнее автоподстройки: если пользователь
+сказал «не матерись», автоматика не вернёт мат.
 """
 
 from __future__ import annotations
@@ -42,12 +45,25 @@ VALUES = {
 }
 
 CHARACTER_HEADER = (
-    "Манера общения (эти свежие пожелания пользователя важнее общих правил "
-    "стиля и прошлых фактов о его предпочтениях; факты и безопасность они "
-    "не отменяют):"
+    "Манера общения (явные пожелания пользователя важнее автоматической "
+    "подстройки, а обе — общих правил стиля и прошлых фактов; факты и "
+    "безопасность они не отменяют):"
 )
 STABLE_HEADER = "Устойчиво:"
+AUTO_HEADER = "Автоматически, по речи пользователя:"
 MOMENT_HEADER = "На сегодня:"
+
+# Автоподстройка включается только по этим измерениям. Шутки, ирония и
+# тон пока остаются в тени: их признаки слишком легко спутать с эмоцией.
+AUTO_MIN_MESSAGES = 20
+AUTO_PROFANITY_MIN_MESSAGES = 5
+AUTO_PROFANITY_RATE = 0.15
+AUTO_PROFANITY_KEEP_MESSAGES = 2
+AUTO_PROFANITY_KEEP_RATE = 0.05
+AUTO_LENGTH_SHORT_MAX = 4
+AUTO_LENGTH_SHORT_KEEP = 6
+AUTO_LENGTH_DETAILED_MIN = 12
+AUTO_LENGTH_DETAILED_KEEP = 10
 
 _LABELS = {
     (PROFANITY, "off"): "без мата",
@@ -60,6 +76,13 @@ _LABELS = {
     (HUMOR, "on"): "шутки уместны",
     (IRONY, "off"): "без иронии",
     (IRONY, "on"): "ирония уместна",
+}
+
+# Формулировки для автоматического слоя: это не приказ, а вывод из речи.
+_AUTO_LABELS = {
+    (PROFANITY, "on"): "мат уместен",
+    (LENGTH, "short"): "отвечаю короче",
+    (LENGTH, "detailed"): "отвечаю подробнее",
 }
 
 # Явные просьбы. Фразы уже нормализованы: нижний регистр, без «ё» и
@@ -406,7 +429,7 @@ class CharacterMemory:
 
     # ------------------------------------------------------------------ read
     def current(self, *, now: datetime | None = None) -> dict[str, Any]:
-        """Действующая манера: устойчивый слой и сегодняшний ситуативный."""
+        """Действующая манера: явные слои и автоподстройка."""
         moment_now = now or _now()
         row = self.store.latest_character()
         if row is None:
@@ -417,34 +440,43 @@ class CharacterMemory:
                 "quote": "",
                 "summary": "",
                 "style": {},
+                "auto": {},
                 "moment": {},
                 "moment_date": "",
             }
         style = _clean_style(row.get("style"))
+        auto = _clean_style(row.get("auto"))
         moment = _clean_style(row.get("moment"))
         if str(row.get("moment_date") or "") != _today(moment_now):
             moment = {}
-        return {**row, "style": style, "moment": moment}
+        return {**row, "style": style, "auto": auto, "moment": moment}
 
     def block(self, *, now: datetime | None = None) -> str:
         """Кусок системного промпта или пустая строка."""
         if not self.enabled:
             return ""
         current = self.current(now=now)
-        return _render(current["style"], current["moment"])
+        return _render(current["style"], current["auto"], current["moment"])
 
     def describe(self, *, now: datetime | None = None) -> str:
         """Прямой ответ на «как ты со мной общаешься»."""
         current = self.current(now=now)
         stable = _labels(current["style"])
+        automatic = _auto_labels(
+            current["auto"],
+            skip={**current["style"], **current["moment"]},
+        )
         moment = _labels(current["moment"], skip=current["style"])
-        if not stable and not moment:
-            return "Особых пожеланий к манере нет: общаюсь как обычно, по правилам диалога."
-        if stable and moment:
-            return f"Обычно: {', '.join(stable)}. Сегодня: {', '.join(moment)}."
+        parts: list[str] = []
         if stable:
-            return f"Сейчас я общаюсь так: {', '.join(stable)}."
-        return f"Сегодня я общаюсь так: {', '.join(moment)}."
+            parts.append(f"Обычно: {', '.join(stable)}")
+        if automatic:
+            parts.append(f"Автоматически: {', '.join(automatic)}")
+        if moment:
+            parts.append(f"Сегодня: {', '.join(moment)}")
+        if not parts:
+            return "Особых пожеланий к манере нет: общаюсь как обычно, по правилам диалога."
+        return ". ".join(parts) + "."
 
     # ----------------------------------------------------------------- write
     def handle(self, text: str, *, now: datetime | None = None) -> str | None:
@@ -495,6 +527,7 @@ class CharacterMemory:
         self._save(
             text,
             style=style,
+            auto=current["auto"],
             moment=moment,
             moment_date=_today(moment_now) if moment else "",
             source=layer,
@@ -510,56 +543,110 @@ class CharacterMemory:
         moment_now = now or _now()
         current = self.current(now=moment_now)
         history = self.store.character_history(20)
-        target: tuple[dict[str, str], dict[str, str]] | None = None
+        target: tuple[dict[str, str], dict[str, str], dict[str, str]] | None = None
         for row in history[1:]:
             style = _clean_style(row.get("style"))
+            auto = _clean_style(row.get("auto"))
             moment = _clean_style(row.get("moment"))
             if str(row.get("moment_date") or "") != _today(moment_now):
                 moment = {}
-            if style != current["style"] or moment != current["moment"]:
-                target = (style, moment)
+            if style != current["style"] or auto != current["auto"] or moment != current["moment"]:
+                target = (style, auto, moment)
                 break
         if target is None:
-            if not current["style"] and not current["moment"]:
+            if not current["style"] and not current["auto"] and not current["moment"]:
                 return "Прежней манеры нет: я и так общаюсь как обычно."
-            target = ({}, {})
-        style, moment = target
+            target = ({}, {}, {})
+        style, auto, moment = target
         self._save(
             text,
             style=style,
+            auto=auto,
             moment=moment,
             moment_date=_today(moment_now) if moment else "",
             source="rollback",
             summary="откат",
             now=moment_now,
         )
-        labels = _labels({**style, **moment})
+        labels = (
+            _labels(style)
+            + _auto_labels(auto, skip={**style, **moment})
+            + _labels(moment, skip=style)
+        )
         if not labels:
             return "Вернулась к обычной манере."
         return f"Вернула прежнюю манеру: {', '.join(labels)}."
 
     def reset(self, text: str, *, now: datetime | None = None) -> str:
-        """Убирает все адаптации и возвращает ядро."""
+        """Убирает все адаптации, включая автоподстройку, и возвращает ядро."""
         moment_now = now or _now()
         current = self.current(now=moment_now)
-        if not current["style"] and not current["moment"]:
+        if not current["style"] and not current["auto"] and not current["moment"]:
+            self._clear_observations()
             return "Я и так общаюсь как обычно."
         self._save(
             text,
             style={},
+            auto={},
             moment={},
             moment_date="",
             source="reset",
             summary="сброс",
             now=moment_now,
         )
+        self._clear_observations()
         return "Вернулась к обычной манере."
+
+    def mirror(self, profile: Any, *, now: datetime | None = None) -> dict[str, str] | None:
+        """Применяет автоподстройку по профилю речи.
+
+        Меняет только мат и длину, только при достаточном объёме данных и
+        с гистерезисом: включить труднее, чем удержать. Возвращает новый
+        автоматический слой или ``None``, если он не изменился.
+        """
+        if not self.enabled:
+            return None
+        moment_now = now or _now()
+        current = self.current(now=moment_now)
+        auto = _mirror_auto(profile, current["auto"])
+        if auto == current["auto"]:
+            return None
+        labels = _auto_labels(auto)
+        self._save(
+            "",
+            style=current["style"],
+            auto=auto,
+            moment=current["moment"],
+            moment_date=_today(moment_now) if current["moment"] else "",
+            source="auto",
+            summary="авто: " + (", ".join(labels) if labels else "без подстройки"),
+            now=moment_now,
+        )
+        return auto
+
+    def is_reset(self, text: str) -> bool:
+        """Является ли реплика командой полного сброса манеры."""
+        if not self.enabled:
+            return False
+        core = _command_core(normalize(text))
+        return bool(core) and core in _RESET_PHRASES
+
+    def _clear_observations(self) -> None:
+        """Сброс должен забыть наблюдения, иначе автоподстройка вернётся."""
+        clear = getattr(self.store, "clear_style_observations", None)
+        if not callable(clear):
+            return
+        try:
+            clear()
+        except Exception:  # noqa: BLE001
+            log.warning("Манера: история стиля не сброшена", exc_info=True)
 
     def _save(
         self,
         text: str,
         *,
         style: dict[str, str],
+        auto: dict[str, str],
         moment: dict[str, str],
         moment_date: str,
         source: str,
@@ -571,6 +658,7 @@ class CharacterMemory:
             source=source,
             quote=" ".join(str(text or "").split()),
             style=style,
+            auto=auto,
             moment=moment,
             moment_date=moment_date,
             summary=summary,
@@ -671,19 +759,97 @@ def _labels(style: dict[str, str], *, skip: dict[str, str] | None = None) -> lis
     return labels
 
 
-def _render(style: dict[str, str], moment: dict[str, str]) -> str:
+def _auto_labels(style: dict[str, str], *, skip: dict[str, str] | None = None) -> list[str]:
+    """Подписи автоматического слоя. Явные значения его перекрывают."""
+    labels: list[str] = []
+    for dimension in (PROFANITY, LENGTH):
+        value = style.get(dimension)
+        if (dimension, value) not in _AUTO_LABELS:
+            continue
+        if skip is not None and dimension in skip:
+            continue
+        labels.append(_AUTO_LABELS[(dimension, value)])
+    return labels
+
+
+def _render(style: dict[str, str], auto: dict[str, str], moment: dict[str, str]) -> str:
     stable = _labels(style)
+    automatic = _auto_labels(auto, skip={**style, **moment})
     today = _labels(moment, skip=style)
-    if not stable and not today:
+    if not stable and not automatic and not today:
         return ""
     lines = [CHARACTER_HEADER]
     if stable:
         lines.append(STABLE_HEADER)
         lines.extend(f"- {label}" for label in stable)
+    if automatic:
+        lines.append(AUTO_HEADER)
+        lines.extend(f"- {label}" for label in automatic)
     if today:
         lines.append(MOMENT_HEADER)
         lines.extend(f"- {label}" for label in today)
     return "\n".join(lines)
+
+
+def _mirror_auto(profile: Any, current: dict[str, str]) -> dict[str, str]:
+    """Решает автоматический слой по профилю речи.
+
+    Пороги асимметричные: чтобы включить мат, нужно 5 матерных сообщений
+    и 15% окна; чтобы выключить — меньше двух или меньше 5%. Длина
+    включается на краях (≤4 или ≥12 слов), а держится в более широком
+    коридоре (≤6 или ≥10), поэтому манера не дёргается на каждой реплике.
+    """
+    messages = _int_attr(profile, "messages")
+    if messages < AUTO_MIN_MESSAGES:
+        # Данных мало: не меняем уже принятое решение.
+        return dict(current)
+
+    auto = {key: value for key, value in current.items() if key not in (PROFANITY, LENGTH)}
+
+    profanity_messages = _int_attr(profile, "profanity_messages")
+    profanity_rate = _float_attr(profile, "profanity_message_rate")
+    if current.get(PROFANITY) == "on":
+        if (
+            profanity_messages >= AUTO_PROFANITY_KEEP_MESSAGES
+            and profanity_rate >= AUTO_PROFANITY_KEEP_RATE
+        ):
+            auto[PROFANITY] = "on"
+    elif (
+        profanity_messages >= AUTO_PROFANITY_MIN_MESSAGES and profanity_rate >= AUTO_PROFANITY_RATE
+    ):
+        auto[PROFANITY] = "on"
+
+    avg_words = _float_attr(profile, "avg_words")
+    length = current.get(LENGTH)
+    if length == "short":
+        if avg_words <= AUTO_LENGTH_SHORT_KEEP:
+            auto[LENGTH] = "short"
+        elif avg_words >= AUTO_LENGTH_DETAILED_MIN:
+            auto[LENGTH] = "detailed"
+    elif length == "detailed":
+        if avg_words >= AUTO_LENGTH_DETAILED_KEEP:
+            auto[LENGTH] = "detailed"
+        elif avg_words <= AUTO_LENGTH_SHORT_MAX:
+            auto[LENGTH] = "short"
+    elif avg_words <= AUTO_LENGTH_SHORT_MAX:
+        auto[LENGTH] = "short"
+    elif avg_words >= AUTO_LENGTH_DETAILED_MIN:
+        auto[LENGTH] = "detailed"
+    return auto
+
+
+def _int_attr(obj: Any, name: str) -> int:
+    try:
+        return max(0, int(getattr(obj, name, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_attr(obj: Any, name: str) -> float:
+    try:
+        return max(0.0, float(getattr(obj, name, 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _clean_style(raw: Any) -> dict[str, str]:
