@@ -726,6 +726,36 @@ class MemoryFactsStoreTest(unittest.TestCase):
         self.assertIsNone(store.latest_character())
         self.assertEqual(store.character_history(), [])
 
+    def test_style_observations_roundtrip(self) -> None:
+        store = self.make()
+        first = store.add_style_observation(
+            created_at=at().isoformat(),
+            session_id="s1",
+            words=5,
+            chars=24,
+            profanity_words=1,
+            profanity_messages=1,
+            rough_words=0,
+            humor_messages=1,
+            irony_messages=0,
+            question=1,
+        )
+        second = store.add_style_observation(
+            created_at=at(5).isoformat(),
+            session_id="s1",
+            words=2,
+            chars=7,
+        )
+
+        rows = store.style_observations()
+
+        self.assertEqual([row["id"] for row in rows], [second, first])
+        self.assertEqual(rows[0]["words"], 2)
+        self.assertEqual(rows[1]["profanity_words"], 1)
+        self.assertEqual(rows[1]["humor_messages"], 1)
+        self.assertEqual(rows[1]["question"], 1)
+        self.assertEqual(store.style_observations(1)[0]["id"], second)
+
 
 if __name__ == "__main__":
     unittest.main()

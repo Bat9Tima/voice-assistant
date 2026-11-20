@@ -103,6 +103,23 @@ CREATE TABLE IF NOT EXISTS character_versions (
     moment_date TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS style_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    words INTEGER NOT NULL,
+    chars INTEGER NOT NULL,
+    profanity_words INTEGER NOT NULL DEFAULT 0,
+    profanity_messages INTEGER NOT NULL DEFAULT 0,
+    rough_words INTEGER NOT NULL DEFAULT 0,
+    humor_messages INTEGER NOT NULL DEFAULT 0,
+    irony_messages INTEGER NOT NULL DEFAULT 0,
+    question INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_style_observations_created
+    ON style_observations(created_at);
 """
 
 FACT_FIELDS = (
@@ -385,6 +402,55 @@ class SessionStore:
                 (max(1, int(limit)),),
             ).fetchall()
         return [_character_row(row) for row in rows]
+
+    # ---------------------------------------------------------------- style
+    def add_style_observation(
+        self,
+        *,
+        created_at: str,
+        session_id: str = "",
+        words: int,
+        chars: int,
+        profanity_words: int = 0,
+        profanity_messages: int = 0,
+        rough_words: int = 0,
+        humor_messages: int = 0,
+        irony_messages: int = 0,
+        question: int = 0,
+    ) -> int:
+        """Сохраняет признаки одной реплики. Текст сюда не попадает."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO style_observations
+                    (created_at, session_id, words, chars, profanity_words,
+                     profanity_messages, rough_words, humor_messages,
+                     irony_messages, question)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    created_at,
+                    str(session_id or ""),
+                    max(0, int(words)),
+                    max(0, int(chars)),
+                    max(0, int(profanity_words)),
+                    max(0, int(profanity_messages)),
+                    max(0, int(rough_words)),
+                    max(0, int(humor_messages)),
+                    max(0, int(irony_messages)),
+                    1 if question else 0,
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    def style_observations(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Признаки реплик, новые сверху."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM style_observations ORDER BY id DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------- read
     def memory_facts(self, *, status: str = "", limit: int = 100) -> list[dict[str, Any]]:

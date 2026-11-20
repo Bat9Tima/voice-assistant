@@ -31,6 +31,7 @@ from .server import ControlServer
 from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
+from .style_observer import StyleObserver
 from .summarizer import Summarizer
 from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
 from .tray import TrayUI
@@ -172,6 +173,12 @@ class Assistant:
                 character = CharacterMemory.from_config(
                     self.session_store, dialog_cfg.get("character")
                 )
+            style = StyleObserver.from_config(self.session_store, dialog_cfg.get("style_observer"))
+            if style.enabled:
+                log.info(
+                    "Наблюдатель стиля: теневой режим, окно %s сообщений",
+                    style.window_messages,
+                )
             self.dialog = DialogService(
                 cfg,
                 self.llm,
@@ -179,6 +186,7 @@ class Assistant:
                 memory=self.memory,
                 persona=persona,
                 character=character,
+                style=style,
             )
             if self.session_store is not None:
                 self.session_store.attach(self.dialog.sessions)

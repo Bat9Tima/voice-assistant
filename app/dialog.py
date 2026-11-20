@@ -24,6 +24,7 @@ from .session import (
     DEFAULT_HISTORY_MESSAGES,
     SessionMemory,
 )
+from .style_observer import StyleObserver
 from .text import normalize
 
 log = logging.getLogger(__name__)
@@ -209,6 +210,7 @@ class DialogService:
         memory: Any | None = None,
         persona: PersonaMemory | None = None,
         character: CharacterMemory | None = None,
+        style: StyleObserver | None = None,
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
@@ -218,6 +220,8 @@ class DialogService:
         self.persona = persona
         # Адаптивная манера: явные просьбы пользователя поверх ядра.
         self.character = character
+        # Наблюдатель стиля: только считает и пишет в лог, ответы не меняет.
+        self.style = style
         # Эпизодическая память: резюме прошлых разговоров. Подключается
         # только в режиме диалога — сюда не ходят разовые команды.
         self.memory = memory
@@ -326,6 +330,21 @@ class DialogService:
         """Закрывает сессию. Сейчас она просто уходит в ``on_finish``."""
         self.sessions.finish()
         self.rolling.reset()
+        if self.style is not None:
+            try:
+                self.style.flush()
+            except Exception:  # noqa: BLE001
+                log.warning("Стиль: итог разговора не записан", exc_info=True)
+
+    def observe_style(self, text: str) -> None:
+        """Теневой наблюдатель: считает манеру, но не меняет ответ."""
+        if self.style is None:
+            return
+        session = self.sessions.current
+        try:
+            self.style.observe(text, session_id=session.id if session else "")
+        except Exception:  # noqa: BLE001
+            log.warning("Стиль: реплика не учтена", exc_info=True)
 
     def character_command(self, text: str) -> str | None:
         """Прямой ответ на просьбы о манере и команды отката.
@@ -406,6 +425,7 @@ class DialogService:
             if on_chunk is not None:
                 on_chunk(answer)
         else:
+            self.observe_style(text)
             character = self.character_part()
             built = self.context.build(
                 parts=self.system_parts(),

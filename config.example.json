@@ -171,6 +171,11 @@
     "character": {
       "enabled": true
     },
+    "style_observer": {
+      "enabled": true,
+      "window_messages": 200,
+      "log_every": 10
+    },
     "summary": {
       "enabled": true,
       "model": "",
