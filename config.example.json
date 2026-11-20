@@ -144,11 +144,9 @@
       "api_key": "",
       "model": "openai/gpt-6-luna-decisions",
       "threshold": 0.6,
-      "background_threshold": 0.45,
+      "background_threshold": 0.5,
       "timeout_sec": 2.0,
       "first_turn_always_addressed": true,
-      "max_background": 3,
-      "background_timeout_sec": 15,
       "other_names": []
     },
     "idle_timeout_sec": 60,

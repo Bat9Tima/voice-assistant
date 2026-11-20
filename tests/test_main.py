@@ -176,15 +176,11 @@ class FakeAddressee:
         kind: str = ADDRESSED,
         mode: str = ADDRESSEE_ACTIVE,
         *,
-        max_background: int = 3,
-        background_timeout: float = 15.0,
         weak: bool = False,
     ) -> None:
         self.kind = kind
         self.mode = mode
         self.enabled = True
-        self.max_background = max_background
-        self.background_timeout = background_timeout
         self.weak = weak
         self.seen: list[tuple[str, bool, str]] = []
 
@@ -1222,9 +1218,10 @@ class DialogModeTest(unittest.TestCase):
         assistant = self.make()
         assistant.addressee = FakeAddressee(BACKGROUND)
         assistant._dialog_active = True
-        assistant._dialog_last = time.monotonic()
+        assistant._dialog_last = time.monotonic() - 5
         assistant._dialog_ignored = 0
         assistant._dialog_turns = 0
+        before = assistant._dialog_last
 
         message = assistant._process("реклама про скидки", voiced=True)
 
@@ -1232,8 +1229,9 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.dialog.replied, [])
         self.assertEqual(assistant.router.seen, [])
         self.assertEqual(assistant._dialog_ignored, 1)
+        self.assertGreater(assistant._dialog_last, before)
 
-    def test_weak_addressed_does_not_extend_dialog(self) -> None:
+    def test_weak_addressed_after_background_is_skipped(self) -> None:
         assistant = self.make()
         assistant.addressee = FakeAddressee(ADDRESSED, weak=True)
         assistant._dialog_active = True
@@ -1244,9 +1242,24 @@ class DialogModeTest(unittest.TestCase):
 
         message = assistant._process("ну да, наверное", voiced=True)
 
+        self.assertEqual(message, "")
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant._dialog_ignored, 3)
+        self.assertGreater(assistant._dialog_last, before)
+
+    def test_weak_addressed_without_background_answers(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED, weak=True)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 2
+
+        message = assistant._process("ну да, наверное", voiced=True)
+
         self.assertEqual(message, "ответ диалога")
-        self.assertEqual(assistant._dialog_ignored, 2)
-        self.assertEqual(assistant._dialog_last, before)
+        self.assertEqual(assistant.dialog.replied, ["ну да наверное"])
+        self.assertEqual(assistant._dialog_ignored, 0)
 
     def test_confident_addressed_resets_background_streak(self) -> None:
         assistant = self.make()
@@ -1288,17 +1301,28 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.dialog.stopped, 1)
         self.assertEqual(assistant.dialog.replied, [])
 
-    def test_background_streak_closes_dialog(self) -> None:
+    def test_background_does_not_close_dialog(self) -> None:
         assistant = self.make()
-        assistant.addressee = FakeAddressee(
-            ADDRESSED,
-            max_background=2,
-            background_timeout=0.0,
-        )
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant.mic = None
         assistant._dialog_active = True
         assistant._dialog_last = time.monotonic() - 1
-        assistant._dialog_ignored = 2
-        assistant._dialog_turns = 2
+        assistant._dialog_ignored = 5
+        assistant._dialog_turns = 5
+
+        assistant._dialog_step()
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.stopped, 0)
+
+    def test_idle_silence_closes_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant.mic = None
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 61
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 1
 
         assistant._dialog_step()
 

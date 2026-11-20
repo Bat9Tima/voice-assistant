@@ -228,7 +228,6 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
-        self._dialog_weak_turn = False
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -558,17 +557,6 @@ class Assistant:
         now = time.monotonic()
         if now - self._dialog_last >= dialog.idle_timeout:
             self._stop_dialog("idle")
-            return
-        gate = getattr(self, "addressee", None)
-        if (
-            gate is not None
-            and getattr(gate, "mode", "") == ADDRESSEE_ACTIVE
-            and int(getattr(self, "_dialog_ignored", 0)) >= int(getattr(gate, "max_background", 3))
-            and now - self._dialog_last >= float(getattr(gate, "background_timeout", 15.0))
-        ):
-            # Фон звучит дольше, чем пользователь говорит с Луной:
-            # разговор фактически закончился, не ждём полного таймаута.
-            self._stop_dialog("background")
             return
         if getattr(self.tts, "busy", False):
             # Ответ ещё в очереди озвучки: не начинаем запись раньше времени.
@@ -994,7 +982,6 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
-        self._dialog_weak_turn = False
         self._dialog_last = time.monotonic()
         self.set_state("idle")
         message = "Слушаю. О чём поговорим?"
@@ -1008,13 +995,12 @@ class Assistant:
         return message
 
     def _stop_dialog(self, reason: str = "phrase") -> str:
-        """Выключает разговор. Причина: phrase, hotkey, idle, background,
-        closing, errors."""
+        """Выключает разговор. Причина: phrase, hotkey, idle, closing,
+        errors."""
         self._dialog_active = False
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
-        self._dialog_weak_turn = False
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
@@ -1024,8 +1010,6 @@ class Assistant:
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
-        elif reason == "background":
-            message = "Ладно, если что — зови."
         elif reason == "closing":
             message = "Хорошо, закончили."
         elif reason == "errors":
@@ -1081,8 +1065,7 @@ class Assistant:
             if stream is not None:
                 stream.close()
         self._dialog_errors = 0
-        if not getattr(self, "_dialog_weak_turn", False):
-            self._dialog_last = time.monotonic()
+        self._dialog_last = time.monotonic()
         advisor = getattr(self, "intent", None)
         if advisor is not None:
             advisor.state.note_reply(answer)
@@ -1158,10 +1141,11 @@ class Assistant:
 
     def _process(self, text: str, *, voiced: bool = False) -> str:
         text = canonicalize(normalize(text))
-        self._dialog_weak_turn = False
         if voiced and getattr(self, "_dialog_active", False):
             decision = self._addressee_decision(text)
-            self._dialog_weak_turn = bool(decision.weak)
+            # Любая услышанная речь продлевает разговор: фон не должен
+            # закрывать диалог, а тишина — должна.
+            self._dialog_last = time.monotonic()
             if decision.kind == BACKGROUND:
                 self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
                 log.info(
@@ -1171,17 +1155,16 @@ class Assistant:
                 return ""
             if decision.kind == CLOSING:
                 return self._stop_dialog("closing")
-            if decision.weak:
-                # Ответить можно, но сомнительная реплика не должна
-                # бесконечно продлевать разговор: иначе фон никогда
-                # не закроется.
+            if decision.weak and int(getattr(self, "_dialog_ignored", 0)) > 0:
+                # Слабое обращение после фона — скорее продолжение
+                # чужого разговора. Не отвечаем, но диалог не закрываем.
+                self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
                 log.info(
-                    "Диалог: слабое обращение (уверенность %.2f), разговор не продлеваю",
-                    decision.confidence,
+                    "Диалог: слабое обращение после фона, пропускаю (подряд %s)",
+                    self._dialog_ignored,
                 )
-            else:
-                self._dialog_ignored = 0
-                self._dialog_last = time.monotonic()
+                return ""
+            self._dialog_ignored = 0
         if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
             log.info("Прерываю озвучку новой командой")
             stop = getattr(self.tts, "stop", None)

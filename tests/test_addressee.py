@@ -198,11 +198,21 @@ class AddresseeHttpTest(unittest.TestCase):
         gate = AddresseeGate(make_cfg())
         with patch(
             "app.addressee.urllib.request.urlopen",
-            return_value=FakeResponse(response_body(BACKGROUND, 0.49)),
+            return_value=FakeResponse(response_body(BACKGROUND, 0.55)),
         ):
             decision = gate.classify("она на фоне играет, заебала")
         self.assertEqual(decision.kind, BACKGROUND)
         self.assertFalse(decision.weak)
+
+    def test_borderline_background_is_addressed_weak(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        with patch(
+            "app.addressee.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(BACKGROUND, 0.49)),
+        ):
+            decision = gate.classify("как где")
+        self.assertEqual(decision.kind, ADDRESSED)
+        self.assertTrue(decision.weak)
 
     def test_uncertain_addressed_is_weak(self) -> None:
         gate = AddresseeGate(make_cfg())

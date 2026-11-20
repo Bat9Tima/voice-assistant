@@ -56,12 +56,11 @@ DEFAULT_MODEL = "openai/gpt-6-luna-decisions"
 DEFAULT_MODE = MODE_SHADOW
 DEFAULT_THRESHOLD = 0.6
 # Фон распознаётся легче, чем закрытие: при сомнении лучше пропустить
-# реплику телевизора, чем продлить разговор. Но и не ниже: совсем слабые
-# ответы модели остаются «адресованными», чтобы не потерять пользователя.
-DEFAULT_BACKGROUND_THRESHOLD = 0.45
+# реплику телевизора, чем ответить на чужой разговор. Но и не ниже:
+# совсем слабые ответы модели остаются «адресованными», чтобы не
+# потерять пользователя.
+DEFAULT_BACKGROUND_THRESHOLD = 0.5
 DEFAULT_TIMEOUT_SEC = 2.0
-DEFAULT_MAX_BACKGROUND = 3
-DEFAULT_BACKGROUND_TIMEOUT_SEC = 15.0
 
 # Вводные слова, с которых начинается устная фраза: «ну всё, пока».
 _FILLERS = ("ну", "ладно", "окей", "ок", "так", "хорошо", "давай", "все")
@@ -227,11 +226,6 @@ class AddresseeGate:
         )
         self.timeout = float(section.get("timeout_sec") or DEFAULT_TIMEOUT_SEC)
         self.first_turn_always = bool(section.get("first_turn_always_addressed", True))
-        self.max_background = max(1, int(section.get("max_background") or DEFAULT_MAX_BACKGROUND))
-        self.background_timeout = max(
-            0.0,
-            float(section.get("background_timeout_sec") or DEFAULT_BACKGROUND_TIMEOUT_SEC),
-        )
         self.closing_phrases = _phrases(section.get("closing_phrases"), DEFAULT_CLOSING)
         # Имена людей, с которыми пользователь говорит в комнате. Пустой
         # список — норма: имена зависят от семьи и окружения.
