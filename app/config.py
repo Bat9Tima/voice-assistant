@@ -199,6 +199,23 @@ DEFAULTS: dict[str, Any] = {
             "заверши разговор",
             "до свидания",
         ],
+        # Слой адресата: в разговоре решает, говорит ли пользователь с
+        # Луной или звучит фон (телевизор, другой человек, телефон).
+        # off — выключен, shadow — только пишет решение в лог, active —
+        # фон пропускается, а closing завершает разговор. При сбое сети
+        # реплика считается адресованной.
+        "addressee": {
+            "enabled": True,
+            "mode": "shadow",
+            "base_url": "",
+            "api_key": "",
+            "model": "openai/gpt-6-luna-decisions",
+            "threshold": 0.6,
+            "timeout_sec": 2.0,
+            "first_turn_always_addressed": True,
+            "max_background": 3,
+            "background_timeout_sec": 15,
+        },
         "idle_timeout_sec": 60,
         "max_utterance_sec": 60,
         "no_speech_timeout_sec": 10,

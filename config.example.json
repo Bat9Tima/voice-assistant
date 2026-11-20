@@ -137,6 +137,18 @@
     "enabled": true,
     "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
     "exit_phrases": ["хватит", "закончим", "закончим разговор", "заверши разговор", "до свидания"],
+    "addressee": {
+      "enabled": true,
+      "mode": "shadow",
+      "base_url": "",
+      "api_key": "",
+      "model": "openai/gpt-6-luna-decisions",
+      "threshold": 0.6,
+      "timeout_sec": 2.0,
+      "first_turn_always_addressed": true,
+      "max_background": 3,
+      "background_timeout_sec": 15
+    },
     "idle_timeout_sec": 60,
     "max_utterance_sec": 60,
     "no_speech_timeout_sec": 10,

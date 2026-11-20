@@ -13,6 +13,21 @@ from collections import deque
 from typing import Any
 
 from .actions import ActionRouter
+from .addressee import (
+    ADDRESSED,
+    BACKGROUND,
+    CLOSING,
+    AddresseeGate,
+)
+from .addressee import (
+    MODE_ACTIVE as ADDRESSEE_ACTIVE,
+)
+from .addressee import (
+    MODE_OFF as ADDRESSEE_OFF,
+)
+from .addressee import (
+    MODE_SHADOW as ADDRESSEE_SHADOW,
+)
 from .audio import Microphone, levels, rms, save_wav_pcm
 from .brain import OpenCodeBrain
 from .browser import BrowserController
@@ -136,6 +151,7 @@ class Assistant:
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
         self.intent = IntentClassifier(cfg)
+        self.addressee = AddresseeGate(cfg)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
@@ -209,6 +225,8 @@ class Assistant:
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -535,8 +553,20 @@ class Assistant:
         if dialog is None:
             self._dialog_active = False
             return
-        if time.monotonic() - self._dialog_last >= dialog.idle_timeout:
+        now = time.monotonic()
+        if now - self._dialog_last >= dialog.idle_timeout:
             self._stop_dialog("idle")
+            return
+        gate = getattr(self, "addressee", None)
+        if (
+            gate is not None
+            and getattr(gate, "mode", "") == ADDRESSEE_ACTIVE
+            and int(getattr(self, "_dialog_ignored", 0)) >= int(getattr(gate, "max_background", 3))
+            and now - self._dialog_last >= float(getattr(gate, "background_timeout", 15.0))
+        ):
+            # Фон звучит дольше, чем пользователь говорит с Луной:
+            # разговор фактически закончился, не ждём полного таймаута.
+            self._stop_dialog("background")
             return
         if getattr(self.tts, "busy", False):
             # Ответ ещё в очереди озвучки: не начинаем запись раньше времени.
@@ -823,13 +853,10 @@ class Assistant:
             return
 
         log.info("Распознано: %s", text)
-        if dialog:
-            # Тишина в диалоге отсчитывается от последней реплики.
-            self._dialog_last = time.monotonic()
-        else:
+        if not dialog:
             self.notify(f"«{text}»", "Услышал")
         try:
-            self._process(text)
+            self._process(text, voiced=True)
         finally:
             if self.mic is not None:
                 self.mic.flush()
@@ -963,6 +990,8 @@ class Assistant:
             dialog.start()
         self._dialog_active = True
         self._dialog_errors = 0
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         self._dialog_last = time.monotonic()
         self.set_state("idle")
         message = "Слушаю. О чём поговорим?"
@@ -976,9 +1005,12 @@ class Assistant:
         return message
 
     def _stop_dialog(self, reason: str = "phrase") -> str:
-        """Выключает разговор. Причина: phrase, hotkey, idle, errors."""
+        """Выключает разговор. Причина: phrase, hotkey, idle, background,
+        closing, errors."""
         self._dialog_active = False
         self._dialog_errors = 0
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
@@ -988,6 +1020,10 @@ class Assistant:
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
+        elif reason == "background":
+            message = "Ладно, если что — зови."
+        elif reason == "closing":
+            message = "Хорошо, закончили."
         elif reason == "errors":
             message = "Не получается ответить, выхожу из разговора."
         else:
@@ -1080,8 +1116,54 @@ class Assistant:
         advisor.observe(text, in_dialog=True)
         return route
 
-    def _process(self, text: str) -> str:
+    def _addressee_decision(self, text: str) -> str:
+        """Кому адресована голосовая реплика в разговоре.
+
+        Без слоя или при сбое — ``addressed``: лучше ответить, чем
+        проигнорировать живого пользователя. В shadow решение только
+        пишется в лог и не меняет поведение.
+        """
+        gate = getattr(self, "addressee", None)
+        if gate is None or not getattr(gate, "enabled", False):
+            return ADDRESSED
+        if getattr(gate, "mode", ADDRESSEE_OFF) == ADDRESSEE_OFF:
+            return ADDRESSED
+        first_turn = int(getattr(self, "_dialog_turns", 0)) == 0
+        advisor = getattr(self, "intent", None)
+        question = advisor.state.question() if advisor is not None else ""
+        if getattr(gate, "mode", "") == ADDRESSEE_SHADOW:
+            # В shadow решение только пишется в лог и не должно
+            # задерживать ответ пользователю.
+            observer = getattr(gate, "observe", None)
+            if callable(observer):
+                observer(text, first_turn=first_turn, last_question=question)
+            self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
+            return ADDRESSED
+        try:
+            decision = gate.classify(text, first_turn=first_turn, last_question=question)
+        except Exception:  # noqa: BLE001
+            log.exception("Адресат: сбой, отвечаю как обычно")
+            return ADDRESSED
+        self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
+        if getattr(gate, "mode", "") != ADDRESSEE_ACTIVE:
+            return ADDRESSED
+        return decision.kind
+
+    def _process(self, text: str, *, voiced: bool = False) -> str:
         text = canonicalize(normalize(text))
+        if voiced and getattr(self, "_dialog_active", False):
+            kind = self._addressee_decision(text)
+            if kind == BACKGROUND:
+                self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
+                log.info(
+                    "Диалог: реплика не Луне, пропускаю (подряд %s)",
+                    self._dialog_ignored,
+                )
+                return ""
+            if kind == CLOSING:
+                return self._stop_dialog("closing")
+            self._dialog_ignored = 0
+            self._dialog_last = time.monotonic()
         if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
             log.info("Прерываю озвучку новой командой")
             stop = getattr(self.tts, "stop", None)

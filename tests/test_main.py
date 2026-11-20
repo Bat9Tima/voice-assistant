@@ -9,6 +9,18 @@ from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
+from app.addressee import (
+    ADDRESSED,
+    BACKGROUND,
+    CLOSING,
+    AddresseeDecision,
+)
+from app.addressee import (
+    MODE_ACTIVE as ADDRESSEE_ACTIVE,
+)
+from app.addressee import (
+    MODE_SHADOW as ADDRESSEE_SHADOW,
+)
 from app.intent_classifier import (
     ANSWER,
     DIALOG,
@@ -156,6 +168,47 @@ class FakeIntent:
 
     def blocks_search(self, decision: IntentDecision) -> bool:
         return self.blocks_lookup(decision)
+
+
+class FakeAddressee:
+    def __init__(
+        self,
+        kind: str = ADDRESSED,
+        mode: str = ADDRESSEE_ACTIVE,
+        *,
+        max_background: int = 3,
+        background_timeout: float = 15.0,
+    ) -> None:
+        self.kind = kind
+        self.mode = mode
+        self.enabled = True
+        self.max_background = max_background
+        self.background_timeout = background_timeout
+        self.seen: list[tuple[str, bool, str]] = []
+
+    def classify(
+        self,
+        text: str,
+        *,
+        first_turn: bool = False,
+        last_question: str = "",
+    ) -> AddresseeDecision:
+        self.seen.append((text, first_turn, last_question))
+        return AddresseeDecision(
+            self.kind,
+            confidence=0.9,
+            raw=self.kind,
+            source=SOURCE_MODEL,
+        )
+
+    def observe(
+        self,
+        text: str,
+        *,
+        first_turn: bool = False,
+        last_question: str = "",
+    ) -> None:
+        self.classify(text, first_turn=first_turn, last_question=last_question)
 
 
 class TrayStatusTest(unittest.TestCase):
@@ -1161,6 +1214,76 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(message, "Открываю YouTube")
         self.assertEqual(assistant.dialog.replied, [])
         self.assertTrue(assistant._dialog_active)
+
+    def test_background_voice_utterance_is_ignored(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(BACKGROUND)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 0
+
+        message = assistant._process("реклама про скидки", voiced=True)
+
+        self.assertEqual(message, "")
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant._dialog_ignored, 1)
+
+    def test_shadow_mode_still_answers_background(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(BACKGROUND, mode=ADDRESSEE_SHADOW)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        message = assistant._process("реклама про скидки", voiced=True)
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["реклама про скидки"])
+
+    def test_closing_voice_utterance_stops_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(CLOSING)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        message = assistant._process("ну все спасибо", voiced=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(message, "Хорошо, закончили.")
+        self.assertEqual(assistant.dialog.stopped, 1)
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_background_streak_closes_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(
+            ADDRESSED,
+            max_background=2,
+            background_timeout=0.0,
+        )
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 1
+        assistant._dialog_ignored = 2
+        assistant._dialog_turns = 2
+
+        assistant._dialog_step()
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.stopped, 1)
+
+    def test_gate_receives_dialog_turn_number(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        assistant._process("раз", voiced=True)
+        assistant._process("два", voiced=True)
+
+        self.assertEqual([item[1] for item in assistant.addressee.seen], [True, False])
 
     def test_weather_inside_dialog_uses_qa(self) -> None:
         assistant = self.make()
