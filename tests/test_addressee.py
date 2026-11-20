@@ -87,6 +87,40 @@ class AddresseeRulesTest(unittest.TestCase):
         self.assertEqual(decision.kind, BACKGROUND)
         self.assertEqual(decision.source, SOURCE_RULES)
 
+    def test_not_with_you_marker_is_background(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        decision = gate.classify("Нет, я не про него, я вообще сейчас не с тобой говорил.")
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_phone_call_is_background(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        decision = gate.classify("Алло, да слушаю, да да, нормально.")
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_other_name_with_second_person_is_background(self) -> None:
+        gate = AddresseeGate(make_cfg(other_names=["максим", "макс"]))
+        decision = gate.classify("Бля, Максим, ты заебал уже меня.")
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_repeated_other_name_is_background(self) -> None:
+        gate = AddresseeGate(make_cfg(other_names=["максимка"]))
+        decision = gate.classify("Максимка, Максимка, ну ты где?")
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_other_name_in_third_person_goes_to_model(self) -> None:
+        gate = AddresseeGate(make_cfg(other_names=["максим"]))
+        with patch(
+            "app.addressee.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(ADDRESSED, 0.9)),
+        ) as urlopen:
+            decision = gate.classify("Максим вчера сказал, что погода будет хорошая.")
+        urlopen.assert_called_once()
+        self.assertEqual(decision.kind, ADDRESSED)
+
     def test_bare_all_is_not_closing(self) -> None:
         gate = AddresseeGate(make_cfg())
         with patch(
@@ -102,6 +136,18 @@ class AddresseeRulesTest(unittest.TestCase):
             decision = gate.classify("как дела", first_turn=True)
         urlopen.assert_not_called()
         self.assertEqual(decision.kind, ADDRESSED)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_first_turn_does_not_override_phone(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        decision = gate.classify("Але, парни, че вы тут?", first_turn=True)
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertEqual(decision.source, SOURCE_RULES)
+
+    def test_first_turn_does_not_override_other_name(self) -> None:
+        gate = AddresseeGate(make_cfg(other_names=["максим"]))
+        decision = gate.classify("Максим, ты заебал", first_turn=True)
+        self.assertEqual(decision.kind, BACKGROUND)
         self.assertEqual(decision.source, SOURCE_RULES)
 
     def test_off_mode_does_not_call_model(self) -> None:
@@ -146,6 +192,37 @@ class AddresseeHttpTest(unittest.TestCase):
             decision = gate.classify("что-то невнятное")
         self.assertEqual(decision.kind, ADDRESSED)
         self.assertEqual(decision.raw, BACKGROUND)
+        self.assertTrue(decision.weak)
+
+    def test_medium_confidence_background_is_background(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        with patch(
+            "app.addressee.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(BACKGROUND, 0.49)),
+        ):
+            decision = gate.classify("она на фоне играет, заебала")
+        self.assertEqual(decision.kind, BACKGROUND)
+        self.assertFalse(decision.weak)
+
+    def test_uncertain_addressed_is_weak(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        with patch(
+            "app.addressee.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(ADDRESSED, 0.55)),
+        ):
+            decision = gate.classify("ну да, наверное")
+        self.assertEqual(decision.kind, ADDRESSED)
+        self.assertTrue(decision.weak)
+
+    def test_confident_addressed_is_not_weak(self) -> None:
+        gate = AddresseeGate(make_cfg())
+        with patch(
+            "app.addressee.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(ADDRESSED, 0.91)),
+        ):
+            decision = gate.classify("расскажи, как прошёл день")
+        self.assertEqual(decision.kind, ADDRESSED)
+        self.assertFalse(decision.weak)
 
     def test_network_error_is_addressed(self) -> None:
         gate = AddresseeGate(make_cfg())

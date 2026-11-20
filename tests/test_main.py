@@ -178,12 +178,14 @@ class FakeAddressee:
         *,
         max_background: int = 3,
         background_timeout: float = 15.0,
+        weak: bool = False,
     ) -> None:
         self.kind = kind
         self.mode = mode
         self.enabled = True
         self.max_background = max_background
         self.background_timeout = background_timeout
+        self.weak = weak
         self.seen: list[tuple[str, bool, str]] = []
 
     def classify(
@@ -199,6 +201,7 @@ class FakeAddressee:
             confidence=0.9,
             raw=self.kind,
             source=SOURCE_MODEL,
+            weak=self.weak,
         )
 
     def observe(
@@ -1229,6 +1232,35 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.dialog.replied, [])
         self.assertEqual(assistant.router.seen, [])
         self.assertEqual(assistant._dialog_ignored, 1)
+
+    def test_weak_addressed_does_not_extend_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED, weak=True)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 2
+        assistant._dialog_turns = 2
+        before = assistant._dialog_last
+
+        message = assistant._process("ну да, наверное", voiced=True)
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant._dialog_ignored, 2)
+        self.assertEqual(assistant._dialog_last, before)
+
+    def test_confident_addressed_resets_background_streak(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 2
+        assistant._dialog_turns = 2
+        before = assistant._dialog_last
+
+        assistant._process("расскажи, как прошёл день", voiced=True)
+
+        self.assertEqual(assistant._dialog_ignored, 0)
+        self.assertGreater(assistant._dialog_last, before)
 
     def test_shadow_mode_still_answers_background(self) -> None:
         assistant = self.make()

@@ -17,6 +17,7 @@ from .addressee import (
     ADDRESSED,
     BACKGROUND,
     CLOSING,
+    AddresseeDecision,
     AddresseeGate,
 )
 from .addressee import (
@@ -227,6 +228,7 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
+        self._dialog_weak_turn = False
         self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
@@ -992,6 +994,7 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
+        self._dialog_weak_turn = False
         self._dialog_last = time.monotonic()
         self.set_state("idle")
         message = "Слушаю. О чём поговорим?"
@@ -1011,6 +1014,7 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
+        self._dialog_weak_turn = False
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
@@ -1077,7 +1081,8 @@ class Assistant:
             if stream is not None:
                 stream.close()
         self._dialog_errors = 0
-        self._dialog_last = time.monotonic()
+        if not getattr(self, "_dialog_weak_turn", False):
+            self._dialog_last = time.monotonic()
         advisor = getattr(self, "intent", None)
         if advisor is not None:
             advisor.state.note_reply(answer)
@@ -1116,18 +1121,20 @@ class Assistant:
         advisor.observe(text, in_dialog=True)
         return route
 
-    def _addressee_decision(self, text: str) -> str:
+    def _addressee_decision(self, text: str) -> AddresseeDecision:
         """Кому адресована голосовая реплика в разговоре.
 
         Без слоя или при сбое — ``addressed``: лучше ответить, чем
         проигнорировать живого пользователя. В shadow решение только
-        пишется в лог и не меняет поведение.
+        пишется в лог и не меняет поведение. ``weak`` значит, что модель
+        сомневается: ответить можно, но разговор это не продлевает.
         """
+        fallback = AddresseeDecision(ADDRESSED, confidence=1.0, raw=ADDRESSED)
         gate = getattr(self, "addressee", None)
         if gate is None or not getattr(gate, "enabled", False):
-            return ADDRESSED
+            return fallback
         if getattr(gate, "mode", ADDRESSEE_OFF) == ADDRESSEE_OFF:
-            return ADDRESSED
+            return fallback
         first_turn = int(getattr(self, "_dialog_turns", 0)) == 0
         advisor = getattr(self, "intent", None)
         question = advisor.state.question() if advisor is not None else ""
@@ -1138,32 +1145,43 @@ class Assistant:
             if callable(observer):
                 observer(text, first_turn=first_turn, last_question=question)
             self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
-            return ADDRESSED
+            return fallback
         try:
             decision = gate.classify(text, first_turn=first_turn, last_question=question)
         except Exception:  # noqa: BLE001
             log.exception("Адресат: сбой, отвечаю как обычно")
-            return ADDRESSED
+            return fallback
         self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
         if getattr(gate, "mode", "") != ADDRESSEE_ACTIVE:
-            return ADDRESSED
-        return decision.kind
+            return fallback
+        return decision
 
     def _process(self, text: str, *, voiced: bool = False) -> str:
         text = canonicalize(normalize(text))
+        self._dialog_weak_turn = False
         if voiced and getattr(self, "_dialog_active", False):
-            kind = self._addressee_decision(text)
-            if kind == BACKGROUND:
+            decision = self._addressee_decision(text)
+            self._dialog_weak_turn = bool(decision.weak)
+            if decision.kind == BACKGROUND:
                 self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
                 log.info(
                     "Диалог: реплика не Луне, пропускаю (подряд %s)",
                     self._dialog_ignored,
                 )
                 return ""
-            if kind == CLOSING:
+            if decision.kind == CLOSING:
                 return self._stop_dialog("closing")
-            self._dialog_ignored = 0
-            self._dialog_last = time.monotonic()
+            if decision.weak:
+                # Ответить можно, но сомнительная реплика не должна
+                # бесконечно продлевать разговор: иначе фон никогда
+                # не закроется.
+                log.info(
+                    "Диалог: слабое обращение (уверенность %.2f), разговор не продлеваю",
+                    decision.confidence,
+                )
+            else:
+                self._dialog_ignored = 0
+                self._dialog_last = time.monotonic()
         if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
             log.info("Прерываю озвучку новой командой")
             stop = getattr(self.tts, "stop", None)

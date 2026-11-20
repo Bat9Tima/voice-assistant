@@ -488,10 +488,12 @@ Windows (не до входа в систему). Вариант с Планир
     "api_key": "",
     "model": "openai/gpt-6-luna-decisions",
     "threshold": 0.6,
+    "background_threshold": 0.45,
     "timeout_sec": 2.0,
     "first_turn_always_addressed": true,
     "max_background": 3,
-    "background_timeout_sec": 15
+    "background_timeout_sec": 15,
+    "other_names": ["максим", "макс", "максимка"]
   },
   "idle_timeout_sec": 60,
   "max_utterance_sec": 60,
@@ -555,7 +557,11 @@ Windows (не до входа в систему). Вариант с Планир
 Слой адресата включается в `dialog.addressee`. `mode` по умолчанию
 `shadow`: решения видны в логе, но поведение не меняется. `active`
 включает фильтрацию фона; `max_background` и `background_timeout_sec`
-задают, когда разговор закрывается по фону.
+задают, когда разговор закрывается по фону. `other_names` — имена людей,
+с которыми ты говоришь в комнате: имя рядом со вторым лицом («Максим,
+ты...») или повторённое имя сразу считаются фоном. `background_threshold`
+ниже `threshold`: фон распознаётся легче, а сомнительная реплика всё
+равно получает ответ, просто не продлевает разговор.
 
 Если `state/profile.txt` нет, разговор всё равно работает — просто без
 персоны и фактов. Состояние режима видно в `/status` (`"dialog": true`).

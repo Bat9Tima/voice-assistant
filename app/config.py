@@ -211,10 +211,15 @@ DEFAULTS: dict[str, Any] = {
             "api_key": "",
             "model": "openai/gpt-6-luna-decisions",
             "threshold": 0.6,
+            "background_threshold": 0.45,
             "timeout_sec": 2.0,
             "first_turn_always_addressed": True,
             "max_background": 3,
             "background_timeout_sec": 15,
+            # Имена людей, с которыми пользователь говорит в комнате.
+            # Имя рядом со вторым лицом («Максим, ты...») или повторённое
+            # имя сразу считаются фоном.
+            "other_names": [],
         },
         "idle_timeout_sec": 60,
         "max_utterance_sec": 60,

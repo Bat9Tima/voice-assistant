@@ -55,6 +55,10 @@ DEFAULT_BASE_URL = "https://api.proxyapi.ru/v1"
 DEFAULT_MODEL = "openai/gpt-6-luna-decisions"
 DEFAULT_MODE = MODE_SHADOW
 DEFAULT_THRESHOLD = 0.6
+# Фон распознаётся легче, чем закрытие: при сомнении лучше пропустить
+# реплику телевизора, чем продлить разговор. Но и не ниже: совсем слабые
+# ответы модели остаются «адресованными», чтобы не потерять пользователя.
+DEFAULT_BACKGROUND_THRESHOLD = 0.45
 DEFAULT_TIMEOUT_SEC = 2.0
 DEFAULT_MAX_BACKGROUND = 3
 DEFAULT_BACKGROUND_TIMEOUT_SEC = 15.0
@@ -88,12 +92,30 @@ DEFAULT_CLOSING = (
 # Прямые указания, что реплика не для Луны.
 BACKGROUND_MARKERS = (
     "не тебе",
-    "это не тебе",
-    "я не с тобой",
-    "я не тебе",
+    "не тебя",
+    "не для тебя",
+    "не с тобой",
+    "не с тобою",
+    "не вам",
+    "не с вами",
+    "не к тебе",
+    "не про тебя",
+    "не о тебе",
     "не луне",
-    "это не луне",
-    "я не с луной",
+    "не с луной",
+)
+
+# Телефонный разговор: «алло» в начале реплики. После normalize «алё»
+# становится «але», поэтому отдельный вариант не нужен.
+_PHONE_RE = re.compile(r"(?<!\w)(алло|але|ало)(?!\w)", re.UNICODE)
+
+# Второе лицо рядом с чужим именем: «Максим, ты...», «вас тут...».
+# Это отличает разговор с человеком в комнате от рассказа о нём Луне.
+_SECOND_PERSON_RE = re.compile(
+    r"(?<!\w)(ты|тебя|тебе|тобой|тобою|вы|вас|вам|вами|"
+    r"иди|слушай|послушай|погоди|подожди|заебал|заебала|достал|достала|хватит)(?!\w)"
+    r"|(?<!\w)\w+(?:ешь|ишь|ете|ите)(?!\w)",
+    re.UNICODE,
 )
 
 _NAME_RE = re.compile(
@@ -111,7 +133,10 @@ QUESTION = {
         "с ней, а может смотреть телевизор, разговаривать с другим человеком, "
         "говорить по телефону или сам с собой. Считай реплику адресованной "
         "Луне, только если из текста и контекста видно, что говорящий "
-        "обращается к ней или продолжает разговор с ней."
+        "обращается к ней или продолжает разговор с ней. Обращение к другому "
+        "человеку по имени, телефонное «алло», спор, комментарий к игре или "
+        "видео — это background. Мат сам по себе не делает реплику "
+        "адресованной Луне."
     ),
     "criteria": {
         ADDRESSED: (
@@ -154,6 +179,7 @@ class AddresseeDecision:
     source: str = SOURCE_MODEL
     elapsed_sec: float = 0.0
     error: str = ""
+    weak: bool = False
 
     @property
     def proposed(self) -> str:
@@ -196,6 +222,9 @@ class AddresseeGate:
             or ""
         ).strip()
         self.threshold = float(section.get("threshold") or DEFAULT_THRESHOLD)
+        self.background_threshold = float(
+            section.get("background_threshold") or DEFAULT_BACKGROUND_THRESHOLD
+        )
         self.timeout = float(section.get("timeout_sec") or DEFAULT_TIMEOUT_SEC)
         self.first_turn_always = bool(section.get("first_turn_always_addressed", True))
         self.max_background = max(1, int(section.get("max_background") or DEFAULT_MAX_BACKGROUND))
@@ -204,6 +233,16 @@ class AddresseeGate:
             float(section.get("background_timeout_sec") or DEFAULT_BACKGROUND_TIMEOUT_SEC),
         )
         self.closing_phrases = _phrases(section.get("closing_phrases"), DEFAULT_CLOSING)
+        # Имена людей, с которыми пользователь говорит в комнате. Пустой
+        # список — норма: имена зависят от семьи и окружения.
+        self.other_names = _phrases(section.get("other_names"), ())
+        self._other_patterns = tuple(
+            (
+                name,
+                re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", re.UNICODE),
+            )
+            for name in self.other_names
+        )
         self.last: AddresseeDecision | None = None
 
     # ------------------------------------------------------------------ public
@@ -256,6 +295,17 @@ class AddresseeGate:
                     confidence=0.9,
                     raw=ADDRESSED,
                     probabilities={ADDRESSED: 0.9},
+                    source=SOURCE_RULES,
+                ),
+                text,
+            )
+        if self._is_other_person(normalized) or _PHONE_RE.search(normalized):
+            return self._finish(
+                self._decision(
+                    BACKGROUND,
+                    confidence=0.9,
+                    raw=BACKGROUND,
+                    probabilities={BACKGROUND: 0.9},
                     source=SOURCE_RULES,
                 ),
                 text,
@@ -331,6 +381,7 @@ class AddresseeGate:
         source: str = SOURCE_MODEL,
         elapsed_sec: float = 0.0,
         error: str = "",
+        weak: bool = False,
     ) -> AddresseeDecision:
         return AddresseeDecision(
             kind=kind,
@@ -340,6 +391,7 @@ class AddresseeGate:
             source=source,
             elapsed_sec=float(elapsed_sec),
             error=error,
+            weak=bool(weak),
         )
 
     def _is_closing(self, normalized: str) -> bool:
@@ -358,6 +410,22 @@ class AddresseeGate:
     @staticmethod
     def _is_background_marker(normalized: str) -> bool:
         return any(marker in normalized for marker in BACKGROUND_MARKERS)
+
+    def _is_other_person(self, normalized: str) -> bool:
+        """Разговор с человеком в комнате, а не рассказ о нём Луне.
+
+        Достаточно имени из конфига рядом со вторым лицом («Максим, ты...»)
+        или повторённого имени. Просто упоминание имени в третьем лице
+        оставляем модели: «Максим вчера сказал» может быть рассказом Луне.
+        """
+        if not self._other_patterns:
+            return False
+        second_person = bool(_SECOND_PERSON_RE.search(normalized))
+        for _name, pattern in self._other_patterns:
+            matches = pattern.findall(normalized)
+            if len(matches) >= 2 or (matches and second_person):
+                return True
+        return False
 
     def _request(self, text: str, *, last_question: str) -> dict[str, Any]:
         payload = {
@@ -435,8 +503,17 @@ class AddresseeGate:
                 error=f"неизвестный адресат: {raw or 'пусто'}",
             )
 
-        # Низкая уверенность — отвечаем: живой пользователь важнее фона.
-        kind = raw if confidence >= self.threshold else ADDRESSED
+        # Фон принимаем легче, чем закрытие: телевизор не должен
+        # продлевать разговор. Но совсем слабый ответ модели остаётся
+        # «адресованным», чтобы не потерять живого пользователя.
+        if raw == BACKGROUND:
+            accepted = confidence >= self.background_threshold
+        elif raw == CLOSING:
+            accepted = confidence >= self.threshold
+        else:
+            accepted = True
+        kind = raw if accepted else ADDRESSED
+        weak = kind == ADDRESSED and (raw != ADDRESSED or confidence < self.threshold)
         return self._decision(
             kind,
             confidence=confidence,
@@ -444,6 +521,7 @@ class AddresseeGate:
             probabilities=probabilities,
             source=SOURCE_MODEL,
             elapsed_sec=elapsed,
+            weak=weak,
         )
 
     def _finish(self, decision: AddresseeDecision, text: str) -> AddresseeDecision:
@@ -456,15 +534,17 @@ class AddresseeGate:
         proposed = (
             f", модель: {decision.raw}" if decision.raw and decision.raw != decision.kind else ""
         )
+        weak = ", слабое" if decision.weak else ""
         error = f", ошибка: {decision.error}" if decision.error else ""
         log.info(
-            "Адресат [%s]: %s%s (уверенность %.2f, %s, %.2f с)%s :: %s",
+            "Адресат [%s]: %s%s (уверенность %.2f, %s, %.2f с)%s%s :: %s",
             self.mode,
             decision.kind,
             proposed,
             decision.confidence,
             decision.source,
             decision.elapsed_sec,
+            weak,
             error,
             text[:160],
         )
