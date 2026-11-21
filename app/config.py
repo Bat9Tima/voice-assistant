@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -107,6 +110,31 @@ DEFAULTS: dict[str, Any] = {
     # Короткий контекст продолжений: «ещё один», «вторую», «тише».
     # TTL ограничивает, как долго старая команда может влиять на новую.
     "context": {"ttl_sec": 180},
+    # Быстрое переключение облачных моделей: имя пресета из llm_presets.
+    # Пресет накладывается последним и перекрывает model/model_params
+    # секций, поэтому менять модель нужно только здесь.
+    "llm": {"preset": "gpt"},
+    "llm_presets": {
+        "gpt": {
+            "cloud_llm": {
+                "model": "openai/gpt-6-luna",
+                "model_params": {
+                    "openai/gpt-6-luna": {
+                        "temperature": None,
+                        "reasoning_effort": "none",
+                    }
+                },
+            },
+            "dialog": {"addressee": {"model": "openai/gpt-6-luna-decisions"}},
+            "intent": {"model": "openai/gpt-6-luna-decisions"},
+        },
+        "grok": {
+            "cloud_llm": {"model": "x-ai/grok-4.3"},
+            # Эндпоинт решений пока проверен только с этой моделью.
+            "dialog": {"addressee": {"model": "openai/gpt-6-luna-decisions"}},
+            "intent": {"model": "openai/gpt-6-luna-decisions"},
+        },
+    },
     # Ответы на вопросы, новости и рассуждения — через облачную модель
     # ProxyAPI. Ключ можно не дублировать: при пустом api_key берётся
     # tts.api_key, потому что оба сервиса работают через ProxyAPI.
@@ -386,6 +414,27 @@ def _expand_path(value: str) -> str:
     return os.path.expandvars(os.path.expanduser(str(value)))
 
 
+def _apply_llm_preset(cfg: dict[str, Any]) -> None:
+    """Накладывает выбранный пресет моделей поверх остального конфига."""
+    name = str((cfg.get("llm") or {}).get("preset") or "").strip()
+    if not name:
+        return
+    presets = cfg.get("llm_presets") or {}
+    preset = presets.get(name)
+    if not isinstance(preset, dict):
+        log.warning(
+            "Неизвестный пресет моделей: %s (доступны: %s)",
+            name,
+            ", ".join(sorted(presets)) or "нет",
+        )
+        return
+    for section, values in preset.items():
+        if isinstance(values, dict) and isinstance(cfg.get(section), dict):
+            cfg[section] = _deep_merge(cfg[section], values)
+        else:
+            cfg[section] = values
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     """Читает config.json, дополняет значениями по умолчанию."""
     cfg_path = path or CONFIG_PATH
@@ -393,6 +442,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     if cfg_path.exists():
         data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     cfg = _deep_merge(DEFAULTS, data)
+    _apply_llm_preset(cfg)
 
     cfg["browser"]["profile_dir"] = _expand_path(cfg["browser"]["profile_dir"])
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])

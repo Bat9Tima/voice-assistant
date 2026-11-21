@@ -1122,6 +1122,8 @@ python tools/generate_phrases.py --only done --takes 6
 | `stt.model` | модель, если `engine` = `whisper` |
 | `browser.chrome_path` | путь к Chrome |
 | `browser.port` | CDP-порт (по умолчанию 9222) |
+| `llm.preset` | пресет облачных моделей: `gpt` (по умолчанию) или `grok`; перекрывает `model` в секциях |
+| `llm_presets` | наборы моделей: основная, решений и `model_params` для каждого пресета |
 | `cloud_llm.enabled` | ответы на вопросы, новости и рассуждения через облако; по умолчанию `true` |
 | `cloud_llm.base_url` | единый OpenAI-совместимый адрес ProxyAPI (`https://api.proxyapi.ru/v1`) |
 | `cloud_llm.api_key` | ключ ProxyAPI; пусто — берётся `tts.api_key` |
@@ -1570,6 +1572,12 @@ ProxyAPI отвечает HTTP 400, и клиент уходит на запас
 Если `cloud_llm.api_key` пустой, берётся `tts.api_key`: оба сервиса работают
 через ProxyAPI. Проверка: `python -m app.doctor` покажет блок «Облачная LLM» —
 адрес, модели и наличие ключа. Промпты лежат в `app/prompts.py`.
+
+Модель переключается одной строкой — `"llm": { "preset": "grok" }`. Пресеты
+лежат в `llm_presets` и задают основную модель, модель решений и
+`model_params`; сейчас есть `gpt` и `grok`. Пресет применяется последним,
+поэтому перекрывает `model` в секциях. После смены нужен перезапуск.
+Эмбеддинги и TTS пресет не трогает: это другие модальности.
 
 ### Свободные команды через локальный планировщик
 

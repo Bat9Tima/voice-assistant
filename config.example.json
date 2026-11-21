@@ -76,6 +76,45 @@
     "ttl_sec": 180
   },
 
+  "llm": {
+    "preset": "gpt"
+  },
+
+  "llm_presets": {
+    "gpt": {
+      "cloud_llm": {
+        "model": "openai/gpt-6-luna",
+        "model_params": {
+          "openai/gpt-6-luna": {
+            "temperature": null,
+            "reasoning_effort": "none"
+          }
+        }
+      },
+      "dialog": {
+        "addressee": {
+          "model": "openai/gpt-6-luna-decisions"
+        }
+      },
+      "intent": {
+        "model": "openai/gpt-6-luna-decisions"
+      }
+    },
+    "grok": {
+      "cloud_llm": {
+        "model": "x-ai/grok-4.3"
+      },
+      "dialog": {
+        "addressee": {
+          "model": "openai/gpt-6-luna-decisions"
+        }
+      },
+      "intent": {
+        "model": "openai/gpt-6-luna-decisions"
+      }
+    }
+  },
+
   "intent": {
     "enabled": true,
     "mode": "shadow",
