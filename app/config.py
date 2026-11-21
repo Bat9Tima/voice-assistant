@@ -168,6 +168,7 @@ DEFAULTS: dict[str, Any] = {
         "jpeg_quality": 75,
         "max_tokens": 2000,
         "timeout_sec": 60,
+        "followup_ttl_sec": 60,
         "prompt": (
             "Опиши, что видно на экране, в двух-трёх предложениях. "
             "Если на экране текст, код или ошибка — назови главное. "
