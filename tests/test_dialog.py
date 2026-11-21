@@ -285,6 +285,44 @@ class DialogServiceTest(unittest.TestCase):
             service.reply("привет")
         self.assertEqual(service.sessions.history(), [])
 
+    def test_remember_exchange_adds_messages_to_history(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+
+        service.remember_exchange("  реши   номер 325 ", "Ответ по кадру")
+
+        self.assertEqual(
+            service.sessions.history(),
+            [
+                {"role": "user", "content": "реши номер 325"},
+                {"role": "assistant", "content": "Ответ по кадру"},
+            ],
+        )
+
+    def test_remember_exchange_ignores_empty_parts(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+
+        service.remember_exchange("", "Ответ")
+        service.remember_exchange("Вопрос", "   ")
+
+        self.assertEqual(service.sessions.history(), [])
+
+    def test_owns_memory_and_character_commands(self) -> None:
+        class FakeCharacter:
+            def matches(self, text: str) -> bool:
+                return text == "будь грубее"
+
+        service = DialogService(
+            {"dialog": {}},
+            FakeLLM(),
+            memory=object(),
+            character=FakeCharacter(),
+        )
+
+        self.assertTrue(service.owns("что ты помнишь"))
+        self.assertTrue(service.owns("забудь про кофе"))
+        self.assertTrue(service.owns("будь грубее"))
+        self.assertFalse(service.owns("реши номер 325"))
+
     def test_start_and_stop_close_session(self) -> None:
         saved: list = []
         service = DialogService({"dialog": {}}, FakeLLM("Ответ"))
