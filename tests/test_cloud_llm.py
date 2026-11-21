@@ -89,6 +89,58 @@ def response_body(text: str = "Ответ") -> bytes:
     ).encode("utf-8")
 
 
+def responses_body(text: str = "Ответ") -> bytes:
+    return json.dumps(
+        {
+            "model": "anthropic/claude-haiku-5-5",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": text}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "input_tokens_details": {"cached_tokens": 5},
+                "output_tokens_details": {"reasoning_tokens": 3},
+            },
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def responses_sse(
+    *texts: str,
+    done: bool = True,
+    search: bool = True,
+) -> list[bytes]:
+    events = [{"type": "response.created"}]
+    if search:
+        events.append({"type": "response.web_search_call.searching"})
+    events.extend({"type": "response.output_text.delta", "delta": text} for text in texts)
+    events.append(
+        {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                }
+            },
+        }
+    )
+    lines = [
+        ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8")
+        for event in events
+    ]
+    if done:
+        lines.append(b"data: [DONE]\n\n")
+    return lines
+
+
 class CloudLLMConfigTest(unittest.TestCase):
     def test_available_with_key(self) -> None:
         self.assertTrue(make_llm().available())
@@ -652,6 +704,187 @@ class CloudLLMStreamTest(unittest.TestCase):
             make_llm().chat_stream([])
         with self.assertRaises(LLMError):
             make_llm(api_key="").chat_stream([{"role": "user", "content": "привет"}])
+
+
+class CloudLLMWebSearchTest(unittest.TestCase):
+    def test_web_search_enabled_by_default(self) -> None:
+        self.assertTrue(make_llm().web_search_enabled)
+
+    def test_web_search_can_be_disabled(self) -> None:
+        llm = make_llm(web_search={"enabled": False})
+        self.assertFalse(llm.web_search_enabled)
+
+    def test_responses_payload_maps_fields(self) -> None:
+        llm = make_llm(
+            model_params={
+                "openai/gpt-6-luna": {
+                    "temperature": None,
+                    "reasoning_effort": "none",
+                }
+            }
+        )
+        payload = llm._responses_payload(
+            "openai/gpt-6-luna",
+            [
+                {"role": "system", "content": "правила"},
+                {"role": "user", "content": "вопрос"},
+                {"role": "assistant", "content": "ответ"},
+            ],
+            max_tokens=2000,
+            temperature=0.5,
+            stream=False,
+        )
+
+        self.assertEqual(payload["instructions"], "правила")
+        self.assertEqual(
+            payload["input"],
+            [
+                {"role": "user", "content": "вопрос"},
+                {"role": "assistant", "content": "ответ"},
+            ],
+        )
+        self.assertEqual(payload["tools"], [{"type": "web_search"}])
+        self.assertEqual(payload["max_output_tokens"], 2000)
+        self.assertNotIn("temperature", payload)
+        self.assertEqual(payload["reasoning"], {"effort": "none"})
+        self.assertFalse(payload["stream"])
+
+    def test_chat_with_web_search_uses_responses_endpoint(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["url"] = request.full_url
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(body=responses_body("Ответ"))
+
+        llm = make_llm()
+        with patch("app.cloud_llm.urllib.request.urlopen", side_effect=fake_urlopen):
+            text = llm.chat(
+                [{"role": "user", "content": "привет"}],
+                system="правила",
+                web_search=True,
+            )
+
+        self.assertEqual(text, "Ответ")
+        self.assertEqual(captured["url"], "https://api.proxyapi.ru/v1/responses")
+        payload = captured["payload"]
+        self.assertEqual(payload["instructions"], "правила")
+        self.assertEqual(payload["tools"], [{"type": "web_search"}])
+        self.assertEqual(payload["input"], [{"role": "user", "content": "привет"}])
+
+    def test_answer_with_web_search_adds_prompt_suffix(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(body=responses_body("Ответ"))
+
+        llm = make_llm()
+        with patch("app.cloud_llm.urllib.request.urlopen", side_effect=fake_urlopen):
+            text = llm.answer("кто такой никс", web_search=True)
+
+        self.assertEqual(text, "Ответ")
+        instructions = captured["payload"]["instructions"]
+        self.assertIn("инструмент поиска", instructions)
+
+    def test_web_search_does_not_use_fallback_models(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://api.proxyapi.ru/v1/responses",
+            500,
+            "Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(b"boom"),
+        )
+        llm = make_llm(retries=0)
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            side_effect=error,
+        ) as urlopen:
+            with self.assertRaises(LLMError):
+                llm.chat([{"role": "user", "content": "привет"}], web_search=True)
+
+        self.assertEqual(urlopen.call_count, 1)
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["model"], llm.model)
+
+    def test_responses_stream_reads_text_deltas(self) -> None:
+        llm = make_llm(retries=0)
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(responses_sse("При", "вет")),
+        ):
+            text = "".join(
+                llm.chat_stream(
+                    [{"role": "user", "content": "привет"}],
+                    web_search=True,
+                )
+            )
+
+        self.assertEqual(text, "Привет")
+
+    def test_responses_stream_buffers_and_cleans_citations(self) -> None:
+        llm = make_llm(retries=0)
+        lines = responses_sse(
+            "Ответ. ([community.creative-assembly.com](",
+            "https://example.com/forum?source=openai))",
+        )
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            chunks = list(
+                llm.chat_stream(
+                    [{"role": "user", "content": "привет"}],
+                    web_search=True,
+                )
+            )
+
+        self.assertEqual(chunks, ["Ответ."])
+
+    def test_responses_stream_without_search_still_streams_deltas(self) -> None:
+        llm = make_llm(retries=0)
+        lines = responses_sse("При", "вет", search=False)
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            chunks = list(
+                llm.chat_stream(
+                    [{"role": "user", "content": "привет"}],
+                    web_search=True,
+                )
+            )
+
+        self.assertEqual(chunks, ["При", "вет"])
+
+    def test_responses_stream_failed_event_is_an_error(self) -> None:
+        lines = [
+            (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "response.failed",
+                        "response": {"error": {"message": "поиск недоступен"}},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            ).encode("utf-8"),
+        ]
+        llm = make_llm(retries=0)
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            with self.assertRaises(LLMError) as ctx:
+                list(
+                    llm.chat_stream(
+                        [{"role": "user", "content": "привет"}],
+                        web_search=True,
+                    )
+                )
+
+        self.assertIn("поиск недоступен", str(ctx.exception))
 
 
 if __name__ == "__main__":
