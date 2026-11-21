@@ -9,6 +9,18 @@ from typing import Any
 from unittest.mock import patch
 
 from app.actions import CommandResult
+from app.addressee import (
+    ADDRESSED,
+    BACKGROUND,
+    CLOSING,
+    AddresseeDecision,
+)
+from app.addressee import (
+    MODE_ACTIVE as ADDRESSEE_ACTIVE,
+)
+from app.addressee import (
+    MODE_SHADOW as ADDRESSEE_SHADOW,
+)
 from app.intent_classifier import (
     ANSWER,
     DIALOG,
@@ -45,16 +57,6 @@ class FakeRouter:
         return self.plan_result
 
 
-class FakeBrain:
-    def __init__(self, answer: str = "ответ агента") -> None:
-        self.answer = answer
-        self.asked: list[str] = []
-
-    def ask(self, text: str) -> str:
-        self.asked.append(text)
-        return self.answer
-
-
 class FakeLocalPlanner:
     def __init__(self, plan: LocalPlan | None = None, error: Exception | None = None) -> None:
         self.plan_result = plan
@@ -66,6 +68,28 @@ class FakeLocalPlanner:
         if self.error is not None:
             raise self.error
         return self.plan_result
+
+
+class FakeVision:
+    def __init__(self, answer: str = "На экране открыт браузер") -> None:
+        self.enabled = True
+        self.answer = answer
+        self.error: Exception | None = None
+        self.seen: list[str] = []
+
+    def match(self, text: str) -> tuple[bool, str]:
+        if "экран" in text:
+            return True, "что за ошибка"
+        return False, ""
+
+    def available(self) -> bool:
+        return True
+
+    def describe(self, request: str) -> str:
+        self.seen.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.answer
 
 
 class FakeTTS:
@@ -158,6 +182,46 @@ class FakeIntent:
         return self.blocks_lookup(decision)
 
 
+class FakeAddressee:
+    def __init__(
+        self,
+        kind: str = ADDRESSED,
+        mode: str = ADDRESSEE_ACTIVE,
+        *,
+        weak: bool = False,
+    ) -> None:
+        self.kind = kind
+        self.mode = mode
+        self.enabled = True
+        self.weak = weak
+        self.seen: list[tuple[str, bool, str]] = []
+
+    def classify(
+        self,
+        text: str,
+        *,
+        first_turn: bool = False,
+        last_question: str = "",
+    ) -> AddresseeDecision:
+        self.seen.append((text, first_turn, last_question))
+        return AddresseeDecision(
+            self.kind,
+            confidence=0.9,
+            raw=self.kind,
+            source=SOURCE_MODEL,
+            weak=self.weak,
+        )
+
+    def observe(
+        self,
+        text: str,
+        *,
+        first_turn: bool = False,
+        last_question: str = "",
+    ) -> None:
+        self.classify(text, first_turn=first_turn, last_question=last_question)
+
+
 class TrayStatusTest(unittest.TestCase):
     @staticmethod
     def make(tray: Any) -> Assistant:
@@ -185,15 +249,14 @@ class TrayStatusTest(unittest.TestCase):
         self.assertEqual(status["tray"], tray_status)
 
 
-class AgentTriggerRoutingTest(unittest.TestCase):
+class CommandRoutingTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
+        assistant.vision = FakeVision()
         assistant.tts = FakeTTS()
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
         assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
@@ -202,36 +265,46 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant.set_state = lambda state: assistant.states.append(state)
         return assistant
 
-    def test_unknown_command_does_not_call_agent(self) -> None:
+    def test_unknown_command_falls_back(self) -> None:
         assistant = self.make()
         with patch("app.main.beep") as beep:
             message = assistant.run_text("сделай что-нибудь странное")
         self.assertEqual(message, "Не понял команду")
-        self.assertEqual(assistant.brain.asked, [])
         self.assertEqual(assistant.router.seen, ["сделай что нибудь странное"])
         beep.assert_called_once_with(320, 120)
 
-    def test_explicit_agent_call(self) -> None:
-        assistant = self.make()
-        message = assistant.run_text("Спроси агента, какая погода?")
-        self.assertEqual(message, "ответ агента")
-        self.assertEqual(assistant.brain.asked, ["какая погода"])
-        self.assertEqual(assistant.router.seen, [])
-
-    def test_agent_trigger_without_request(self) -> None:
-        assistant = self.make()
-        with patch("app.main.beep") as beep:
-            message = assistant.run_text("агент")
-        self.assertEqual(message, "Что спросить у агента?")
-        self.assertEqual(assistant.brain.asked, [])
-        beep.assert_not_called()
-
-    def test_router_command_with_word_agent_is_not_trigger(self) -> None:
+    def test_router_command_with_word_agent_is_not_special(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
         message = assistant.run_text("включи фильм агент 007")
         self.assertEqual(message, "Открываю YouTube")
-        self.assertEqual(assistant.brain.asked, [])
         self.assertEqual(assistant.router.seen, ["включи фильм агент 007"])
+
+    def test_vision_command_bypasses_router(self) -> None:
+        assistant = self.make()
+        assistant.tts = FakeTTS(enabled=True)
+        message = assistant.run_text("посмотри на экран, что за ошибка")
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["что за ошибка"])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.tts.said, ["На экране открыт браузер"])
+
+    def test_vision_error_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision.error = RuntimeError("нет доступа")
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("посмотри на экран")
+        self.assertEqual(message, "Не удалось посмотреть на экран")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.tts.phrases, ["error"])
+
+    def test_vision_disabled_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision.enabled = False
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("что на экране")
+        self.assertEqual(message, "Зрение выключено")
+        beep.assert_called_once_with(320, 120)
 
     def test_canonicalizes_text_before_routing(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю Google"))
@@ -271,11 +344,6 @@ class AgentTriggerRoutingTest(unittest.TestCase):
             message = assistant.run_text("вруби музыку")
         self.assertEqual(message, "Не понял команду")
         beep.assert_called_once_with(320, 120)
-
-    def test_agent_trigger_skips_local_planner(self) -> None:
-        assistant = self.make()
-        assistant.run_text("спроси агента, какая погода")
-        self.assertEqual(assistant.planner.seen, [])
 
     def test_question_uses_qa_before_local_planner(self) -> None:
         assistant = self.make()
@@ -460,10 +528,8 @@ class CommandPipelineTest(unittest.TestCase):
     ) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = router or FakeRouter()
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.tts = FakeTTS(enabled=True)
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
 
@@ -681,22 +747,6 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(weather.cities, [])
         self.assertEqual(browser.calls, [])
         beep.assert_not_called()
-
-    def test_agent_trigger_bypasses_qa(self) -> None:
-        llm = FakeLLM()
-        search = FakeSearch()
-        weather = FakeWeather()
-        assistant = self.make(llm=llm, search=search, weather=weather)
-
-        message = assistant.run_text("спроси агента, какая погода")
-
-        self.assertEqual(message, "ответ агента")
-        self.assertEqual(assistant.brain.asked, ["какая погода"])
-        self.assertEqual(assistant.tts.phrases, ["agent"])
-        self.assertEqual(assistant.tts.said, ["ответ агента"])
-        self.assertEqual(llm.calls, [])
-        self.assertEqual(search.calls, [])
-        self.assertEqual(weather.cities, [])
 
     def test_unexpected_error_is_caught(self) -> None:
         assistant = self.make(llm=FakeLLM(error=RuntimeError("boom")))
@@ -1108,11 +1158,9 @@ class DialogModeTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
         assistant.tts = FakeTTS()
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
         assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
@@ -1120,6 +1168,7 @@ class DialogModeTest(unittest.TestCase):
         )
         assistant.set_state = lambda state: assistant.states.append(state)
         assistant.dialog = FakeDialog()
+        assistant.cfg = {"dialog": {"auto_start": "off"}}
         assistant._dialog_active = False
         assistant._dialog_last = 0.0
         assistant._dialog_errors = 0
@@ -1134,6 +1183,68 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.router.seen, [])
         self.assertIn(message, assistant.tts.said)
         self.assertEqual(assistant.dialog.started, 1)
+
+    def test_auto_start_always_enters_dialog_on_wake_speech(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "always"
+
+        message = assistant._process("как дела", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 1)
+        self.assertEqual(assistant.dialog.replied, ["как дела"])
+        self.assertEqual(message, "ответ диалога")
+        self.assertNotIn("Слушаю. О чём поговорим?", assistant.tts.said)
+
+    def test_auto_start_always_keeps_command_and_dialog(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.cfg["dialog"]["auto_start"] = "always"
+
+        message = assistant._process("открой ютуб", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.router.seen, ["открой ютуб"])
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_auto_start_conversation_does_not_enter_on_command(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.cfg["dialog"]["auto_start"] = "conversation"
+
+        message = assistant._process("открой ютуб", voiced=True, wake=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.dialog.started, 0)
+
+    def test_auto_start_off_does_not_enter_dialog(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "off"
+
+        assistant._process("как дела", voiced=True, wake=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 0)
+
+    def test_entry_phrase_still_greets_with_auto_start(self) -> None:
+        assistant = self.make()
+        assistant.cfg["dialog"]["auto_start"] = "always"
+        with patch("app.main.beep"):
+            message = assistant._process("давай поговорим", voiced=True, wake=True)
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(message, "Слушаю. О чём поговорим?")
+        self.assertIn(message, assistant.tts.said)
+
+    def test_start_dialog_without_greeting(self) -> None:
+        assistant = self.make()
+
+        message = assistant._start_dialog(greet=False)
+
+        self.assertEqual(message, "")
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.started, 1)
+        self.assertEqual(assistant.tts.said, [])
 
     def test_exit_phrase_disables_dialog(self) -> None:
         assistant = self.make()
@@ -1161,6 +1272,133 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(message, "Открываю YouTube")
         self.assertEqual(assistant.dialog.replied, [])
         self.assertTrue(assistant._dialog_active)
+
+    def test_background_voice_utterance_is_ignored(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(BACKGROUND)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 0
+        before = assistant._dialog_last
+
+        message = assistant._process("реклама про скидки", voiced=True)
+
+        self.assertEqual(message, "")
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant._dialog_ignored, 1)
+        self.assertGreater(assistant._dialog_last, before)
+
+    def test_weak_addressed_after_background_is_skipped(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED, weak=True)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 2
+        assistant._dialog_turns = 2
+        before = assistant._dialog_last
+
+        message = assistant._process("ну да, наверное", voiced=True)
+
+        self.assertEqual(message, "")
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant._dialog_ignored, 3)
+        self.assertGreater(assistant._dialog_last, before)
+
+    def test_weak_addressed_without_background_answers(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED, weak=True)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 2
+
+        message = assistant._process("ну да, наверное", voiced=True)
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["ну да наверное"])
+        self.assertEqual(assistant._dialog_ignored, 0)
+
+    def test_confident_addressed_resets_background_streak(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 5
+        assistant._dialog_ignored = 2
+        assistant._dialog_turns = 2
+        before = assistant._dialog_last
+
+        assistant._process("расскажи, как прошёл день", voiced=True)
+
+        self.assertEqual(assistant._dialog_ignored, 0)
+        self.assertGreater(assistant._dialog_last, before)
+
+    def test_shadow_mode_still_answers_background(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(BACKGROUND, mode=ADDRESSEE_SHADOW)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        message = assistant._process("реклама про скидки", voiced=True)
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["реклама про скидки"])
+
+    def test_closing_voice_utterance_stops_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(CLOSING)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        message = assistant._process("ну все спасибо", voiced=True)
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(message, "Хорошо, закончили.")
+        self.assertEqual(assistant.dialog.stopped, 1)
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_background_does_not_close_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant.mic = None
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 1
+        assistant._dialog_ignored = 5
+        assistant._dialog_turns = 5
+
+        assistant._dialog_step()
+
+        self.assertTrue(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.stopped, 0)
+
+    def test_idle_silence_closes_dialog(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant.mic = None
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic() - 61
+        assistant._dialog_ignored = 0
+        assistant._dialog_turns = 1
+
+        assistant._dialog_step()
+
+        self.assertFalse(assistant._dialog_active)
+        self.assertEqual(assistant.dialog.stopped, 1)
+
+    def test_gate_receives_dialog_turn_number(self) -> None:
+        assistant = self.make()
+        assistant.addressee = FakeAddressee(ADDRESSED)
+        assistant._dialog_active = True
+        assistant._dialog_last = time.monotonic()
+        assistant._dialog_turns = 0
+
+        assistant._process("раз", voiced=True)
+        assistant._process("два", voiced=True)
+
+        self.assertEqual([item[1] for item in assistant.addressee.seen], [True, False])
 
     def test_weather_inside_dialog_uses_qa(self) -> None:
         assistant = self.make()
@@ -1239,7 +1477,6 @@ class DialogModeTest(unittest.TestCase):
         assistant = self.make()
         assistant.mic = None
         assistant._hotkey_listener = None
-        assistant.server = None
         assistant.browser = SimpleNamespace(stop=lambda: None)
         assistant.tray = None
         assistant._cleanup()

@@ -7,7 +7,6 @@ from app.text import (
     canonicalize,
     fuzzy_contains,
     normalize,
-    split_agent_trigger,
     strip_wake_word,
     translit,
 )
@@ -123,34 +122,6 @@ class TextTest(unittest.TestCase):
         self.assertEqual(
             strip_wake_word("включи хэллоуин", aliases),
             "включи хэллоуин",
-        )
-
-    def test_split_agent_trigger_at_start(self) -> None:
-        triggers = ["спроси агента", "передай агенту", "агент"]
-        self.assertEqual(
-            split_agent_trigger("Спроси агента, какая погода?", triggers),
-            (True, "какая погода"),
-        )
-        self.assertEqual(
-            split_agent_trigger("передай агенту найди билеты", triggers),
-            (True, "найди билеты"),
-        )
-        self.assertEqual(split_agent_trigger("агент", triggers), (True, ""))
-
-    def test_split_agent_trigger_only_at_start(self) -> None:
-        self.assertEqual(
-            split_agent_trigger("включи фильм агент 007", ["агент"]),
-            (False, "включи фильм агент 007"),
-        )
-        self.assertEqual(
-            split_agent_trigger("агентство тайн", ["агент"]),
-            (False, "агентство тайн"),
-        )
-
-    def test_split_agent_trigger_without_triggers(self) -> None:
-        self.assertEqual(
-            split_agent_trigger("открой ютуб", []),
-            (False, "открой ютуб"),
         )
 
     def test_canonicalizes_soundcloud(self) -> None:

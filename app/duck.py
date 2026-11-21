@@ -86,7 +86,7 @@ class AppVolumeDucker(AbstractContextManager["AppVolumeDucker"]):
         self.duck()
         return self
 
-    def __exit__(self, *exc_info: Any) -> bool:
+    def __exit__(self, *_exc_info: Any) -> bool:
         self.restore()
         return False
 

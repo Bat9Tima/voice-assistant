@@ -8,7 +8,6 @@ import wave
 from pathlib import Path
 
 from .audio import Microphone, list_input_devices, rms
-from .brain import OpenCodeBrain
 from .cloud_llm import CloudLLM
 from .config import (
     GIGAAM_DIR,
@@ -62,14 +61,6 @@ def _check_whisper() -> bool:
 def _check_cdp(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.5) as r:
-            return r.status == 200
-    except Exception:
-        return False
-
-
-def _check_control(host: str, port: int) -> bool:
-    try:
-        with urllib.request.urlopen(f"http://{host}:{port}/ping", timeout=1.5) as r:
             return r.status == 200
     except Exception:
         return False
@@ -176,11 +167,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    print("\n[OpenCode]")
-    brain = OpenCodeBrain(cfg)
-    print(f"  CLI: {brain.cli or 'НЕ найден'}")
-    print(f"  Агент: {brain.agent}")
-
     print("\n[Облачная LLM]")
     cloud = CloudLLM(cfg)
     print(f"  URL: {cloud.base_url}")
@@ -188,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Запасные: {', '.join(cloud.fallback_models) or 'нет'}")
     print(f"  Ключ: {'задан' if cloud.api_key else 'НЕ задан'}")
     print(f"  Состояние: {'готово' if cloud.available() else 'выключено или нет ключа'}")
+
+    print("\n[Зрение]")
+    vision_cfg = cfg.get("vision") or {}
+    print(f"  Состояние: {'включено' if vision_cfg.get('enabled') else 'выключено'}")
+    print(f"  Модель: {vision_cfg.get('model') or 'НЕ задана'}")
+    print(f"  Команда: {', '.join(vision_cfg.get('triggers') or []) or 'нет'}")
 
     print("\n[Локальный планировщик]")
     planner_cfg = cfg.get("local_planner") or {}
@@ -200,14 +192,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  URL: {planner.base_url}")
         print(f"  Модель: {planner.model or 'НЕ задана'}")
         print("  Сервер: " + ("доступен" if planner.available() else "НЕ доступен"))
-
-    print("\n[HTTP-мост]")
-    control = cfg["control"]
-    running = _check_control(control["host"], int(control["port"]))
-    print(
-        f"  http://{control['host']}:{control['port']}: "
-        + ("работает" if running else "не запущен (стартует вместе с ассистентом)")
-    )
 
     if args.record or args.file:
         if args.file:

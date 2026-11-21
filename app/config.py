@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -48,6 +51,13 @@ DEFAULTS: dict[str, Any] = {
         "хей луна парк",
         "эй луна парк",
     ],
+    # Перебивание голосом во время озвучки: «стоп», «хватит», «тише».
+    # Пустой список стоп-слов — встроенный набор из app/wake.py.
+    "barge_in": {
+        "enabled": True,
+        "min_level": 0.002,
+        "stop_words": [],
+    },
     "language": "ru",
     "hotkey": "ctrl+alt+space",
     "notifications": True,
@@ -69,6 +79,8 @@ DEFAULTS: dict[str, Any] = {
         "duck_while_listening": True,
         "duck_level": 0.15,
         "duck_processes": ["chrome.exe"],
+        # Сохранять последнюю команду в state/last-command.wav для отладки.
+        "save_last_command": False,
     },
     "stt": {
         "engine": "gigaam",
@@ -94,24 +106,34 @@ DEFAULTS: dict[str, Any] = {
         "port": 9222,
         "profile_dir": r"%LOCALAPPDATA%\VoiceAssistant\chrome-profile",
         "start_url": "https://www.google.com",
-        "autoplay": True,
     },
-    "control": {"host": "127.0.0.1", "port": 8765},
     # Короткий контекст продолжений: «ещё один», «вторую», «тише».
     # TTL ограничивает, как долго старая команда может влиять на новую.
     "context": {"ttl_sec": 180},
-    "opencode": {
-        "enabled": True,
-        "agent": "voice",
-        # Явная модель: без неё CLI может выбрать модель, недоступную
-        # в регионе (403 RegionError). Пустая строка — модель по умолчанию.
-        "model": "opencode/deepseek-v4.1-flash-free",
-        # Агент вызывается только явно: «спроси агента …». Остальные
-        # незнакомые фразы получают быстрый ответ «Не понял команду».
-        "triggers": ["спроси агента", "спроси у агента", "передай агенту", "агент"],
-        "cli": "",
-        "timeout_sec": 180,
-        "standalone": False,
+    # Быстрое переключение облачных моделей: имя пресета из llm_presets.
+    # Пресет накладывается последним и перекрывает model/model_params
+    # секций, поэтому менять модель нужно только здесь.
+    "llm": {"preset": "gpt"},
+    "llm_presets": {
+        "gpt": {
+            "cloud_llm": {
+                "model": "openai/gpt-6-luna",
+                "model_params": {
+                    "openai/gpt-6-luna": {
+                        "temperature": None,
+                        "reasoning_effort": "none",
+                    }
+                },
+            },
+            "dialog": {"addressee": {"model": "openai/gpt-6-luna-decisions"}},
+            "intent": {"model": "openai/gpt-6-luna-decisions"},
+        },
+        "grok": {
+            "cloud_llm": {"model": "x-ai/grok-4.3"},
+            # Эндпоинт решений пока проверен только с этой моделью.
+            "dialog": {"addressee": {"model": "openai/gpt-6-luna-decisions"}},
+            "intent": {"model": "openai/gpt-6-luna-decisions"},
+        },
     },
     # Ответы на вопросы, новости и рассуждения — через облачную модель
     # ProxyAPI. Ключ можно не дублировать: при пустом api_key берётся
@@ -136,6 +158,31 @@ DEFAULTS: dict[str, Any] = {
         "temperature": 0.2,
         "timeout_sec": 90,
         "retries": 2,
+    },
+    # Зрение по требованию: один снимок основного экрана по явной команде.
+    # Модель отдельная: переключение чата на Grok не должно ломать зрение.
+    "vision": {
+        "enabled": True,
+        "model": "openai/gpt-6-luna",
+        "max_width": 1280,
+        "jpeg_quality": 75,
+        "max_tokens": 2000,
+        "timeout_sec": 60,
+        "prompt": (
+            "Опиши, что видно на экране, в двух-трёх предложениях. "
+            "Если на экране текст, код или ошибка — назови главное. "
+            "Если экран чёрный или пустой, так и скажи."
+        ),
+        "triggers": [
+            "посмотри на экран",
+            "посмотри на мой экран",
+            "посмотри что на экране",
+            "глянь на экран",
+            "что на экране",
+            "что видно на экране",
+            "что ты видишь на экране",
+            "что у меня на экране",
+        ],
     },
     # Аварийный локальный планировщик свободных команд (Ollama/LM Studio).
     # По умолчанию выключен и никогда не участвует в ответах на вопросы.
@@ -191,6 +238,9 @@ DEFAULTS: dict[str, Any] = {
     # Завершённые сессии пишутся в SQLite db_path.
     "dialog": {
         "enabled": True,
+        # off — вход только по entry-фразам; conversation — после wake,
+        # если команды не было; always — любой wake открывает разговор.
+        "auto_start": "off",
         "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
         "exit_phrases": [
             "хватит",
@@ -199,6 +249,26 @@ DEFAULTS: dict[str, Any] = {
             "заверши разговор",
             "до свидания",
         ],
+        # Слой адресата: в разговоре решает, говорит ли пользователь с
+        # Луной или звучит фон (телевизор, другой человек, телефон).
+        # off — выключен, shadow — только пишет решение в лог, active —
+        # фон пропускается, а closing завершает разговор. При сбое сети
+        # реплика считается адресованной.
+        "addressee": {
+            "enabled": True,
+            "mode": "shadow",
+            "base_url": "",
+            "api_key": "",
+            "model": "openai/gpt-6-luna-decisions",
+            "threshold": 0.6,
+            "background_threshold": 0.5,
+            "timeout_sec": 2.0,
+            "first_turn_always_addressed": True,
+            # Имена людей, с которыми пользователь говорит в комнате.
+            # Имя рядом со вторым лицом («Максим, ты...») или повторённое
+            # имя сразу считаются фоном.
+            "other_names": [],
+        },
         "idle_timeout_sec": 60,
         "max_utterance_sec": 60,
         "no_speech_timeout_sec": 10,
@@ -369,6 +439,27 @@ def _expand_path(value: str) -> str:
     return os.path.expandvars(os.path.expanduser(str(value)))
 
 
+def _apply_llm_preset(cfg: dict[str, Any]) -> None:
+    """Накладывает выбранный пресет моделей поверх остального конфига."""
+    name = str((cfg.get("llm") or {}).get("preset") or "").strip()
+    if not name:
+        return
+    presets = cfg.get("llm_presets") or {}
+    preset = presets.get(name)
+    if not isinstance(preset, dict):
+        log.warning(
+            "Неизвестный пресет моделей: %s (доступны: %s)",
+            name,
+            ", ".join(sorted(presets)) or "нет",
+        )
+        return
+    for section, values in preset.items():
+        if isinstance(values, dict) and isinstance(cfg.get(section), dict):
+            cfg[section] = _deep_merge(cfg[section], values)
+        else:
+            cfg[section] = values
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     """Читает config.json, дополняет значениями по умолчанию."""
     cfg_path = path or CONFIG_PATH
@@ -376,6 +467,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     if cfg_path.exists():
         data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     cfg = _deep_merge(DEFAULTS, data)
+    _apply_llm_preset(cfg)
 
     cfg["browser"]["profile_dir"] = _expand_path(cfg["browser"]["profile_dir"])
     cfg["browser"]["chrome_path"] = _expand_path(cfg["browser"]["chrome_path"])

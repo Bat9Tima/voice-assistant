@@ -69,17 +69,50 @@
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "port": 9222,
     "profile_dir": "%LOCALAPPDATA%\\VoiceAssistant\\chrome-profile",
-    "start_url": "https://www.google.com",
-    "autoplay": true
-  },
-
-  "control": {
-    "host": "127.0.0.1",
-    "port": 8765
+    "start_url": "https://www.google.com"
   },
 
   "context": {
     "ttl_sec": 180
+  },
+
+  "llm": {
+    "preset": "gpt"
+  },
+
+  "llm_presets": {
+    "gpt": {
+      "cloud_llm": {
+        "model": "openai/gpt-6-luna",
+        "model_params": {
+          "openai/gpt-6-luna": {
+            "temperature": null,
+            "reasoning_effort": "none"
+          }
+        }
+      },
+      "dialog": {
+        "addressee": {
+          "model": "openai/gpt-6-luna-decisions"
+        }
+      },
+      "intent": {
+        "model": "openai/gpt-6-luna-decisions"
+      }
+    },
+    "grok": {
+      "cloud_llm": {
+        "model": "x-ai/grok-4.3"
+      },
+      "dialog": {
+        "addressee": {
+          "model": "openai/gpt-6-luna-decisions"
+        }
+      },
+      "intent": {
+        "model": "openai/gpt-6-luna-decisions"
+      }
+    }
   },
 
   "intent": {
@@ -91,16 +124,6 @@
     "threshold": 0.6,
     "timeout_sec": 4.0,
     "answer_ttl_sec": 120
-  },
-
-  "opencode": {
-    "enabled": true,
-    "agent": "voice",
-    "model": "opencode/deepseek-v4.1-flash-free",
-    "triggers": ["спроси агента", "спроси у агента", "передай агенту", "агент"],
-    "cli": "",
-    "timeout_sec": 180,
-    "standalone": false
   },
 
   "cloud_llm": {
@@ -122,6 +145,26 @@
     "retries": 2
   },
 
+  "vision": {
+    "enabled": true,
+    "model": "openai/gpt-6-luna",
+    "max_width": 1280,
+    "jpeg_quality": 75,
+    "max_tokens": 2000,
+    "timeout_sec": 60,
+    "prompt": "Опиши, что видно на экране, в двух-трёх предложениях. Если на экране текст, код или ошибка — назови главное. Если экран чёрный или пустой, так и скажи.",
+    "triggers": [
+      "посмотри на экран",
+      "посмотри на мой экран",
+      "посмотри что на экране",
+      "глянь на экран",
+      "что на экране",
+      "что видно на экране",
+      "что ты видишь на экране",
+      "что у меня на экране"
+    ]
+  },
+
   "local_planner": {
     "enabled": false,
     "base_url": "http://127.0.0.1:11434/v1",
@@ -133,10 +176,70 @@
     "keep_alive": "30m"
   },
 
+  "qa": {
+    "enabled": true,
+    "weather": {
+      "city": "Новосибирск",
+      "forecast_days": 3,
+      "timeout_sec": 10
+    },
+    "search": {
+      "enabled": true,
+      "api_key": "",
+      "max_results": 5,
+      "search_depth": "basic",
+      "topic": "general",
+      "news_days": 7,
+      "news_domains": [
+        "rbc.ru", "lenta.ru", "interfax.ru", "ria.ru", "tass.ru",
+        "kommersant.ru", "vedomosti.ru"
+      ],
+      "timeout_sec": 15
+    },
+    "answer": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "timeout_sec": 45,
+      "context_ttl_sec": 180,
+      "search_fallback": true
+    }
+  },
+
+  "tts": {
+    "enabled": false,
+    "base_url": "https://api.proxyapi.ru/v1/audio/speech",
+    "api_key": "",
+    "model": "fish-audio/drama-3",
+    "voice": "",
+    "phrases_dir": "",
+    "cache_dir": "",
+    "speak_answers": true,
+    "max_chars": 900,
+    "volume": 1.0,
+    "speed": 1.0,
+    "workers": 3,
+    "chunk_wait_sec": 30,
+    "prebuffer_sec": 0,
+    "timeout_sec": 60
+  },
+
   "dialog": {
     "enabled": true,
+    "auto_start": "off",
     "entry_phrases": ["давай поговорим", "давай поболтаем", "поговорим", "поболтаем"],
     "exit_phrases": ["хватит", "закончим", "закончим разговор", "заверши разговор", "до свидания"],
+    "addressee": {
+      "enabled": true,
+      "mode": "shadow",
+      "base_url": "",
+      "api_key": "",
+      "model": "openai/gpt-6-luna-decisions",
+      "threshold": 0.6,
+      "background_threshold": 0.5,
+      "timeout_sec": 2.0,
+      "first_turn_always_addressed": true,
+      "other_names": []
+    },
     "idle_timeout_sec": 60,
     "max_utterance_sec": 60,
     "no_speech_timeout_sec": 10,
@@ -207,6 +310,12 @@
     "recent_item_chars": 320,
     "facts_limit": 6,
     "facts_max_chars": 900,
+    "facts_collection": "facts",
+    "facts_top_k": 4,
+    "facts_min_score": 0.42,
+    "temporary_ttl_days": 1,
+    "unfinished_ttl_days": 14,
+    "unfinished_limit": 5,
     "timeout_sec": 10,
     "index_version": 2
   }

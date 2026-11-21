@@ -4,7 +4,6 @@ import argparse
 import logging
 import logging.handlers
 import math
-import queue
 import re
 import sys
 import threading
@@ -13,8 +12,23 @@ from collections import deque
 from typing import Any
 
 from .actions import ActionRouter
+from .addressee import (
+    ADDRESSED,
+    BACKGROUND,
+    CLOSING,
+    AddresseeDecision,
+    AddresseeGate,
+)
+from .addressee import (
+    MODE_ACTIVE as ADDRESSEE_ACTIVE,
+)
+from .addressee import (
+    MODE_OFF as ADDRESSEE_OFF,
+)
+from .addressee import (
+    MODE_SHADOW as ADDRESSEE_SHADOW,
+)
 from .audio import Microphone, levels, rms, save_wav_pcm
-from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .character import CharacterMemory
 from .cloud_llm import CloudLLM
@@ -27,16 +41,16 @@ from .memory_manager import MemoryManager
 from .persona import DEFAULT_MAX_FACTS, PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
-from .server import ControlServer
 from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
 from .style_observer import StyleObserver
 from .summarizer import Summarizer
-from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
+from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
+from .vision import ScreenVision
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
@@ -125,7 +139,6 @@ class Assistant:
         audio_cfg = cfg["audio"]
         self.browser = BrowserController(cfg)
         self.router = ActionRouter(cfg, self.browser)
-        self.brain = OpenCodeBrain(cfg)
         self.planner = None
         if (cfg.get("local_planner") or {}).get("enabled"):
             # Модуль тянет реестр инструментов, поэтому импортируем его
@@ -135,7 +148,9 @@ class Assistant:
             self.planner = LocalPlanner(cfg)
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
+        self.vision = ScreenVision(cfg, self.llm)
         self.intent = IntentClassifier(cfg)
+        self.addressee = AddresseeGate(cfg)
         self.tts = TTSService(cfg)
         self.dialog: DialogService | None = None
         self.session_store: SessionStore | None = None
@@ -209,7 +224,8 @@ class Assistant:
         self._dialog_active = False
         self._dialog_last = 0.0
         self._dialog_errors = 0
-        self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
             samplerate=int(audio_cfg["sample_rate"]),
@@ -232,7 +248,6 @@ class Assistant:
         self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
         self.barge: BargeInDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
-        self.server: ControlServer | None = None
         self._hotkey_listener = None
         self._mutex = None
 
@@ -241,7 +256,6 @@ class Assistant:
         self._paused = False
         self._shutdown = threading.Event()
         self._force_listen = threading.Event()
-        self._command_queue: queue.Queue[str] = queue.Queue()
         self._noise_floor = 0.0
         self._last_wake = 0.0
         self._tts_was_speaking = False
@@ -352,14 +366,6 @@ class Assistant:
         if self.tray is not None:
             self.tray.start()
 
-        self.server = ControlServer(
-            self.cfg,
-            self.browser,
-            status_provider=self.status,
-            command_sink=self.submit_text,
-        )
-        self.server.start()
-
         try:
             self.mic.start()
             self._noise_floor = self.mic.measure_noise(1.0)
@@ -376,7 +382,7 @@ class Assistant:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("Микрофон недоступен")
-            self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша и HTTP-команды.")
+            self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша.")
             self.mic = None  # type: ignore[assignment]
 
         aliases = self.cfg.get("wake_aliases") or [self.cfg.get("wake_word", "хей луна")]
@@ -466,15 +472,6 @@ class Assistant:
                     if self.wake is not None:
                         self.wake.reset()
 
-                # Команда из API важнее текущей озвучки: не ждём её конца.
-                try:
-                    text = self._command_queue.get_nowait()
-                except queue.Empty:
-                    text = None
-                if text:
-                    self._run_text_command(text)
-                    continue
-
                 self._handle_speech()
                 continue
             if self._tts_was_speaking:
@@ -494,14 +491,6 @@ class Assistant:
                     self._stop_dialog("hotkey")
                     continue
                 self._listen_and_execute()
-                continue
-
-            try:
-                text = self._command_queue.get_nowait()
-            except queue.Empty:
-                text = None
-            if text:
-                self._run_text_command(text)
                 continue
 
             if self._dialog_active:
@@ -535,7 +524,8 @@ class Assistant:
         if dialog is None:
             self._dialog_active = False
             return
-        if time.monotonic() - self._dialog_last >= dialog.idle_timeout:
+        now = time.monotonic()
+        if now - self._dialog_last >= dialog.idle_timeout:
             self._stop_dialog("idle")
             return
         if getattr(self.tts, "busy", False):
@@ -543,22 +533,10 @@ class Assistant:
             time.sleep(0.05)
             return
         if self.mic is None:
-            # Диалог из текстовых команд: микрофона нет, ждём API или hotkey.
+            # Микрофона нет: диалог ждёт только горячую клавишу.
             time.sleep(0.1)
             return
         self._listen_and_execute(chime=False, dialog=True)
-
-    def _run_text_command(self, text: str) -> None:
-        """Новая команда начинает новый ответ, старые уведомления не нужны."""
-        self.clear_notifications()
-        try:
-            self._process(text)
-            if getattr(self, "_dialog_active", False):
-                self._dialog_last = time.monotonic()
-        finally:
-            if self.mic is not None:
-                self.mic.flush()
-            self._preroll.clear()
 
     def _handle_speech(self) -> None:
         """Слушает микрофон, пока ассистент говорит: «стоп» или wake-фраза."""
@@ -691,6 +669,8 @@ class Assistant:
     ) -> None:
         if self._paused or self.mic is None:
             return
+        # Горячая клавиша приходит без pre-roll, wake-слово — с ним.
+        from_wake = pre_roll is not None
         self.set_state("listening")
         # Новая команда: убираем результат предыдущей, не ждём, пока
         # системный центр уведомлений до неё доберётся. В разговоре
@@ -754,6 +734,8 @@ class Assistant:
                 log.info("Диалог: тишина, продолжаю слушать")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не услышал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -803,6 +785,8 @@ class Assistant:
                 log.info("Диалог: пустая реплика")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -816,6 +800,8 @@ class Assistant:
                 log.info("Диалог: после wake-фразы ничего не осталось")
                 self.set_state("idle")
                 return
+            if from_wake and self._start_dialog_after_wake():
+                return
             self.notify("Не разобрал команду")
             beep(320, 120)
             self.tts.phrase("repeat")
@@ -823,13 +809,10 @@ class Assistant:
             return
 
         log.info("Распознано: %s", text)
-        if dialog:
-            # Тишина в диалоге отсчитывается от последней реплики.
-            self._dialog_last = time.monotonic()
-        else:
+        if not dialog:
             self.notify(f"«{text}»", "Услышал")
         try:
-            self._process(text)
+            self._process(text, voiced=True, wake=from_wake)
         finally:
             if self.mic is not None:
                 self.mic.flush()
@@ -932,17 +915,11 @@ class Assistant:
         return b"".join(chunks[start_index:])
 
     # ------------------------------------------------------------------ process
-    def submit_text(self, text: str) -> None:
-        self._command_queue.put(text)
-        log.info("Текстовая команда из API: %s", text)
-
-    def _ack(self, text: str, route: Route | None = None) -> None:
+    def _ack(self, route: Route | None = None) -> None:
         """Короткая фраза-подводка, чтобы ответ начинался сразу."""
         if not self.tts.enabled:
             return
-        if split_agent_trigger(text, self.agent_triggers)[0]:
-            category = "agent"
-        elif route is not None and route.handled:
+        if route is not None and route.handled:
             if route.kind == "datetime":
                 # Ответ мгновенный: подводка только добавит паузу.
                 return
@@ -951,20 +928,63 @@ class Assistant:
             category = "ack"
         self.tts.phrase(category)
 
+    def _answer_vision(self, vision: ScreenVision, request: str) -> str:
+        """Один снимок экрана по явной команде, без слежения."""
+        ok = True
+        if not vision.enabled:
+            message = "Зрение выключено"
+            ok = False
+        elif not vision.available():
+            message = "Зрение недоступно: проверьте ключ и модель"
+            ok = False
+        else:
+            try:
+                message = vision.describe(request).strip() or "Не вижу, что на экране"
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Зрение: %s", exc)
+                message = "Не удалось посмотреть на экран"
+                ok = False
+        self.notify(message[:250])
+        if ok:
+            self.tts.say(message)
+        else:
+            beep(320, 120)
+            self.tts.phrase("error")
+        return message
+
     def _confirm(self, started: float) -> None:
         """«Готово» только если операция заняла заметное время."""
         if time.monotonic() - started >= 1.2:
             self.tts.phrase("done")
 
-    def _start_dialog(self) -> str:
-        """Включает непрерывный разговор и здоровается."""
+    def _auto_start_mode(self) -> str:
+        """Когда входить в разговор после wake: off, conversation, always."""
+        cfg = getattr(self, "cfg", None) or {}
+        dialog_cfg = cfg.get("dialog") or {}
+        mode = str(dialog_cfg.get("auto_start", "off")).strip().lower()
+        return mode if mode in {"conversation", "always"} else "off"
+
+    def _start_dialog_after_wake(self) -> bool:
+        """Входит в разговор, если wake прозвучал без команды."""
+        if self._auto_start_mode() not in {"conversation", "always"}:
+            return False
+        self._start_dialog()
+        return True
+
+    def _start_dialog(self, *, greet: bool = True) -> str:
+        """Включает непрерывный разговор. greet=False — без приветствия."""
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.start()
         self._dialog_active = True
         self._dialog_errors = 0
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         self._dialog_last = time.monotonic()
         self.set_state("idle")
+        if not greet:
+            log.info("Режим диалога включён")
+            return ""
         message = "Слушаю. О чём поговорим?"
         advisor = getattr(self, "intent", None)
         if advisor is not None:
@@ -976,9 +996,12 @@ class Assistant:
         return message
 
     def _stop_dialog(self, reason: str = "phrase") -> str:
-        """Выключает разговор. Причина: phrase, hotkey, idle, errors."""
+        """Выключает разговор. Причина: phrase, hotkey, idle, closing,
+        errors."""
         self._dialog_active = False
         self._dialog_errors = 0
+        self._dialog_ignored = 0
+        self._dialog_turns = 0
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
@@ -988,6 +1011,8 @@ class Assistant:
         self.set_state("idle")
         if reason == "idle":
             message = "Похоже, разговор закончился."
+        elif reason == "closing":
+            message = "Хорошо, закончили."
         elif reason == "errors":
             message = "Не получается ответить, выхожу из разговора."
         else:
@@ -1080,8 +1105,76 @@ class Assistant:
         advisor.observe(text, in_dialog=True)
         return route
 
-    def _process(self, text: str) -> str:
+    def _addressee_decision(self, text: str) -> AddresseeDecision:
+        """Кому адресована голосовая реплика в разговоре.
+
+        Без слоя или при сбое — ``addressed``: лучше ответить, чем
+        проигнорировать живого пользователя. В shadow решение только
+        пишется в лог и не меняет поведение. ``weak`` значит, что модель
+        сомневается: ответить можно, но разговор это не продлевает.
+        """
+        fallback = AddresseeDecision(ADDRESSED, confidence=1.0, raw=ADDRESSED)
+        gate = getattr(self, "addressee", None)
+        if gate is None or not getattr(gate, "enabled", False):
+            return fallback
+        if getattr(gate, "mode", ADDRESSEE_OFF) == ADDRESSEE_OFF:
+            return fallback
+        first_turn = int(getattr(self, "_dialog_turns", 0)) == 0
+        advisor = getattr(self, "intent", None)
+        question = advisor.state.question() if advisor is not None else ""
+        if getattr(gate, "mode", "") == ADDRESSEE_SHADOW:
+            # В shadow решение только пишется в лог и не должно
+            # задерживать ответ пользователю.
+            observer = getattr(gate, "observe", None)
+            if callable(observer):
+                observer(text, first_turn=first_turn, last_question=question)
+            self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
+            return fallback
+        try:
+            decision = gate.classify(text, first_turn=first_turn, last_question=question)
+        except Exception:  # noqa: BLE001
+            log.exception("Адресат: сбой, отвечаю как обычно")
+            return fallback
+        self._dialog_turns = int(getattr(self, "_dialog_turns", 0)) + 1
+        if getattr(gate, "mode", "") != ADDRESSEE_ACTIVE:
+            return fallback
+        return decision
+
+    def _process(self, text: str, *, voiced: bool = False, wake: bool = False) -> str:
         text = canonicalize(normalize(text))
+        if (
+            wake
+            and not getattr(self, "_dialog_active", False)
+            and self._auto_start_mode() == "always"
+        ):
+            dialog = getattr(self, "dialog", None)
+            if dialog is not None and not dialog.wants_entry(text) and not dialog.wants_exit(text):
+                # Wake-фраза с командой: выполняем её и остаёмся в разговоре.
+                self._start_dialog(greet=False)
+        if voiced and getattr(self, "_dialog_active", False):
+            decision = self._addressee_decision(text)
+            # Любая услышанная речь продлевает разговор: фон не должен
+            # закрывать диалог, а тишина — должна.
+            self._dialog_last = time.monotonic()
+            if decision.kind == BACKGROUND:
+                self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
+                log.info(
+                    "Диалог: реплика не Луне, пропускаю (подряд %s)",
+                    self._dialog_ignored,
+                )
+                return ""
+            if decision.kind == CLOSING:
+                return self._stop_dialog("closing")
+            if decision.weak and int(getattr(self, "_dialog_ignored", 0)) > 0:
+                # Слабое обращение после фона — скорее продолжение
+                # чужого разговора. Не отвечаем, но диалог не закрываем.
+                self._dialog_ignored = int(getattr(self, "_dialog_ignored", 0)) + 1
+                log.info(
+                    "Диалог: слабое обращение после фона, пропускаю (подряд %s)",
+                    self._dialog_ignored,
+                )
+                return ""
+            self._dialog_ignored = 0
         if getattr(self.tts, "busy", getattr(self.tts, "speaking", False)):
             log.info("Прерываю озвучку новой командой")
             stop = getattr(self.tts, "stop", None)
@@ -1098,34 +1191,29 @@ class Assistant:
                     return self._stop_dialog("phrase")
 
             qa = getattr(self, "qa", None)
+            vision = getattr(self, "vision", None)
+            vision_request: str | None = None
+            if vision is not None:
+                matched, request = vision.match(text)
+                if matched:
+                    vision_request = request
             # Разбираем фразу один раз: и для подводки, и для ответа.
-            route = qa.route(text) if qa is not None else None
-            if in_dialog:
+            # Команда зрения не должна уходить в Q&A как вопрос.
+            route = (
+                None if vision_request is not None else (qa.route(text) if qa is not None else None)
+            )
+            if in_dialog and vision_request is None:
                 route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
-            triggered, request = split_agent_trigger(text, self.agent_triggers)
-            if not in_dialog or route is not None or triggered:
-                self._ack(text, route)
+            if not in_dialog or route is not None or vision_request is not None:
+                self._ack(route)
             started = time.monotonic()
 
-            if triggered:
-                if not request:
-                    message = "Что спросить у агента?"
-                    self.notify(message)
-                    self.tts.phrase("clarify", phrase_id="clarify_1")
-                    return message
-                answer = self.brain.ask(request)
-                answer = (answer or "").strip()
-                if answer:
-                    self.notify(answer[:250])
-                    self.tts.say(answer)
-                else:
-                    self.notify("Готово")
-                    self.tts.phrase("done")
-                return answer
+            if vision_request is not None:
+                return self._answer_vision(vision, vision_request)
 
             result = self.router.handle(text)
             if result is not None:
@@ -1237,8 +1325,6 @@ class Assistant:
                 self._hotkey_listener.stop()
             except Exception:
                 pass
-        if self.server is not None:
-            self.server.stop()
         self.tts.shutdown()
         self.browser.stop()
         if self.tray is not None:
@@ -1247,7 +1333,7 @@ class Assistant:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Голосовой ассистент на базе OpenCode")
+    parser = argparse.ArgumentParser(description="Локальный голосовой ассистент")
     parser.add_argument("--no-tray", action="store_true", help="Без иконки в трее")
     parser.add_argument("--text", help="Выполнить текстовую команду и выйти")
     parser.add_argument("--config", help="Путь к config.json")

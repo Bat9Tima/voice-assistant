@@ -13,6 +13,7 @@ OpenAI-совместимый API ProxyAPI. Если основная модел
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -342,6 +343,58 @@ class CloudLLM:
         raise LLMError(f"модель не ответила: {detail}")
 
     # ------------------------------------------------------------------- HTTP
+    def answer_image(
+        self,
+        image: bytes,
+        prompt: str,
+        *,
+        mime: str = "image/jpeg",
+        model: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """Отвечает по изображению. Запасные текстовые модели не подставляются."""
+        if not image:
+            raise LLMError("пустое изображение")
+        if not self.enabled:
+            raise LLMError("облачная LLM выключена")
+        target = str(model or self.model or "").strip()
+        if not target:
+            raise LLMError("не задана модель для изображений")
+        if not self.api_key:
+            raise LLMError("не задан ключ cloud_llm.api_key")
+        text = (prompt or "").strip() or "Опиши изображение."
+        encoded = base64.b64encode(image).decode("ascii")
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                    },
+                ],
+            }
+        ]
+        last_error: LLMError | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return self._post(
+                    target,
+                    messages,  # type: ignore[arg-type]
+                    max_tokens=max_tokens or self.max_completion_tokens,
+                    temperature=self.temperature,
+                    timeout=timeout or self.timeout,
+                )
+            except LLMError as exc:
+                last_error = exc
+                if not exc.retryable or attempt >= self.retries:
+                    break
+                time.sleep(min(0.5 * (attempt + 1), 2.0))
+        assert last_error is not None
+        raise last_error
+
     def _payload(
         self,
         model: str,
