@@ -4,7 +4,13 @@ import unittest
 from unittest.mock import patch
 
 from app.cloud_llm import CloudLLM, LLMError
-from app.vision import DEFAULT_TRIGGERS, ScreenVision, VisionError, match_request
+from app.vision import (
+    DEFAULT_TRIGGERS,
+    ScreenVision,
+    VisionError,
+    match_followup,
+    match_request,
+)
 
 
 class MatchRequestTest(unittest.TestCase):
@@ -47,6 +53,38 @@ class MatchRequestTest(unittest.TestCase):
 
     def test_empty_triggers(self) -> None:
         self.assertEqual(match_request("посмотри на экран", []), (False, ""))
+
+
+class FollowupMatchTest(unittest.TestCase):
+    def test_examples(self) -> None:
+        for phrase in (
+            "где здесь кнопка",
+            "что тут написано",
+            "что написано",
+            "где кнопка",
+            "что это",
+            "что за ошибка",
+            "покажи где кнопка",
+            "прочитай что тут написано",
+            "объясни что здесь",
+            "тут что",
+            "а здесь ссылка",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(match_followup(phrase))
+
+    def test_general_questions_are_not_followups(self) -> None:
+        for phrase in (
+            "какая погода",
+            "что нового",
+            "включи видео на экране",
+            "открой это",
+            "нажми на кнопку",
+            "посмотри на экран",
+            "",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(match_followup(phrase))
 
 
 class FakeLLM:
@@ -97,6 +135,51 @@ class ScreenVisionTest(unittest.TestCase):
         vision.describe("что за ошибка")
         self.assertIn("что за ошибка", llm.calls[0]["prompt"])
         self.assertIn("по картинке", llm.calls[0]["prompt"])
+
+    def test_snapshot_then_pending_question(self) -> None:
+        vision, llm = self.make()
+        vision.snapshot()
+        self.assertTrue(vision.has_pending())
+        self.assertEqual(
+            vision.describe_pending("где здесь кнопка"),
+            "На экране открыт браузер",
+        )
+        call = llm.calls[0]
+        self.assertEqual(call["image"], b"jpeg-bytes")
+        self.assertIn("где здесь кнопка", call["prompt"])
+
+    def test_describe_keeps_frame_for_followup(self) -> None:
+        vision, llm = self.make()
+        vision.describe()
+        self.assertTrue(vision.has_pending())
+        vision.describe_pending("что тут написано")
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["image"], llm.calls[1]["image"])
+
+    def test_pending_question_without_snapshot(self) -> None:
+        vision, _ = self.make()
+        with self.assertRaises(VisionError):
+            vision.describe_pending("что тут")
+
+    def test_pending_expires(self) -> None:
+        vision, _ = self.make()
+        vision.snapshot()
+        vision._pending_at -= vision.followup_ttl + 1
+        self.assertFalse(vision.has_pending())
+        with self.assertRaises(VisionError):
+            vision.describe_pending("что тут")
+
+    def test_snapshot_only_for_imperative(self) -> None:
+        vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))
+        self.assertTrue(vision.wants_snapshot("посмотри на экран"))
+        self.assertFalse(vision.wants_snapshot("что на экране"))
+        self.assertFalse(vision.wants_snapshot("посмотри что на экране"))
+        self.assertFalse(vision.wants_snapshot("посмотри на экран, что за ошибка"))
+
+    def test_match_followup_method(self) -> None:
+        vision, _ = self.make()
+        self.assertTrue(vision.match_followup("где здесь кнопка"))
+        self.assertFalse(vision.match_followup("какая погода"))
 
     def test_disabled(self) -> None:
         vision, _ = self.make(enabled=False)

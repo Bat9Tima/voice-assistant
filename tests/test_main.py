@@ -76,16 +76,43 @@ class FakeVision:
         self.answer = answer
         self.error: Exception | None = None
         self.seen: list[str] = []
+        self.snapshots = 0
+        self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
-        if "экран" in text:
-            return True, "что за ошибка"
-        return False, ""
+        if "экран" not in text:
+            return False, ""
+        if text == "посмотри на экран":
+            return True, ""
+        return True, "что за ошибка"
+
+    def wants_snapshot(self, text: str) -> bool:
+        return text == "посмотри на экран"
 
     def available(self) -> bool:
         return True
 
+    def snapshot(self) -> bytes:
+        self.snapshots += 1
+        if self.error is not None:
+            raise self.error
+        self.pending = True
+        return b"jpeg"
+
+    def has_pending(self) -> bool:
+        return self.pending
+
+    def match_followup(self, text: str) -> bool:
+        return "кнопка" in text or "написано" in text
+
     def describe(self, request: str) -> str:
+        self.seen.append(request)
+        if self.error is not None:
+            raise self.error
+        self.pending = True
+        return self.answer
+
+    def describe_pending(self, request: str) -> str:
         self.seen.append(request)
         if self.error is not None:
             raise self.error
@@ -305,6 +332,32 @@ class CommandRoutingTest(unittest.TestCase):
             message = assistant.run_text("что на экране")
         self.assertEqual(message, "Зрение выключено")
         beep.assert_called_once_with(320, 120)
+
+    def test_vision_snapshot_then_followup(self) -> None:
+        assistant = self.make()
+        assistant.tts = FakeTTS(enabled=True)
+        message = assistant.run_text("посмотри на экран")
+        self.assertEqual(message, "Снимок экрана готов. Спрашивай, что на нём.")
+        self.assertEqual(assistant.vision.snapshots, 1)
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.tts.phrases, ["ok"])
+
+        message = assistant.run_text("где здесь кнопка")
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["где здесь кнопка"])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.tts.said, ["На экране открыт браузер"])
+
+    def test_vision_followup_without_snapshot_is_not_vision(self) -> None:
+        assistant = self.make()
+        with patch("app.main.beep"):
+            message = assistant.run_text("где здесь кнопка")
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.router.seen, ["где здесь кнопка"])
 
     def test_canonicalizes_text_before_routing(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю Google"))

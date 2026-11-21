@@ -50,7 +50,7 @@ from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
-from .vision import ScreenVision
+from .vision import ScreenVision, VisionError
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
@@ -928,28 +928,65 @@ class Assistant:
             category = "ack"
         self.tts.phrase(category)
 
+    def _vision_problem(self, vision: ScreenVision) -> str | None:
+        if not vision.enabled:
+            return "Зрение выключено"
+        if not vision.available():
+            return "Зрение недоступно: проверьте ключ и модель"
+        return None
+
+    def _vision_failure(self, message: str) -> str:
+        self.notify(message[:250])
+        beep(320, 120)
+        self.tts.phrase("error")
+        return message
+
+    def _remember_vision(self, vision: ScreenVision) -> str:
+        """Первый шаг: запомнить кадр, не отправляя его в модель."""
+        problem = self._vision_problem(vision)
+        if problem is not None:
+            return self._vision_failure(problem)
+        try:
+            vision.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Зрение: %s", exc)
+            return self._vision_failure("Не удалось посмотреть на экран")
+        message = "Снимок экрана готов. Спрашивай, что на нём."
+        self.notify(message)
+        self.tts.phrase("ok")
+        return message
+
     def _answer_vision(self, vision: ScreenVision, request: str) -> str:
         """Один снимок экрана по явной команде, без слежения."""
-        ok = True
-        if not vision.enabled:
-            message = "Зрение выключено"
-            ok = False
-        elif not vision.available():
-            message = "Зрение недоступно: проверьте ключ и модель"
-            ok = False
-        else:
-            try:
-                message = vision.describe(request).strip() or "Не вижу, что на экране"
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Зрение: %s", exc)
-                message = "Не удалось посмотреть на экран"
-                ok = False
+        problem = self._vision_problem(vision)
+        if problem is not None:
+            return self._vision_failure(problem)
+        try:
+            message = vision.describe(request).strip() or "Не вижу, что на экране"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Зрение: %s", exc)
+            return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
-        if ok:
-            self.tts.say(message)
-        else:
-            beep(320, 120)
-            self.tts.phrase("error")
+        self.tts.say(message)
+        return message
+
+    def _answer_pending_vision(self, vision: ScreenVision, request: str) -> str:
+        """Второй шаг: вопрос по кадру, снятому предыдущей командой."""
+        problem = self._vision_problem(vision)
+        if problem is not None:
+            return self._vision_failure(problem)
+        try:
+            message = vision.describe_pending(request).strip() or "Не вижу, что на экране"
+        except VisionError as exc:
+            log.warning("Зрение: %s", exc)
+            if not vision.has_pending():
+                return self._vision_failure("Снимок устарел. Скажи «посмотри на экран» ещё раз")
+            return self._vision_failure("Не удалось посмотреть на экран")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Зрение: %s", exc)
+            return self._vision_failure("Не удалось посмотреть на экран")
+        self.notify(message[:250])
+        self.tts.say(message)
         return message
 
     def _confirm(self, started: float) -> None:
@@ -1193,27 +1230,42 @@ class Assistant:
             qa = getattr(self, "qa", None)
             vision = getattr(self, "vision", None)
             vision_request: str | None = None
+            vision_followup = False
             if vision is not None:
                 matched, request = vision.match(text)
                 if matched:
                     vision_request = request
+                elif vision.has_pending() and vision.match_followup(text):
+                    # Вопрос по кадру, снятому предыдущей командой.
+                    vision_followup = True
             # Разбираем фразу один раз: и для подводки, и для ответа.
             # Команда зрения не должна уходить в Q&A как вопрос.
             route = (
-                None if vision_request is not None else (qa.route(text) if qa is not None else None)
+                None
+                if vision_request is not None or vision_followup
+                else (qa.route(text) if qa is not None else None)
             )
-            if in_dialog and vision_request is None:
+            if in_dialog and vision_request is None and not vision_followup:
                 route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
-            if not in_dialog or route is not None or vision_request is not None:
+            snapshot_only = (
+                vision is not None and vision_request == "" and vision.wants_snapshot(text)
+            )
+            if (
+                not in_dialog or route is not None or vision_request is not None or vision_followup
+            ) and not snapshot_only:
                 self._ack(route)
             started = time.monotonic()
 
             if vision_request is not None:
+                if snapshot_only:
+                    return self._remember_vision(vision)
                 return self._answer_vision(vision, vision_request)
+            if vision_followup:
+                return self._answer_pending_vision(vision, text)
 
             result = self.router.handle(text)
             if result is not None:
