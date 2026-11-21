@@ -1,0 +1,15 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+# Windows PowerShell 5.1 читает UTF-8 без BOM как ANSI (cp1251):
+# русский текст в установщике превращается в мусор. BOM обязателен.
+[*.ps1]
+charset = utf-8-bom
+
+# cmd.exe не понимает BOM в начале batch-файла, поэтому здесь только ASCII.
+[*.{cmd,bat}]
+charset = utf-8
