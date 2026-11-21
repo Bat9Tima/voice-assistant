@@ -1,4 +1,4 @@
-# Локальный прогон тех же проверок, что делает CI.
+﻿# Локальный прогон тех же проверок, что делает CI.
 # Сообщения намеренно ASCII: консоль Windows иначе показывает кракозябры.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

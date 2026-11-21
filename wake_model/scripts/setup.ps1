@@ -1,4 +1,4 @@
-# Восстановление окружения этапа 0: учебный venv, Piper и русские голоса.
+﻿# Восстановление окружения этапа 0: учебный venv, Piper и русские голоса.
 #
 #   powershell -ExecutionPolicy Bypass -File wake_model\scripts\setup.ps1
 #

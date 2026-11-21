@@ -7,3 +7,4 @@
 - Диагностика: `python -m app.doctor --record 4 --wake --stt`
 - Не редактируй `%LOCALAPPDATA%\VoiceAssistant`, `logs/`, `state/` — это данные времени выполнения.
 - Настройки: `config.json`.
+- Кодировка: UTF-8; `.ps1` — с BOM, `.cmd`/`.bat` — только ASCII.
