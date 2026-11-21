@@ -505,6 +505,22 @@ class CharacterMemory:
         return ". ".join(parts) + "."
 
     # ----------------------------------------------------------------- write
+    def matches(self, text: str) -> bool:
+        """Похоже ли на команду манере, без изменения состояния."""
+        if not self.enabled:
+            return False
+        normalized = normalize(text)
+        if not normalized:
+            return False
+        core = _command_core(normalized)
+        if not core:
+            return False
+        if core in _REPORT_PHRASES or _REPORT_RE.match(core):
+            return True
+        if core in _ROLLBACK_PHRASES or core in _RESET_PHRASES:
+            return True
+        return bool(_detect_signals(normalized))
+
     def handle(self, text: str, *, now: datetime | None = None) -> str | None:
         """Разбирает команду. ``None`` — это обычная реплика для модели."""
         if not self.enabled:

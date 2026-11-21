@@ -282,6 +282,21 @@ class DialogService:
                 candidates.append(candidate)
         return any(candidate in phrases for candidate in candidates)
 
+    def owns(self, text: str) -> bool:
+        """Команда памяти или манеры: зрение её не перехватывает."""
+        normalized = normalize(text)
+        if not normalized:
+            return False
+        if self.memory is not None:
+            if normalized in _MEMORY_QUESTIONS:
+                return True
+            words = normalized.split()
+            if words and words[0] in _FORGET_STARTS:
+                return True
+        character = self.character
+        matcher = getattr(character, "matches", None) if character is not None else None
+        return bool(matcher(normalized)) if callable(matcher) else False
+
     def system_parts(self) -> list[ContextPart]:
         """Блоки системного промпта по важности: от обязательных к памяти."""
         parts = [
@@ -467,6 +482,16 @@ class DialogService:
         self.sessions.add("assistant", answer)
         self.rolling.observe(self.sessions.current, self.sessions.window_start())
         return answer
+
+    def remember_exchange(self, question: str, answer: str) -> None:
+        """Сохраняет обмен, который обработал не ``reply`` (например, зрение)."""
+        question = " ".join((question or "").split())
+        answer = " ".join((answer or "").split())
+        if not question or not answer:
+            return
+        self.sessions.add("user", question)
+        self.sessions.add("assistant", answer)
+        self.rolling.observe(self.sessions.current, self.sessions.window_start())
 
     def _reply_stream(self, built: BuiltContext, on_chunk: Callable[[str], None]) -> str:
         """Читает поток модели и сразу отдаёт куски в озвучку."""

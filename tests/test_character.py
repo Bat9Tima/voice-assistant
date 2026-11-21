@@ -91,6 +91,16 @@ class CharacterMemoryTest(unittest.TestCase):
         self.assertIn(STABLE_HEADER, memory.block(now=at()))
         self.assertIn("без мата", memory.block(now=at()))
 
+    def test_matches_character_command_without_changing_state(self) -> None:
+        memory, store = self.make()
+
+        self.assertTrue(memory.matches("не матерись"))
+        self.assertTrue(memory.matches("как ты общаешься"))
+        self.assertTrue(memory.matches("верни как было"))
+        self.assertFalse(memory.matches("реши номер 325"))
+        self.assertEqual(store.character_history(), [])
+        self.assertEqual(memory.current(now=at())["version"], 0)
+
     def test_situational_request_expires_next_day(self) -> None:
         memory, _ = self.make()
 

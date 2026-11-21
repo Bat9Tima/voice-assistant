@@ -941,6 +941,31 @@ class Assistant:
         self.tts.phrase("error")
         return message
 
+    @staticmethod
+    def _dialog_owns(dialog: Any, text: str) -> bool:
+        """Команда памяти/манеры, которую зрение не должно перехватывать."""
+        owns = getattr(dialog, "owns", None)
+        if not callable(owns):
+            return False
+        try:
+            return bool(owns(text))
+        except Exception:  # noqa: BLE001
+            log.warning("Диалог: не удалось проверить команду", exc_info=True)
+            return False
+
+    def _remember_vision_exchange(self, question: str, answer: str) -> None:
+        """Зрение отвечает мимо ``dialog.reply``: сохраняем обмен в историю."""
+        if not getattr(self, "_dialog_active", False):
+            return
+        dialog = getattr(self, "dialog", None)
+        remember = getattr(dialog, "remember_exchange", None)
+        if not callable(remember):
+            return
+        try:
+            remember(question, answer)
+        except Exception:  # noqa: BLE001
+            log.warning("Диалог: не удалось сохранить обмен зрения", exc_info=True)
+
     def _remember_vision(self, vision: ScreenVision) -> str:
         """Первый шаг: запомнить кадр, не отправляя его в модель."""
         problem = self._vision_problem(vision)
@@ -956,7 +981,7 @@ class Assistant:
         self.tts.phrase("ok")
         return message
 
-    def _answer_vision(self, vision: ScreenVision, request: str) -> str:
+    def _answer_vision(self, vision: ScreenVision, request: str, question: str = "") -> str:
         """Один снимок экрана по явной команде, без слежения."""
         problem = self._vision_problem(vision)
         if problem is not None:
@@ -968,9 +993,10 @@ class Assistant:
             return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
         self.tts.say(message)
+        self._remember_vision_exchange(question or request, message)
         return message
 
-    def _answer_pending_vision(self, vision: ScreenVision, request: str) -> str:
+    def _answer_pending_vision(self, vision: ScreenVision, request: str, question: str = "") -> str:
         """Второй шаг: вопрос по кадру, снятому предыдущей командой."""
         problem = self._vision_problem(vision)
         if problem is not None:
@@ -987,6 +1013,7 @@ class Assistant:
             return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
         self.tts.say(message)
+        self._remember_vision_exchange(question or request, message)
         return message
 
     def _confirm(self, started: float) -> None:
@@ -1230,44 +1257,73 @@ class Assistant:
             qa = getattr(self, "qa", None)
             vision = getattr(self, "vision", None)
             vision_request: str | None = None
-            vision_followup = False
+            vision_pending = False
             if vision is not None:
                 matched, request = vision.match(text)
                 if matched:
                     vision_request = request
-                elif vision.has_pending() and vision.match_followup(text):
-                    # Вопрос по кадру, снятому предыдущей командой.
-                    vision_followup = True
+                elif vision.has_pending():
+                    vision_pending = True
             # Разбираем фразу один раз: и для подводки, и для ответа.
             # Команда зрения не должна уходить в Q&A как вопрос.
-            route = (
-                None
-                if vision_request is not None or vision_followup
-                else (qa.route(text) if qa is not None else None)
+            raw_route = (
+                None if vision_request is not None else (qa.route(text) if qa is not None else None)
             )
-            if in_dialog and vision_request is None and not vision_followup:
+            route = raw_route
+            if in_dialog and vision_request is None:
                 route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
+            # Свежий кадр отвечает на вопросы в разговоре, но не перехватывает
+            # команды, выход, память/манеру и явные темы Q&A.
+            vision_followup = False
+            if vision_pending:
+                if in_dialog:
+                    blocked = raw_route is not None and (
+                        raw_route.kind in DIALOG_QA_KINDS or raw_route.kind == "followup"
+                    )
+                    if not blocked:
+                        blocked = self._dialog_owns(dialog, text)
+                    vision_followup = not blocked
+                else:
+                    vision_followup = vision.match_followup(text)
+                if vision_followup:
+                    route = None
+
             snapshot_only = (
                 vision is not None and vision_request == "" and vision.wants_snapshot(text)
             )
+
+            result = None
+            acked = False
+            if vision_followup and in_dialog:
+                # Команда важнее кадра: «открой ютуб» не должен уходить в зрение.
+                self._ack(None)
+                acked = True
+                result = self.router.handle(text)
+                if result is None:
+                    return self._answer_pending_vision(vision, text, question=text)
+                vision_followup = False
+
             if (
-                not in_dialog or route is not None or vision_request is not None or vision_followup
-            ) and not snapshot_only:
+                not acked
+                and (not in_dialog or route is not None or vision_request is not None)
+                and not snapshot_only
+            ):
                 self._ack(route)
             started = time.monotonic()
 
             if vision_request is not None:
                 if snapshot_only:
                     return self._remember_vision(vision)
-                return self._answer_vision(vision, vision_request)
+                return self._answer_vision(vision, vision_request, question=text)
             if vision_followup:
-                return self._answer_pending_vision(vision, text)
+                return self._answer_pending_vision(vision, text, question=text)
 
-            result = self.router.handle(text)
+            if result is None:
+                result = self.router.handle(text)
             if result is not None:
                 message = result.message
                 if message:

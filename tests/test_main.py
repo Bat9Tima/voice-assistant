@@ -1132,6 +1132,8 @@ class FakeDialog:
         self.answer = answer
         self.error = error
         self.replied: list[str] = []
+        self.owned: list[str] = []
+        self.exchanges: list[tuple[str, str]] = []
         self.started = 0
         self.stopped = 0
         self.max_errors = 2
@@ -1151,6 +1153,13 @@ class FakeDialog:
 
     def wants_exit(self, text: str) -> bool:
         return text in {"хватит", "закончим"}
+
+    def owns(self, text: str) -> bool:
+        self.owned.append(text)
+        return text in {"что ты помнишь", "будь грубее"}
+
+    def remember_exchange(self, question: str, answer: str) -> None:
+        self.exchanges.append((question, answer))
 
     def reply(self, text: str) -> str:
         self.replied.append(text)
@@ -1325,6 +1334,83 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(message, "Открываю YouTube")
         self.assertEqual(assistant.dialog.replied, [])
         self.assertTrue(assistant._dialog_active)
+
+    def test_dialog_followup_uses_pending_snapshot_without_pointer_words(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant._dialog_active = True
+
+        message = assistant.run_text("реши номер 325")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["реши номер 325"])
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant.router.seen, ["реши номер 325"])
+
+    def test_dialog_followup_does_not_steal_command(self) -> None:
+        assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant._dialog_active = True
+
+        message = assistant.run_text("открой ютуб")
+
+        self.assertEqual(message, "Открываю YouTube")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.dialog.replied, [])
+        self.assertEqual(assistant.router.seen, ["открой ютуб"])
+
+    def test_dialog_followup_skips_qa_topic(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant.qa = FakeQA(kind="weather")
+        assistant._dialog_active = True
+
+        message = assistant.run_text("какая погода")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.qa.answered, ["какая погода"])
+
+    def test_dialog_followup_skips_dialog_owned_phrase(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant._dialog_active = True
+
+        message = assistant.run_text("что ты помнишь")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.dialog.replied, ["что ты помнишь"])
+        self.assertEqual(assistant.dialog.owned, ["что ты помнишь"])
+
+    def test_vision_answer_is_saved_to_dialog_history(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant._dialog_active = True
+
+        assistant.run_text("реши номер 325")
+
+        self.assertEqual(
+            assistant.dialog.exchanges,
+            [("реши номер 325", "На экране открыт браузер")],
+        )
+
+    def test_one_shot_vision_saves_full_question_to_dialog_history(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+
+        assistant.run_text("посмотри на экран, что за ошибка")
+
+        self.assertEqual(
+            assistant.dialog.exchanges,
+            [("посмотри на экран что за ошибка", "На экране открыт браузер")],
+        )
 
     def test_background_voice_utterance_is_ignored(self) -> None:
         assistant = self.make()
