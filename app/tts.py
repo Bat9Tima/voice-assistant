@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from .config import DATA_DIR, ROOT
+from .text import strip_markdown_links
 
 log = logging.getLogger(__name__)
 
@@ -112,6 +113,8 @@ def clean_for_speech(text: str) -> str:
     text = text or ""
     text = SOURCES_RE.split(text)[0]
     text = CITATION_RE.sub(" ", text)
+    # Сначала markdown-ссылка целиком, иначе от неё останется домен и «()».
+    text = strip_markdown_links(text)
     text = URL_RE.sub(" ", text)
     text = MARKDOWN_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text)

@@ -7,6 +7,7 @@ from app.text import (
     canonicalize,
     fuzzy_contains,
     normalize,
+    strip_markdown_links,
     strip_wake_word,
     translit,
 )
@@ -33,6 +34,18 @@ class TextTest(unittest.TestCase):
 
     def test_normalize_removes_edge_dots(self) -> None:
         self.assertEqual(normalize("...привет..."), "привет")
+
+    def test_strip_markdown_links_keeps_caption(self) -> None:
+        self.assertEqual(
+            strip_markdown_links("Никс ([сайт](https://example.com/a))."),
+            "Никс (сайт).",
+        )
+
+    def test_strip_markdown_links_removes_bare_domain(self) -> None:
+        self.assertEqual(
+            strip_markdown_links("Никс — стример (sport-express.ru)."),
+            "Никс — стример.",
+        )
 
     def test_translit_for_track_titles(self) -> None:
         self.assertEqual(translit("Ева Ева"), "eva eva")

@@ -203,6 +203,34 @@ class DialogServiceTest(unittest.TestCase):
         self.assertEqual(kwargs["temperature"], 0.4)
         self.assertEqual(kwargs["timeout"], 12)
 
+    def test_web_search_flag_is_passed_to_model(self) -> None:
+        llm = FakeLLM("Ответ")
+        llm.web_search_enabled = True
+        service = DialogService({"dialog": {}}, llm)
+        service.reply("кто такой никс")
+        self.assertTrue(llm.calls[0][1]["web_search"])
+
+    def test_web_search_is_off_for_plain_fake_model(self) -> None:
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm)
+        service.reply("привет")
+        self.assertFalse(llm.calls[0][1]["web_search"])
+
+    def test_web_search_flag_is_passed_to_stream(self) -> None:
+        llm = StreamLLM(["Ответ"])
+        llm.web_search_enabled = True
+        service = DialogService(
+            {"dialog": {"streaming": {"enabled": True}}},
+            llm,
+        )
+        service.reply("кто такой никс", on_chunk=lambda piece: None)
+        self.assertTrue(llm.stream_calls[0][1]["web_search"])
+
+    def test_markdown_links_are_stripped_from_answer(self) -> None:
+        llm = FakeLLM("[сайт](https://example.com/a) Ответ")
+        service = DialogService({"dialog": {}}, llm)
+        self.assertEqual(service.reply("вопрос"), "сайт Ответ")
+
     def test_datetime_is_in_system_prompt(self) -> None:
         now = "Сегодня 13 ноября 2026 года, пятница. Сейчас 20:47."
         llm = FakeLLM()

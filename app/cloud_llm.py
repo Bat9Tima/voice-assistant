@@ -30,6 +30,7 @@ from .prompts import (
     FOLLOWUP_SUFFIX,
     RAG_PROMPTS,
     RAG_SYSTEM,
+    WEB_SEARCH_SUFFIX,
 )
 
 log = logging.getLogger(__name__)
@@ -113,7 +114,13 @@ class CloudLLM:
         )
         self.temperature = float(section.get("temperature", 0.2))
         self.timeout = float(section.get("timeout_sec") or 90)
-        self.retries = max(int(section.get("retries") or 2), 0)
+        retries = section.get("retries")
+        self.retries = max(int(2 if retries is None else retries), 0)
+        # Поиск в интернете делает сам провайдер через /responses.
+        # Отдельная модель нужна, только если основная не умеет web_search.
+        web = section.get("web_search") or {}
+        self.web_search_enabled = bool(web.get("enabled", True))
+        self.web_search_model = str(web.get("model") or "").strip()
 
     # ------------------------------------------------------------------ public
     def available(self) -> bool:
@@ -131,11 +138,13 @@ class CloudLLM:
         timeout: float | None = None,
         model: str | None = None,
         history: str = "",
+        web_search: bool = False,
     ) -> str:
         """Отвечает на вопрос: по источникам (RAG) или из своих знаний.
 
         ``history`` — предыдущая пара «вопрос — ответ» для уточняющих
-        вопросов вроде «а почему?» или «а подробнее?».
+        вопросов вроде «а почему?» или «а подробнее?». ``web_search``
+        разрешает модели самой искать в интернете через Responses API.
         """
         question = (question or "").strip()
         if not question:
@@ -170,6 +179,16 @@ class CloudLLM:
         limit = max(int(max_tokens or 0), self.max_completion_tokens)
         temperature = self.temperature if temperature is None else float(temperature)
         timeout = self.timeout if timeout is None else float(timeout)
+        if web_search and self.web_search_enabled:
+            return self._responses_complete(
+                [{"role": "user", "content": user}],
+                system=system + "\n" + WEB_SEARCH_SUFFIX,
+                max_tokens=limit,
+                temperature=temperature,
+                timeout=timeout,
+                model=model or "",
+            )
+
         preferred = model or (self.article_model if style == "article" else "")
         return self._with_fallback(
             lambda candidate: self._complete(
@@ -192,6 +211,7 @@ class CloudLLM:
         temperature: float | None = None,
         timeout: float | None = None,
         model: str | None = None,
+        web_search: bool = False,
     ) -> str:
         """Ответ на список сообщений в формате OpenAI."""
         cleaned = _prepare_messages(messages, system)
@@ -202,6 +222,14 @@ class CloudLLM:
         limit = max(int(max_tokens or 0), self.max_completion_tokens)
         temperature = self.temperature if temperature is None else float(temperature)
         timeout = self.timeout if timeout is None else float(timeout)
+        if web_search and self.web_search_enabled:
+            return self._responses_complete(
+                cleaned,
+                max_tokens=limit,
+                temperature=temperature,
+                timeout=timeout,
+                model=model or "",
+            )
         return self._with_fallback(
             lambda candidate: self._post(
                 candidate,
@@ -222,11 +250,13 @@ class CloudLLM:
         temperature: float | None = None,
         timeout: float | None = None,
         model: str | None = None,
+        web_search: bool = False,
     ) -> Iterator[str]:
         """Отдаёт ответ кусками по мере генерации (SSE).
 
         Запасная модель включается, только пока не пришёл первый кусок:
-        после начала речи переключаться уже нельзя.
+        после начала речи переключаться уже нельзя. ``web_search`` уводит
+        запрос в Responses API, где поиск делает провайдер.
         """
         cleaned = _prepare_messages(messages, system)
         if not cleaned:
@@ -236,6 +266,14 @@ class CloudLLM:
         limit = max(int(max_tokens or 0), self.max_completion_tokens)
         temperature = self.temperature if temperature is None else float(temperature)
         timeout = self.timeout if timeout is None else float(timeout)
+        if web_search and self.web_search_enabled:
+            return self._responses_stream(
+                cleaned,
+                max_tokens=limit,
+                temperature=temperature,
+                timeout=timeout,
+                model=model or "",
+            )
         return self._stream_with_fallback(
             cleaned,
             max_tokens=limit,
@@ -569,3 +607,311 @@ class CloudLLM:
             raise LLMError(f"HTTP {exc.code}: {detail}", retryable=retryable) from exc
         except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
             raise LLMError(f"сервер недоступен: {exc}") from exc
+
+    # -------------------------------------------- Responses API (web_search)
+    def _responses_payload(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        system: str = "",
+        max_tokens: int,
+        temperature: float | None,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Тело запроса к /responses с серверным поиском.
+
+        В Responses API другие имена полей: системный промпт уходит в
+        ``instructions``, лимит — в ``max_output_tokens``, а усилие
+        рассуждений — объектом ``reasoning``. ``model_params`` заданы для
+        chat/completions, поэтому переносим только известные поля.
+        """
+        instructions: list[str] = []
+        if system.strip():
+            instructions.append(system.strip())
+        items: list[dict[str, str]] = []
+        for item in messages:
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "")
+            if role == "system":
+                if content.strip():
+                    instructions.append(content.strip())
+            elif role in {"user", "assistant"} and content.strip():
+                items.append({"role": role, "content": content.strip()})
+        if not items:
+            raise LLMError("пустой запрос к Responses API")
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "input": items,
+            "tools": [{"type": "web_search"}],
+            "max_output_tokens": int(max_tokens),
+            "stream": stream,
+        }
+        prompt = "\n\n".join(instructions)
+        if prompt:
+            payload["instructions"] = prompt
+
+        overrides = self.model_params.get(model, {})
+        # temperature: null в model_params убирает поле из запроса.
+        value = overrides.get("temperature", temperature)
+        if value is not None:
+            payload["temperature"] = float(value)
+
+        # reasoning_effort -> reasoning.effort; null отключает блок.
+        effort = overrides.get("reasoning_effort", self.reasoning_effort)
+        if effort:
+            payload["reasoning"] = {"effort": str(effort)}
+
+        return payload
+
+    def _responses_complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str = "",
+        max_tokens: int,
+        temperature: float | None,
+        timeout: float,
+        model: str = "",
+    ) -> str:
+        """Один ответ Responses API с поиском. Без перебора моделей."""
+        target = model or self.web_search_model or self.model
+        if not target:
+            raise LLMError("не задана модель для поиска")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        last_error: LLMError | None = None
+        for attempt in range(self.retries + 1):
+            payload = self._responses_payload(
+                target,
+                messages,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=False,
+            )
+            request = urllib.request.Request(
+                self.base_url + "/responses",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            started = time.monotonic()
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    body = response.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+                last_error = LLMError(f"HTTP {exc.code}: {detail}", retryable=retryable)
+            except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
+                last_error = LLMError(f"сервер недоступен: {exc}")
+            else:
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    last_error = LLMError("сервер вернул не JSON")
+                else:
+                    error = data.get("error")
+                    if isinstance(error, dict):
+                        last_error = LLMError(
+                            str(error.get("message") or error.get("code") or error)
+                        )
+                    else:
+                        text = _responses_text(data)
+                        if text:
+                            if any(
+                                item.get("type") == "web_search_call"
+                                for item in data.get("output") or []
+                                if isinstance(item, dict)
+                            ):
+                                log.info("CloudLLM: web_search выполнен")
+                            self._log_responses_usage(data, target, started)
+                            return text
+                        last_error = LLMError("пустой ответ модели")
+
+            assert last_error is not None
+            log.warning(
+                "CloudLLM: %s (web_search), попытка %s: %s",
+                target,
+                attempt + 1,
+                last_error,
+            )
+            if not last_error.retryable or attempt >= self.retries:
+                break
+            time.sleep(min(0.5 * (attempt + 1), 2.0))
+
+        assert last_error is not None
+        raise last_error
+
+    def _responses_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system: str = "",
+        max_tokens: int,
+        temperature: float | None,
+        timeout: float,
+        model: str = "",
+    ) -> Iterator[str]:
+        """SSE-поток Responses API: отдаёт только текст ответа."""
+        target = model or self.web_search_model or self.model
+        if not target:
+            raise LLMError("не задана модель для поиска")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        errors: list[str] = []
+        for attempt in range(self.retries + 1):
+            payload = self._responses_payload(
+                target,
+                messages,
+                system=system,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+            )
+            request = urllib.request.Request(
+                self.base_url + "/responses",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            started = time.monotonic()
+            yielded = False
+            search_seen = False
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    for raw in response:
+                        line = raw.decode("utf-8", errors="replace").strip()
+                        if not line or line.startswith(":") or not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            event = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        kind = event.get("type") or ""
+                        if kind == "response.output_text.delta":
+                            delta = event.get("delta")
+                            if isinstance(delta, str) and delta:
+                                yielded = True
+                                yield delta
+                        elif kind == "response.web_search_call.searching":
+                            if not search_seen:
+                                search_seen = True
+                                log.info("CloudLLM: web_search ищет в интернете")
+                        elif kind == "response.completed":
+                            self._log_responses_usage(event.get("response") or {}, target, started)
+                        elif kind in {"response.failed", "error"}:
+                            raise LLMError(_responses_error(event))
+                if not yielded:
+                    raise LLMError("пустой ответ модели")
+                return
+            except LLMError as exc:
+                errors.append(f"{target}: {exc}")
+                if yielded:
+                    log.warning(
+                        "CloudLLM: поток %s (web_search) оборвался: %s",
+                        target,
+                        exc,
+                    )
+                    raise LLMError(f"поток прерван: {exc}") from exc
+                log.warning(
+                    "CloudLLM: %s (web_search), попытка %s: %s",
+                    target,
+                    attempt + 1,
+                    exc,
+                )
+                if not exc.retryable or attempt >= self.retries:
+                    break
+                time.sleep(min(0.5 * (attempt + 1), 2.0))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+                retryable = exc.code == 429 or 500 <= exc.code < 600
+                error = LLMError(f"HTTP {exc.code}: {detail}", retryable=retryable)
+                errors.append(f"{target}: {error}")
+                log.warning(
+                    "CloudLLM: %s (web_search), попытка %s: %s",
+                    target,
+                    attempt + 1,
+                    error,
+                )
+                if not retryable or attempt >= self.retries:
+                    raise error from exc
+                time.sleep(min(0.5 * (attempt + 1), 2.0))
+            except (urllib.error.URLError, TimeoutError, OSError, HTTPException) as exc:
+                error = LLMError(f"сервер недоступен: {exc}")
+                errors.append(f"{target}: {error}")
+                log.warning(
+                    "CloudLLM: %s (web_search), попытка %s: %s",
+                    target,
+                    attempt + 1,
+                    error,
+                )
+                if attempt >= self.retries:
+                    raise error from exc
+                time.sleep(min(0.5 * (attempt + 1), 2.0))
+
+        detail = "; ".join(errors[-2:]) if errors else "нет ответа"
+        raise LLMError(f"модель не ответила: {detail}")
+
+    def _log_responses_usage(
+        self,
+        data: dict[str, Any],
+        model: str,
+        started: float,
+    ) -> None:
+        usage = data.get("usage") or {}
+        details = usage.get("input_tokens_details") or {}
+        output = usage.get("output_tokens_details") or {}
+        log.info(
+            "CloudLLM: %s (web_search) за %.2f с, токены %s→%s (cached %s, reasoning %s)",
+            data.get("model") or model,
+            time.monotonic() - started,
+            usage.get("input_tokens"),
+            usage.get("output_tokens"),
+            details.get("cached_tokens"),
+            output.get("reasoning_tokens"),
+        )
+
+
+def _responses_text(data: dict[str, Any]) -> str:
+    """Достаёт текст ответа из объекта Responses API."""
+    direct = data.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "output_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts).strip()
+
+
+def _responses_error(event: dict[str, Any]) -> str:
+    """Читает сообщение об ошибке из события Responses API."""
+    message = event.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    for source in (event.get("error"), (event.get("response") or {}).get("error")):
+        if isinstance(source, dict):
+            text = source.get("message") or source.get("code")
+            if text:
+                return str(text)
+    return "ошибка Responses API"

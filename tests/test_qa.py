@@ -380,6 +380,10 @@ class CleanAnswerTest(unittest.TestCase):
             "[1] Курс вырос на 2%.\n[2] Цена снизилась.",
         )
 
+    def test_strips_markdown_links(self) -> None:
+        text = "Никс — стример ([sport-express.ru](https://example.com/nix))."
+        self.assertEqual(_clean_answer(text), "Никс — стример.")
+
 
 class CityExtractionTest(unittest.TestCase):
     def test_city_after_weather(self) -> None:
@@ -1016,6 +1020,21 @@ class QAServiceRoutingTest(unittest.TestCase):
         self.assertTrue(answer.ok)
         self.assertEqual(answer.kind, "general")
         self.assertEqual(qa.search.calls, [])
+
+    def test_general_answer_passes_web_search_flag(self) -> None:
+        llm = FakeLLM("Ответ.")
+        llm.web_search_enabled = True
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(available=False)
+        qa.answer("кто такой никс")
+        self.assertTrue(llm.kwargs[0]["web_search"])
+
+    def test_general_answer_web_search_is_off_for_plain_model(self) -> None:
+        llm = FakeLLM("Ответ.")
+        qa = make_service(llm=llm)
+        qa.search = FakeSearch(available=False)
+        qa.answer("кто такой никс")
+        self.assertFalse(llm.kwargs[0]["web_search"])
 
     def test_general_answer_passes_qa_timeout(self) -> None:
         llm = FakeLLM("Фотосинтез — это процесс.")
