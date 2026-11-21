@@ -175,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Ключ: {'задан' if cloud.api_key else 'НЕ задан'}")
     print(f"  Состояние: {'готово' if cloud.available() else 'выключено или нет ключа'}")
 
+    print("\n[Зрение]")
+    vision_cfg = cfg.get("vision") or {}
+    print(f"  Состояние: {'включено' if vision_cfg.get('enabled') else 'выключено'}")
+    print(f"  Модель: {vision_cfg.get('model') or 'НЕ задана'}")
+    print(f"  Команда: {', '.join(vision_cfg.get('triggers') or []) or 'нет'}")
+
     print("\n[Локальный планировщик]")
     planner_cfg = cfg.get("local_planner") or {}
     if not planner_cfg.get("enabled"):

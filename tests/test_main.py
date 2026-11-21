@@ -70,6 +70,28 @@ class FakeLocalPlanner:
         return self.plan_result
 
 
+class FakeVision:
+    def __init__(self, answer: str = "На экране открыт браузер") -> None:
+        self.enabled = True
+        self.answer = answer
+        self.error: Exception | None = None
+        self.seen: list[str] = []
+
+    def match(self, text: str) -> tuple[bool, str]:
+        if "экран" in text:
+            return True, "что за ошибка"
+        return False, ""
+
+    def available(self) -> bool:
+        return True
+
+    def describe(self, request: str) -> str:
+        self.seen.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.answer
+
+
 class FakeTTS:
     def __init__(self, enabled: bool = False) -> None:
         self.enabled = enabled
@@ -233,6 +255,7 @@ class CommandRoutingTest(unittest.TestCase):
         assistant.router = FakeRouter(result)
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
+        assistant.vision = FakeVision()
         assistant.tts = FakeTTS()
         assistant.notifications = []
         assistant.states = []
@@ -255,6 +278,33 @@ class CommandRoutingTest(unittest.TestCase):
         message = assistant.run_text("включи фильм агент 007")
         self.assertEqual(message, "Открываю YouTube")
         self.assertEqual(assistant.router.seen, ["включи фильм агент 007"])
+
+    def test_vision_command_bypasses_router(self) -> None:
+        assistant = self.make()
+        assistant.tts = FakeTTS(enabled=True)
+        message = assistant.run_text("посмотри на экран, что за ошибка")
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["что за ошибка"])
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.tts.said, ["На экране открыт браузер"])
+
+    def test_vision_error_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision.error = RuntimeError("нет доступа")
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("посмотри на экран")
+        self.assertEqual(message, "Не удалось посмотреть на экран")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.tts.phrases, ["error"])
+
+    def test_vision_disabled_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision.enabled = False
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("что на экране")
+        self.assertEqual(message, "Зрение выключено")
+        beep.assert_called_once_with(320, 120)
 
     def test_canonicalizes_text_before_routing(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю Google"))

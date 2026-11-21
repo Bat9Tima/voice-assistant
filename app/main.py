@@ -50,6 +50,7 @@ from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
+from .vision import ScreenVision
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
@@ -147,6 +148,7 @@ class Assistant:
             self.planner = LocalPlanner(cfg)
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
+        self.vision = ScreenVision(cfg, self.llm)
         self.intent = IntentClassifier(cfg)
         self.addressee = AddresseeGate(cfg)
         self.tts = TTSService(cfg)
@@ -926,6 +928,30 @@ class Assistant:
             category = "ack"
         self.tts.phrase(category)
 
+    def _answer_vision(self, vision: ScreenVision, request: str) -> str:
+        """Один снимок экрана по явной команде, без слежения."""
+        ok = True
+        if not vision.enabled:
+            message = "Зрение выключено"
+            ok = False
+        elif not vision.available():
+            message = "Зрение недоступно: проверьте ключ и модель"
+            ok = False
+        else:
+            try:
+                message = vision.describe(request).strip() or "Не вижу, что на экране"
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Зрение: %s", exc)
+                message = "Не удалось посмотреть на экран"
+                ok = False
+        self.notify(message[:250])
+        if ok:
+            self.tts.say(message)
+        else:
+            beep(320, 120)
+            self.tts.phrase("error")
+        return message
+
     def _confirm(self, started: float) -> None:
         """«Готово» только если операция заняла заметное время."""
         if time.monotonic() - started >= 1.2:
@@ -1165,17 +1191,29 @@ class Assistant:
                     return self._stop_dialog("phrase")
 
             qa = getattr(self, "qa", None)
+            vision = getattr(self, "vision", None)
+            vision_request: str | None = None
+            if vision is not None:
+                matched, request = vision.match(text)
+                if matched:
+                    vision_request = request
             # Разбираем фразу один раз: и для подводки, и для ответа.
-            route = qa.route(text) if qa is not None else None
-            if in_dialog:
+            # Команда зрения не должна уходить в Q&A как вопрос.
+            route = (
+                None if vision_request is not None else (qa.route(text) if qa is not None else None)
+            )
+            if in_dialog and vision_request is None:
                 route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
-            if not in_dialog or route is not None:
+            if not in_dialog or route is not None or vision_request is not None:
                 self._ack(route)
             started = time.monotonic()
+
+            if vision_request is not None:
+                return self._answer_vision(vision, vision_request)
 
             result = self.router.handle(text)
             if result is not None:
