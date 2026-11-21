@@ -10,11 +10,10 @@ from .tools import _QUERY_MAX, _URL_MAX, Tool, ToolParam, _validate_url
 #
 # Одна запись описывает действие ассистента и связывает слои:
 #   * intents — какие интенты из intents.json его вызывают;
-#   * tool    — какой инструмент видит локальный планировщик и агент;
-#   * cli     — какая команда browser.cmd соответствует действию.
+#   * tool    — какой инструмент видит локальный планировщик.
 #
 # Из этого списка собирается реестр инструментов, а тесты проверяют, что
-# интенты, CLI и README не разошлись с каталогом.
+# интенты, инструменты и README не разошлись с каталогом.
 # ---------------------------------------------------------------------------
 
 
@@ -29,8 +28,6 @@ class ActionSpec:
     examples: tuple[str, ...] = ()
     intents: tuple[str, ...] = ()
     tool: str | None = None
-    cli: tuple[str, ...] = ()
-    documented: bool = True
     doc_example: str = ""
 
 
@@ -44,7 +41,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("открой ютуб", "открой гитхаб"),
         intents=("open_site",),
         tool="open_site",
-        cli=("open",),
         doc_example="открой ютуб",
     ),
     ActionSpec(
@@ -54,7 +50,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "navigation",
         examples=("открой example.com", "открой reddit.com"),
         tool="goto",
-        cli=("goto", "open"),
         doc_example="открой example.com",
     ),
     ActionSpec(
@@ -65,7 +60,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("назад", "вернись назад"),
         intents=("back",),
         tool="back",
-        cli=("back",),
         doc_example="назад",
     ),
     ActionSpec(
@@ -76,7 +70,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("вперёд", "страница вперёд"),
         intents=("forward",),
         tool="forward",
-        cli=("forward",),
         doc_example="вперёд",
     ),
     ActionSpec(
@@ -87,7 +80,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("обнови", "обнови страницу"),
         intents=("reload",),
         tool="reload",
-        cli=("reload",),
         doc_example="обнови",
     ),
     # ---------------------------------------------------------------- поиск
@@ -99,7 +91,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("загугли погоду", "найди в гугле рецепт борща"),
         intents=("google_search",),
         tool="google",
-        cli=("google",),
         doc_example="загугли",
     ),
     ActionSpec(
@@ -109,7 +100,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "search",
         examples=("открой первую ссылку", "открой ссылку 2"),
         intents=("open_result", "open_result_context"),
-        cli=("search_result",),
         doc_example="открой первую ссылку",
     ),
     ActionSpec(
@@ -139,7 +129,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("включи на ютубе lo-fi", "найди на ютубе котиков"),
         intents=("youtube_search",),
         tool="youtube",
-        cli=("youtube",),
         doc_example="включи на ютубе",
     ),
     ActionSpec(
@@ -159,7 +148,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("включи на саундклауде lofi", "найди трек на саундклауде"),
         intents=("soundcloud_search",),
         tool="soundcloud",
-        cli=("soundcloud",),
         doc_example="включи на саундклауде",
     ),
     ActionSpec(
@@ -170,7 +158,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("открой лайкнутые треки на саундклауде",),
         intents=("soundcloud_likes_open",),
         tool="soundcloud_likes",
-        cli=("soundcloud_likes",),
         doc_example="открой лайкнутые треки на саундклауде",
     ),
     ActionSpec(
@@ -184,7 +171,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         ),
         intents=("soundcloud_likes_play",),
         tool="soundcloud_likes",
-        cli=("soundcloud_likes",),
         doc_example="включи случайный лайкнутый трек на саундклауде",
     ),
     ActionSpec(
@@ -195,7 +181,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("продолжи", "продолжи в саундклауде"),
         intents=("play",),
         tool="play",
-        cli=("play",),
         doc_example="продолжи",
     ),
     ActionSpec(
@@ -206,7 +191,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("продолжи в саундклауде",),
         intents=("soundcloud_resume",),
         tool="play",
-        cli=("play",),
         doc_example="продолжи в саундклауде",
     ),
     ActionSpec(
@@ -217,7 +201,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("пауза", "поставь на паузу"),
         intents=("pause",),
         tool="pause",
-        cli=("pause",),
         doc_example="пауза",
     ),
     ActionSpec(
@@ -228,7 +211,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("пауза в саундклауде",),
         intents=("soundcloud_pause",),
         tool="pause",
-        cli=("pause",),
         doc_example="пауза в саундклауде",
     ),
     ActionSpec(
@@ -239,7 +221,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("стоп", "останови видео"),
         intents=("stop",),
         tool="stop",
-        cli=("stop",),
         doc_example="стоп",
     ),
     ActionSpec(
@@ -250,7 +231,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("перемотай на 30 секунд", "перемотай вперёд на минуту"),
         intents=("seek",),
         tool="seek",
-        cli=("seek",),
         doc_example="перемотай на 30 секунд",
     ),
     ActionSpec(
@@ -261,7 +241,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("перемотай назад на 10 секунд", "отмотай минуту"),
         intents=("seek_back",),
         tool="seek",
-        cli=("seek",),
         doc_example="перемотай назад на 10 секунд",
     ),
     ActionSpec(
@@ -272,7 +251,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("следующий трек", "дальше"),
         intents=("next",),
         tool="next",
-        cli=("next",),
         doc_example="следующий трек",
     ),
     ActionSpec(
@@ -283,7 +261,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("следующий трек в саундклауде",),
         intents=("soundcloud_next",),
         tool="next",
-        cli=("next",),
         doc_example="следующий трек в саундклауде",
     ),
     ActionSpec(
@@ -294,7 +271,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("предыдущий трек", "назад видео"),
         intents=("prev",),
         tool="prev",
-        cli=("prev",),
         doc_example="предыдущий трек",
     ),
     ActionSpec(
@@ -305,7 +281,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("предыдущий трек в саундклауде",),
         intents=("soundcloud_prev",),
         tool="prev",
-        cli=("prev",),
         doc_example="предыдущий трек в саундклауде",
     ),
     # ---------------------------------------------------------------- вкладки
@@ -317,7 +292,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("новая вкладка", "открой новую вкладку"),
         intents=("new_tab",),
         tool="newtab",
-        cli=("newtab",),
         doc_example="новая вкладка",
     ),
     ActionSpec(
@@ -328,7 +302,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("закрой вкладку",),
         intents=("close_tab",),
         tool="closetab",
-        cli=("closetab",),
         doc_example="закрой вкладку",
     ),
     ActionSpec(
@@ -339,7 +312,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("переключись на вкладку 2", "вкладка два"),
         intents=("switch_tab",),
         tool="tab",
-        cli=("tab",),
         doc_example="переключись на вкладку 2",
     ),
     ActionSpec(
@@ -349,7 +321,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "tabs",
         examples=("какие вкладки", "покажи вкладки"),
         intents=("list_tabs",),
-        cli=("tabs",),
         doc_example="какие вкладки",
     ),
     # ---------------------------------------------------------------- страница
@@ -361,7 +332,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("прокрути вниз", "листай вниз"),
         intents=("scroll_down",),
         tool="scroll",
-        cli=("scroll",),
         doc_example="прокрути вниз",
     ),
     ActionSpec(
@@ -372,7 +342,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("прокрути вверх", "листай вверх"),
         intents=("scroll_up",),
         tool="scroll",
-        cli=("scroll",),
         doc_example="прокрути вверх",
     ),
     ActionSpec(
@@ -392,7 +361,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("что играет", "статус"),
         intents=("status",),
         tool="status",
-        cli=("status",),
         doc_example="что играет",
     ),
     # ---------------------------------------------------------------- громкость
@@ -453,7 +421,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "volume",
         examples=("громкость саундклауда 5", "звук саундклауда 10"),
         intents=("soundcloud_volume_set",),
-        cli=("soundcloud_volume",),
         doc_example="громкость саундклауда 5",
     ),
     ActionSpec(
@@ -463,7 +430,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "volume",
         examples=("громче в саундклауде", "прибавь звук на саундклауде"),
         intents=("soundcloud_volume_up",),
-        cli=("soundcloud_volume",),
         doc_example="громче в саундклауде",
     ),
     ActionSpec(
@@ -473,7 +439,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "volume",
         examples=("тише на 1 в саундклауде", "убавь звук на саундклауде"),
         intents=("soundcloud_volume_down",),
-        cli=("soundcloud_volume",),
         doc_example="тише на 1 в саундклауде",
     ),
     ActionSpec(
@@ -483,7 +448,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "volume",
         examples=("выключи звук в саундклауде", "мьют в саундклауде"),
         intents=("soundcloud_volume_mute",),
-        cli=("soundcloud_volume",),
         doc_example="выключи звук в саундклауде",
     ),
     ActionSpec(
@@ -493,7 +457,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         "volume",
         examples=("включи звук на саундклауде", "верни звук в саундклауде"),
         intents=("soundcloud_volume_unmute",),
-        cli=("soundcloud_volume",),
         doc_example="включи звук на саундклауде",
     ),
     ActionSpec(
@@ -513,63 +476,6 @@ ACTIONS: tuple[ActionSpec, ...] = (
         examples=("сделай тише",),
         intents=("volume_down_context",),
         doc_example="сделай тише",
-    ),
-    # ------------------------------------------------------- только для агента
-    ActionSpec(
-        "click",
-        "Клик по селектору",
-        "кликнуть по CSS-селектору на странице",
-        "agent",
-        cli=("click",),
-        documented=False,
-    ),
-    ActionSpec(
-        "fill",
-        "Заполнить поле",
-        "ввести текст в поле по CSS-селектору",
-        "agent",
-        cli=("fill",),
-        documented=False,
-    ),
-    ActionSpec(
-        "press",
-        "Нажать клавишу",
-        "нажать клавишу на странице",
-        "agent",
-        cli=("press",),
-        documented=False,
-    ),
-    ActionSpec(
-        "wait",
-        "Подождать",
-        "подождать заданное время",
-        "agent",
-        cli=("wait",),
-        documented=False,
-    ),
-    ActionSpec(
-        "screenshot",
-        "Скриншот",
-        "сохранить скриншот страницы",
-        "agent",
-        cli=("screenshot",),
-        documented=False,
-    ),
-    ActionSpec(
-        "eval",
-        "Выполнить JS",
-        "выполнить JavaScript на странице",
-        "agent",
-        cli=("eval",),
-        documented=False,
-    ),
-    ActionSpec(
-        "type",
-        "Ввести текст",
-        "ввести текст в активный элемент",
-        "agent",
-        cli=("type",),
-        documented=False,
     ),
 )
 
@@ -829,13 +735,10 @@ def validate_catalog() -> list[str]:
             problems.append(f"у действия {action.name} нет title/description")
         if not action.category:
             problems.append(f"у действия {action.name} нет category")
-        if action.documented:
-            if not action.doc_example:
-                problems.append(f"у действия {action.name} нет doc_example")
-            if not action.examples:
-                problems.append(f"у действия {action.name} нет examples")
-        elif action.doc_example:
-            problems.append(f"у недокументированного действия {action.name} есть doc_example")
+        if not action.doc_example:
+            problems.append(f"у действия {action.name} нет doc_example")
+        if not action.examples:
+            problems.append(f"у действия {action.name} нет examples")
     return problems
 
 
@@ -844,12 +747,4 @@ def catalog_by_tool() -> dict[str, tuple[ActionSpec, ...]]:
     for action in ACTIONS:
         if action.tool:
             result.setdefault(action.tool, []).append(action)
-    return {name: tuple(items) for name, items in result.items()}
-
-
-def catalog_by_cli() -> dict[str, tuple[ActionSpec, ...]]:
-    result: dict[str, list[ActionSpec]] = {}
-    for action in ACTIONS:
-        for command in action.cli:
-            result.setdefault(command, []).append(action)
     return {name: tuple(items) for name, items in result.items()}

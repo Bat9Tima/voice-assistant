@@ -118,7 +118,7 @@ if ($All) {
             try {
                 New-Item -ItemType Directory -Force $kit | Out-Null
                 $kitItems = @(
-                    "app", "bin", ".opencode", "scripts", "tests",
+                    "app", "scripts", "tests",
                     "install.cmd", "uninstall.cmd", "import-profile.cmd", "config.json", "config.example.json", "opencode.json",
                     "requirements.txt", "requirements-whisper.txt",
                     "AGENTS.md", "README.md", ".gitignore"

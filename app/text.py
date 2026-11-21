@@ -687,21 +687,3 @@ def strip_wake_word(text: str, aliases: list[str]) -> str:
     if size:
         return " ".join(words[size:]).strip()
     return remainder
-
-
-def split_agent_trigger(text: str, triggers: list[str]) -> tuple[bool, str]:
-    """Отделяет явный вызов агента от текста запроса.
-
-    Триггер учитывается только в начале фразы, поэтому «включи фильм
-    агент 007» остаётся обычной командой. Возвращает пару
-    «сработал ли триггер» и остаток запроса.
-    """
-    normalized = normalize(text)
-    prepared = {normalize(trigger) for trigger in triggers}
-    prepared.discard("")
-    for trigger in sorted(prepared, key=len, reverse=True):
-        if normalized == trigger:
-            return True, ""
-        if normalized.startswith(trigger + " "):
-            return True, normalized[len(trigger) :].strip()
-    return False, text

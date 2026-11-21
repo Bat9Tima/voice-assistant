@@ -5,12 +5,10 @@ import json
 import re
 import unittest
 
-from app import browser_cli
 from app.actions import SITE_URLS, ActionRouter
 from app.catalog import (
     ACTIONS,
     action_names,
-    catalog_by_cli,
     catalog_by_tool,
     validate_catalog,
 )
@@ -86,39 +84,18 @@ class CatalogToolCoverageTest(unittest.TestCase):
                 self.assertIsNotNone(self.registry.get(action.tool))
 
 
-class CatalogCliCoverageTest(unittest.TestCase):
-    def test_cli_commands_match_catalog(self) -> None:
-        source = inspect.getsource(browser_cli.main)
-        pattern = re.compile(r'action\s+(?:in\s+\{([^}]*)\}|==\s+"([^"]+)")')
-        commands: set[str] = set()
-        for block, single in pattern.findall(source):
-            commands.update(re.findall(r'"([^"]+)"', block))
-            if single:
-                commands.add(single)
-        self.assertEqual(commands, set(catalog_by_cli()))
-
-    def test_every_cli_command_has_action(self) -> None:
-        for command, actions in catalog_by_cli().items():
-            with self.subTest(command=command):
-                self.assertTrue(actions)
-
-
 class CatalogReadmeCoverageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.readme = normalize((ROOT / "README.md").read_text(encoding="utf-8-sig"))
 
-    def test_readme_covers_every_documented_action(self) -> None:
+    def test_readme_covers_every_action(self) -> None:
         missing = [
-            action.name
-            for action in ACTIONS
-            if action.documented and normalize(action.doc_example) not in self.readme
+            action.name for action in ACTIONS if normalize(action.doc_example) not in self.readme
         ]
         self.assertEqual(missing, [])
 
-    def test_documented_actions_have_examples(self) -> None:
+    def test_actions_have_examples(self) -> None:
         for action in ACTIONS:
-            if not action.documented:
-                continue
             with self.subTest(action=action.name):
                 self.assertTrue(action.doc_example)
                 self.assertTrue(action.examples)

@@ -215,7 +215,7 @@ try {
                 throw "В архиве не найден app\main.py. Это должен быть ZIP с исходниками Voice Assistant."
             }
 
-            foreach ($dirName in @("app", "bin", ".opencode", "scripts", "tests")) {
+            foreach ($dirName in @("app", "scripts", "tests")) {
                 $from = Join-Path $sourceRoot $dirName
                 if (Test-Path -LiteralPath $from) {
                     Copy-Item -LiteralPath $from -Destination $root -Recurse -Force

@@ -57,16 +57,6 @@ class FakeRouter:
         return self.plan_result
 
 
-class FakeBrain:
-    def __init__(self, answer: str = "ответ агента") -> None:
-        self.answer = answer
-        self.asked: list[str] = []
-
-    def ask(self, text: str) -> str:
-        self.asked.append(text)
-        return self.answer
-
-
 class FakeLocalPlanner:
     def __init__(self, plan: LocalPlan | None = None, error: Exception | None = None) -> None:
         self.plan_result = plan
@@ -237,15 +227,13 @@ class TrayStatusTest(unittest.TestCase):
         self.assertEqual(status["tray"], tray_status)
 
 
-class AgentTriggerRoutingTest(unittest.TestCase):
+class CommandRoutingTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
         assistant.tts = FakeTTS()
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
         assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
@@ -254,35 +242,18 @@ class AgentTriggerRoutingTest(unittest.TestCase):
         assistant.set_state = lambda state: assistant.states.append(state)
         return assistant
 
-    def test_unknown_command_does_not_call_agent(self) -> None:
+    def test_unknown_command_falls_back(self) -> None:
         assistant = self.make()
         with patch("app.main.beep") as beep:
             message = assistant.run_text("сделай что-нибудь странное")
         self.assertEqual(message, "Не понял команду")
-        self.assertEqual(assistant.brain.asked, [])
         self.assertEqual(assistant.router.seen, ["сделай что нибудь странное"])
         beep.assert_called_once_with(320, 120)
 
-    def test_explicit_agent_call(self) -> None:
-        assistant = self.make()
-        message = assistant.run_text("Спроси агента, какая погода?")
-        self.assertEqual(message, "ответ агента")
-        self.assertEqual(assistant.brain.asked, ["какая погода"])
-        self.assertEqual(assistant.router.seen, [])
-
-    def test_agent_trigger_without_request(self) -> None:
-        assistant = self.make()
-        with patch("app.main.beep") as beep:
-            message = assistant.run_text("агент")
-        self.assertEqual(message, "Что спросить у агента?")
-        self.assertEqual(assistant.brain.asked, [])
-        beep.assert_not_called()
-
-    def test_router_command_with_word_agent_is_not_trigger(self) -> None:
+    def test_router_command_with_word_agent_is_not_special(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
         message = assistant.run_text("включи фильм агент 007")
         self.assertEqual(message, "Открываю YouTube")
-        self.assertEqual(assistant.brain.asked, [])
         self.assertEqual(assistant.router.seen, ["включи фильм агент 007"])
 
     def test_canonicalizes_text_before_routing(self) -> None:
@@ -323,11 +294,6 @@ class AgentTriggerRoutingTest(unittest.TestCase):
             message = assistant.run_text("вруби музыку")
         self.assertEqual(message, "Не понял команду")
         beep.assert_called_once_with(320, 120)
-
-    def test_agent_trigger_skips_local_planner(self) -> None:
-        assistant = self.make()
-        assistant.run_text("спроси агента, какая погода")
-        self.assertEqual(assistant.planner.seen, [])
 
     def test_question_uses_qa_before_local_planner(self) -> None:
         assistant = self.make()
@@ -512,10 +478,8 @@ class CommandPipelineTest(unittest.TestCase):
     ) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = router or FakeRouter()
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.tts = FakeTTS(enabled=True)
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
 
@@ -733,22 +697,6 @@ class CommandPipelineTest(unittest.TestCase):
         self.assertEqual(weather.cities, [])
         self.assertEqual(browser.calls, [])
         beep.assert_not_called()
-
-    def test_agent_trigger_bypasses_qa(self) -> None:
-        llm = FakeLLM()
-        search = FakeSearch()
-        weather = FakeWeather()
-        assistant = self.make(llm=llm, search=search, weather=weather)
-
-        message = assistant.run_text("спроси агента, какая погода")
-
-        self.assertEqual(message, "ответ агента")
-        self.assertEqual(assistant.brain.asked, ["какая погода"])
-        self.assertEqual(assistant.tts.phrases, ["agent"])
-        self.assertEqual(assistant.tts.said, ["ответ агента"])
-        self.assertEqual(llm.calls, [])
-        self.assertEqual(search.calls, [])
-        self.assertEqual(weather.cities, [])
 
     def test_unexpected_error_is_caught(self) -> None:
         assistant = self.make(llm=FakeLLM(error=RuntimeError("boom")))
@@ -1160,11 +1108,9 @@ class DialogModeTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
         assistant.router = FakeRouter(result)
-        assistant.brain = FakeBrain()
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
         assistant.tts = FakeTTS()
-        assistant.agent_triggers = ["спроси агента", "передай агенту", "агент"]
         assistant.notifications = []
         assistant.states = []
         assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
@@ -1481,7 +1427,6 @@ class DialogModeTest(unittest.TestCase):
         assistant = self.make()
         assistant.mic = None
         assistant._hotkey_listener = None
-        assistant.server = None
         assistant.browser = SimpleNamespace(stop=lambda: None)
         assistant.tray = None
         assistant._cleanup()

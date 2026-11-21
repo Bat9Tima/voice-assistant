@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
-from .config import STATE_DIR
 from .text import levenshtein, normalize, translit
 
 log = logging.getLogger(__name__)
@@ -533,35 +532,14 @@ class BrowserController(threading.Thread):
             page = self._assistant_tab()
             page.keyboard.press(str(args.get("key", "")))
             return {"pressed": args.get("key")}
-        if action == "click":
-            page = self._assistant_tab()
-            page.click(str(args["selector"]), timeout=10000)
-            return {"clicked": args["selector"], "url": page.url}
-        if action == "fill":
-            page = self._assistant_tab()
-            page.fill(str(args["selector"]), str(args.get("text", "")), timeout=10000)
-            return {"filled": args["selector"]}
-        if action == "type":
-            page = self._assistant_tab()
-            page.keyboard.type(str(args.get("text", "")), delay=15)
-            return {"typed": True}
         if action == "eval":
             page = self._assistant_tab()
             return {"result": page.evaluate(str(args["script"]))}
-        if action == "text":
-            page = self._assistant_tab()
-            return {"text": page.inner_text("body", timeout=5000)[:4000]}
         if action == "scroll":
             page = self._assistant_tab()
             delta = -800 if str(args.get("direction", "down")).lower() == "up" else 800
             page.mouse.wheel(0, delta)
             return {"scrolled": delta}
-        if action == "wait":
-            page = self._assistant_tab()
-            page.wait_for_timeout(int(args.get("ms", 1000)))
-            return {"waited": args.get("ms", 1000)}
-        if action == "screenshot":
-            return self._act_screenshot(args)
         if action == "status":
             page = self._assistant_tab()
             return {
@@ -1416,18 +1394,3 @@ class BrowserController(threading.Thread):
             page.keyboard.press("MediaTrackNext" if action == "next" else "MediaTrackPrevious")
         page.wait_for_timeout(800)
         return {"url": page.url, "title": self._safe_title(page)}
-
-    def _act_screenshot(self, args: dict[str, Any]) -> dict[str, Any]:
-        page = self._assistant_tab()
-        raw_path = str(args.get("path") or "")
-        if raw_path:
-            target = Path(raw_path)
-            if not target.is_absolute():
-                target = STATE_DIR / "screenshots" / target
-        else:
-            target = STATE_DIR / "screenshots" / f"screen-{int(time.time())}.png"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-            target = target.with_suffix(".png")
-        page.screenshot(path=str(target))
-        return {"path": str(target)}

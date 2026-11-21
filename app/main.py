@@ -4,7 +4,6 @@ import argparse
 import logging
 import logging.handlers
 import math
-import queue
 import re
 import sys
 import threading
@@ -30,7 +29,6 @@ from .addressee import (
     MODE_SHADOW as ADDRESSEE_SHADOW,
 )
 from .audio import Microphone, levels, rms, save_wav_pcm
-from .brain import OpenCodeBrain
 from .browser import BrowserController
 from .character import CharacterMemory
 from .cloud_llm import CloudLLM
@@ -43,13 +41,12 @@ from .memory_manager import MemoryManager
 from .persona import DEFAULT_MAX_FACTS, PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
-from .server import ControlServer
 from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
 from .style_observer import StyleObserver
 from .summarizer import Summarizer
-from .text import canonicalize, normalize, split_agent_trigger, strip_wake_word
+from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
@@ -141,7 +138,6 @@ class Assistant:
         audio_cfg = cfg["audio"]
         self.browser = BrowserController(cfg)
         self.router = ActionRouter(cfg, self.browser)
-        self.brain = OpenCodeBrain(cfg)
         self.planner = None
         if (cfg.get("local_planner") or {}).get("enabled"):
             # Модуль тянет реестр инструментов, поэтому импортируем его
@@ -228,7 +224,6 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
-        self.agent_triggers = list(cfg["opencode"].get("triggers") or [])
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
             samplerate=int(audio_cfg["sample_rate"]),
@@ -251,7 +246,6 @@ class Assistant:
         self.wake: WakeWordDetector | OpenWakeWordDetector | None = None
         self.barge: BargeInDetector | None = None
         self.tray: TrayUI | None = TrayUI(self) if use_tray else None
-        self.server: ControlServer | None = None
         self._hotkey_listener = None
         self._mutex = None
 
@@ -260,7 +254,6 @@ class Assistant:
         self._paused = False
         self._shutdown = threading.Event()
         self._force_listen = threading.Event()
-        self._command_queue: queue.Queue[str] = queue.Queue()
         self._noise_floor = 0.0
         self._last_wake = 0.0
         self._tts_was_speaking = False
@@ -371,14 +364,6 @@ class Assistant:
         if self.tray is not None:
             self.tray.start()
 
-        self.server = ControlServer(
-            self.cfg,
-            self.browser,
-            status_provider=self.status,
-            command_sink=self.submit_text,
-        )
-        self.server.start()
-
         try:
             self.mic.start()
             self._noise_floor = self.mic.measure_noise(1.0)
@@ -395,7 +380,7 @@ class Assistant:
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("Микрофон недоступен")
-            self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша и HTTP-команды.")
+            self.notify(f"Микрофон недоступен: {exc}. Работает горячая клавиша.")
             self.mic = None  # type: ignore[assignment]
 
         aliases = self.cfg.get("wake_aliases") or [self.cfg.get("wake_word", "хей луна")]
@@ -485,15 +470,6 @@ class Assistant:
                     if self.wake is not None:
                         self.wake.reset()
 
-                # Команда из API важнее текущей озвучки: не ждём её конца.
-                try:
-                    text = self._command_queue.get_nowait()
-                except queue.Empty:
-                    text = None
-                if text:
-                    self._run_text_command(text)
-                    continue
-
                 self._handle_speech()
                 continue
             if self._tts_was_speaking:
@@ -513,14 +489,6 @@ class Assistant:
                     self._stop_dialog("hotkey")
                     continue
                 self._listen_and_execute()
-                continue
-
-            try:
-                text = self._command_queue.get_nowait()
-            except queue.Empty:
-                text = None
-            if text:
-                self._run_text_command(text)
                 continue
 
             if self._dialog_active:
@@ -563,22 +531,10 @@ class Assistant:
             time.sleep(0.05)
             return
         if self.mic is None:
-            # Диалог из текстовых команд: микрофона нет, ждём API или hotkey.
+            # Микрофона нет: диалог ждёт только горячую клавишу.
             time.sleep(0.1)
             return
         self._listen_and_execute(chime=False, dialog=True)
-
-    def _run_text_command(self, text: str) -> None:
-        """Новая команда начинает новый ответ, старые уведомления не нужны."""
-        self.clear_notifications()
-        try:
-            self._process(text)
-            if getattr(self, "_dialog_active", False):
-                self._dialog_last = time.monotonic()
-        finally:
-            if self.mic is not None:
-                self.mic.flush()
-            self._preroll.clear()
 
     def _handle_speech(self) -> None:
         """Слушает микрофон, пока ассистент говорит: «стоп» или wake-фраза."""
@@ -957,17 +913,11 @@ class Assistant:
         return b"".join(chunks[start_index:])
 
     # ------------------------------------------------------------------ process
-    def submit_text(self, text: str) -> None:
-        self._command_queue.put(text)
-        log.info("Текстовая команда из API: %s", text)
-
-    def _ack(self, text: str, route: Route | None = None) -> None:
+    def _ack(self, route: Route | None = None) -> None:
         """Короткая фраза-подводка, чтобы ответ начинался сразу."""
         if not self.tts.enabled:
             return
-        if split_agent_trigger(text, self.agent_triggers)[0]:
-            category = "agent"
-        elif route is not None and route.handled:
+        if route is not None and route.handled:
             if route.kind == "datetime":
                 # Ответ мгновенный: подводка только добавит паузу.
                 return
@@ -1223,26 +1173,9 @@ class Assistant:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
-            triggered, request = split_agent_trigger(text, self.agent_triggers)
-            if not in_dialog or route is not None or triggered:
-                self._ack(text, route)
+            if not in_dialog or route is not None:
+                self._ack(route)
             started = time.monotonic()
-
-            if triggered:
-                if not request:
-                    message = "Что спросить у агента?"
-                    self.notify(message)
-                    self.tts.phrase("clarify", phrase_id="clarify_1")
-                    return message
-                answer = self.brain.ask(request)
-                answer = (answer or "").strip()
-                if answer:
-                    self.notify(answer[:250])
-                    self.tts.say(answer)
-                else:
-                    self.notify("Готово")
-                    self.tts.phrase("done")
-                return answer
 
             result = self.router.handle(text)
             if result is not None:
@@ -1354,8 +1287,6 @@ class Assistant:
                 self._hotkey_listener.stop()
             except Exception:
                 pass
-        if self.server is not None:
-            self.server.stop()
         self.tts.shutdown()
         self.browser.stop()
         if self.tray is not None:
@@ -1364,7 +1295,7 @@ class Assistant:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Голосовой ассистент на базе OpenCode")
+    parser = argparse.ArgumentParser(description="Локальный голосовой ассистент")
     parser.add_argument("--no-tray", action="store_true", help="Без иконки в трее")
     parser.add_argument("--text", help="Выполнить текстовую команду и выйти")
     parser.add_argument("--config", help="Путь к config.json")

@@ -72,11 +72,6 @@
     "start_url": "https://www.google.com"
   },
 
-  "control": {
-    "host": "127.0.0.1",
-    "port": 8765
-  },
-
   "context": {
     "ttl_sec": 180
   },
@@ -90,16 +85,6 @@
     "threshold": 0.6,
     "timeout_sec": 4.0,
     "answer_ttl_sec": 120
-  },
-
-  "opencode": {
-    "enabled": true,
-    "agent": "voice",
-    "model": "opencode/deepseek-v4.1-flash-free",
-    "triggers": ["спроси агента", "спроси у агента", "передай агенту", "агент"],
-    "cli": "",
-    "timeout_sec": 180,
-    "standalone": false
   },
 
   "cloud_llm": {
