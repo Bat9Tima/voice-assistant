@@ -32,6 +32,7 @@ from .prompts import (
     RAG_SYSTEM,
     WEB_SEARCH_SUFFIX,
 )
+from .text import strip_markdown_links
 
 log = logging.getLogger(__name__)
 
@@ -788,6 +789,9 @@ class CloudLLM:
             started = time.monotonic()
             yielded = False
             search_seen = False
+            buffered: list[str] = []
+            flushed = False
+
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     for raw in response:
@@ -805,16 +809,40 @@ class CloudLLM:
                         if kind == "response.output_text.delta":
                             delta = event.get("delta")
                             if isinstance(delta, str) and delta:
-                                yielded = True
-                                yield delta
+                                if search_seen:
+                                    buffered.append(delta)
+                                else:
+                                    yielded = True
+                                    yield delta
                         elif kind == "response.web_search_call.searching":
                             if not search_seen:
                                 search_seen = True
                                 log.info("CloudLLM: web_search ищет в интернете")
+                        elif kind == "response.output_text.done":
+                            if search_seen and not buffered:
+                                full = event.get("text")
+                                if isinstance(full, str) and full:
+                                    buffered.append(full)
                         elif kind == "response.completed":
+                            if search_seen and not buffered:
+                                full = _responses_text(event.get("response") or {})
+                                if full:
+                                    buffered.append(full)
+                            if search_seen and buffered and not flushed:
+                                flushed = True
+                                text = _clean_stream_text(buffered)
+                                if text:
+                                    yielded = True
+                                    yield text
                             self._log_responses_usage(event.get("response") or {}, target, started)
                         elif kind in {"response.failed", "error"}:
                             raise LLMError(_responses_error(event))
+                if search_seen and buffered and not flushed:
+                    flushed = True
+                    text = _clean_stream_text(buffered)
+                    if text:
+                        yielded = True
+                        yield text
                 if not yielded:
                     raise LLMError("пустой ответ модели")
                 return
@@ -884,6 +912,16 @@ class CloudLLM:
             details.get("cached_tokens"),
             output.get("reasoning_tokens"),
         )
+
+
+def _clean_stream_text(parts: list[str]) -> str:
+    """Склеивает ответ с поиском и убирает citation-ссылки.
+
+    Потоковый TTS режет текст по предложениям, а ссылка может попасть в
+    него кусками и прозвучать как URL. Поэтому ответ после web_search
+    отдаётся одним очищенным куском.
+    """
+    return " ".join(strip_markdown_links("".join(parts)).split())
 
 
 def _responses_text(data: dict[str, Any]) -> str:

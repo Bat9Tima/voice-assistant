@@ -110,11 +110,16 @@ def responses_body(text: str = "Ответ") -> bytes:
     ).encode("utf-8")
 
 
-def responses_sse(*texts: str, done: bool = True) -> list[bytes]:
-    events = [
-        {"type": "response.created"},
-        {"type": "response.web_search_call.searching"},
-        *({"type": "response.output_text.delta", "delta": text} for text in texts),
+def responses_sse(
+    *texts: str,
+    done: bool = True,
+    search: bool = True,
+) -> list[bytes]:
+    events = [{"type": "response.created"}]
+    if search:
+        events.append({"type": "response.web_search_call.searching"})
+    events.extend({"type": "response.output_text.delta", "delta": text} for text in texts)
+    events.append(
         {
             "type": "response.completed",
             "response": {
@@ -125,8 +130,8 @@ def responses_sse(*texts: str, done: bool = True) -> list[bytes]:
                     "output_tokens_details": {"reasoning_tokens": 0},
                 }
             },
-        },
-    ]
+        }
+    )
     lines = [
         ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8")
         for event in events
@@ -816,6 +821,41 @@ class CloudLLMWebSearchTest(unittest.TestCase):
             )
 
         self.assertEqual(text, "Привет")
+
+    def test_responses_stream_buffers_and_cleans_citations(self) -> None:
+        llm = make_llm(retries=0)
+        lines = responses_sse(
+            "Ответ. ([community.creative-assembly.com](",
+            "https://example.com/forum?source=openai))",
+        )
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            chunks = list(
+                llm.chat_stream(
+                    [{"role": "user", "content": "привет"}],
+                    web_search=True,
+                )
+            )
+
+        self.assertEqual(chunks, ["Ответ."])
+
+    def test_responses_stream_without_search_still_streams_deltas(self) -> None:
+        llm = make_llm(retries=0)
+        lines = responses_sse("При", "вет", search=False)
+        with patch(
+            "app.cloud_llm.urllib.request.urlopen",
+            return_value=FakeStreamResponse(lines),
+        ):
+            chunks = list(
+                llm.chat_stream(
+                    [{"role": "user", "content": "привет"}],
+                    web_search=True,
+                )
+            )
+
+        self.assertEqual(chunks, ["При", "вет"])
 
     def test_responses_stream_failed_event_is_an_error(self) -> None:
         lines = [
