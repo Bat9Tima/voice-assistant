@@ -55,7 +55,6 @@ class Tool:
     name: str
     description: str
     params: tuple[ToolParam, ...] = ()
-    risk: str = "low"
     validate: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
 
     def prompt_line(self) -> str:

@@ -724,8 +724,6 @@ class ParallelTranscriber:
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="stt")
         self._load_lock = threading.Lock()
         self._loaded = False
-        self._english_error: str | None = None
-        self._locator_error: str | None = None
 
     @property
     def loaded(self) -> bool:
@@ -752,10 +750,6 @@ class ParallelTranscriber:
                 try:
                     future.result()
                 except Exception as exc:  # noqa: BLE001
-                    if name == "english":
-                        self._english_error = str(exc)
-                    else:
-                        self._locator_error = str(exc)
                     log.warning(
                         "%s распознавание недоступно: %s",
                         "Английское" if name == "english" else "Локатор английского",
@@ -947,8 +941,6 @@ class ParallelTranscriber:
     def transcribe(self, pcm: bytes) -> str:
         return self.transcribe_details(pcm).text
 
-
-Transcriber = WhisperTranscriber
 
 _GIGAAM_ALIASES = {"gigaam", "giga-am", "sherpa", "sherpa-onnx", "nemo"}
 _WHISPER_ALIASES = {"whisper", "faster-whisper", "faster_whisper"}

@@ -211,15 +211,6 @@ class StyleProfile:
         return self.words / self.messages if self.messages else 0.0
 
     @property
-    def avg_chars(self) -> float:
-        return self.chars / self.messages if self.messages else 0.0
-
-    @property
-    def profanity_rate(self) -> float:
-        """Доля матерных слов среди всех слов."""
-        return self.profanity_words / self.words if self.words else 0.0
-
-    @property
     def profanity_message_rate(self) -> float:
         """Доля сообщений, где встретился мат."""
         return self.profanity_messages / self.messages if self.messages else 0.0

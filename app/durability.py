@@ -174,8 +174,3 @@ def classify_scope(text: str) -> str:
     if any(marker in flat for marker in _TEMPORARY):
         return STATE
     return TRAIT
-
-
-def classify_durability(text: str) -> str:
-    """Совместимость: ``temporary`` для состояния, иначе ``permanent``."""
-    return TEMPORARY if classify_scope(text) == STATE else PERMANENT

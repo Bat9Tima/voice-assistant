@@ -69,8 +69,7 @@
     "chrome_path": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "port": 9222,
     "profile_dir": "%LOCALAPPDATA%\\VoiceAssistant\\chrome-profile",
-    "start_url": "https://www.google.com",
-    "autoplay": true
+    "start_url": "https://www.google.com"
   },
 
   "control": {
@@ -131,6 +130,53 @@
     "temperature": 0.0,
     "max_tokens": 256,
     "keep_alive": "30m"
+  },
+
+  "qa": {
+    "enabled": true,
+    "weather": {
+      "city": "Новосибирск",
+      "forecast_days": 3,
+      "timeout_sec": 10
+    },
+    "search": {
+      "enabled": true,
+      "api_key": "",
+      "max_results": 5,
+      "search_depth": "basic",
+      "topic": "general",
+      "news_days": 7,
+      "news_domains": [
+        "rbc.ru", "lenta.ru", "interfax.ru", "ria.ru", "tass.ru",
+        "kommersant.ru", "vedomosti.ru"
+      ],
+      "timeout_sec": 15
+    },
+    "answer": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "timeout_sec": 45,
+      "context_ttl_sec": 180,
+      "search_fallback": true
+    }
+  },
+
+  "tts": {
+    "enabled": false,
+    "base_url": "https://api.proxyapi.ru/v1/audio/speech",
+    "api_key": "",
+    "model": "fish-audio/drama-3",
+    "voice": "",
+    "phrases_dir": "",
+    "cache_dir": "",
+    "speak_answers": true,
+    "max_chars": 900,
+    "volume": 1.0,
+    "speed": 1.0,
+    "workers": 3,
+    "chunk_wait_sec": 30,
+    "prebuffer_sec": 0,
+    "timeout_sec": 60
   },
 
   "dialog": {
@@ -220,6 +266,12 @@
     "recent_item_chars": 320,
     "facts_limit": 6,
     "facts_max_chars": 900,
+    "facts_collection": "facts",
+    "facts_top_k": 4,
+    "facts_min_score": 0.42,
+    "temporary_ttl_days": 1,
+    "unfinished_ttl_days": 14,
+    "unfinished_limit": 5,
     "timeout_sec": 10,
     "index_version": 2
   }

@@ -48,6 +48,13 @@ DEFAULTS: dict[str, Any] = {
         "хей луна парк",
         "эй луна парк",
     ],
+    # Перебивание голосом во время озвучки: «стоп», «хватит», «тише».
+    # Пустой список стоп-слов — встроенный набор из app/wake.py.
+    "barge_in": {
+        "enabled": True,
+        "min_level": 0.002,
+        "stop_words": [],
+    },
     "language": "ru",
     "hotkey": "ctrl+alt+space",
     "notifications": True,
@@ -69,6 +76,8 @@ DEFAULTS: dict[str, Any] = {
         "duck_while_listening": True,
         "duck_level": 0.15,
         "duck_processes": ["chrome.exe"],
+        # Сохранять последнюю команду в state/last-command.wav для отладки.
+        "save_last_command": False,
     },
     "stt": {
         "engine": "gigaam",
@@ -94,7 +103,6 @@ DEFAULTS: dict[str, Any] = {
         "port": 9222,
         "profile_dir": r"%LOCALAPPDATA%\VoiceAssistant\chrome-profile",
         "start_url": "https://www.google.com",
-        "autoplay": True,
     },
     "control": {"host": "127.0.0.1", "port": 8765},
     # Короткий контекст продолжений: «ещё один», «вторую», «тише».

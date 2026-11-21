@@ -223,9 +223,6 @@ class PhraseBank:
             sum(len(files) for files in self._by_id.values()),
         )
 
-    def categories(self) -> list[str]:
-        return sorted(self._by_category)
-
     def pick(self, category: str) -> Path | None:
         with self._lock:
             groups = self._by_category.get(category)

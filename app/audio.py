@@ -109,7 +109,7 @@ class Microphone:
         self._stream.start()
         log.info("Микрофон открыт: %s Гц, устройство=%s", rate, self.device)
 
-    def _callback(self, indata, frames, time_info, status) -> None:
+    def _callback(self, indata, _frames, _time_info, status) -> None:
         if status:
             log.debug("Статус аудиопотока: %s", status)
         try:

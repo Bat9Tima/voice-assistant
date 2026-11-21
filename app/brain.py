@@ -120,9 +120,6 @@ class OpenCodeBrain:
         except OSError as exc:
             log.warning("Не удалось сохранить сессию OpenCode: %s", exc)
 
-    def reset_session(self) -> None:
-        self._save_session(None)
-
     # -------------------------------------------------------------------- call
     def ask(self, text: str) -> str:
         if not self.cfg.get("enabled", True):
