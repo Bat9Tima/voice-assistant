@@ -425,6 +425,7 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(assistant.image_search.images, [b"jpeg"])
         self.assertEqual(assistant.llm.calls[0][0], "кто это")
         self.assertIn("Илон Маск", assistant.llm.calls[0][1])
+        self.assertEqual(assistant.llm.kwargs[0].get("style"), "image_search")
         self.assertEqual(assistant.tts.said, ["Это Илон Маск."])
 
     def test_image_search_reuses_pending_frame(self) -> None:
