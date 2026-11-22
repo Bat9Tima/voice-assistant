@@ -41,6 +41,7 @@ from .image_search import (
     clean_answer,
     fallback_answer,
     format_results,
+    results_preview,
 )
 from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
@@ -1068,6 +1069,7 @@ class Assistant:
         except Exception as exc:  # noqa: BLE001
             log.warning("Обратный поиск: не удалось снять экран: %s", exc)
             return self._image_search_failure("Не удалось посмотреть на экран")
+        log.info("Обратный поиск: кадр %s КБ", max(1, len(image) // 1024))
         try:
             result = search.search(image)
         except ImageSearchError as exc:
@@ -1085,6 +1087,7 @@ class Assistant:
             limit=search.max_results,
             max_passage_chars=search.max_passage_chars,
         )
+        log.info("Обратный поиск: топ: %s", results_preview(result))
         prompt = request or "Что это за фото?"
         try:
             message = clean_answer(

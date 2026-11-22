@@ -231,6 +231,22 @@ def format_results(
     return "\n".join(lines)
 
 
+def results_preview(
+    result: ImageSearchResult,
+    *,
+    limit: int = 3,
+) -> str:
+    """Однострочный список верхних результатов для лога."""
+    parts: list[str] = []
+    for item in result.images[: max(1, limit)]:
+        title = item.page_title or item.host or "без названия"
+        if item.host and item.host != title:
+            parts.append(f"{title} ({item.host})")
+        else:
+            parts.append(title)
+    return " | ".join(parts)
+
+
 def fallback_answer(result: ImageSearchResult) -> str:
     """Ответ без модели, если пересказ не удался."""
     if not result.images:
@@ -338,4 +354,5 @@ __all__ = [
     "fallback_answer",
     "format_results",
     "match_request",
+    "results_preview",
 ]

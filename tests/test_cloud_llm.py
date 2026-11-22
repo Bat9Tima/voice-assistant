@@ -177,6 +177,19 @@ class CloudLLMAnswerTest(unittest.TestCase):
         self.assertIn("Источники:", user)
         self.assertIn("[1] Источник", user)
 
+    def test_image_search_context_is_not_called_sources(self) -> None:
+        llm = make_llm()
+        with patch.object(llm, "_complete", return_value="Ответ") as complete:
+            llm.answer(
+                "что это за фото?",
+                "1. Илон Маск — ru.wikipedia.org",
+                style="image_search",
+            )
+        _, system, user = complete.call_args.args
+        self.assertIn("обратного поиска", system)
+        self.assertIn("Результаты поиска по картинке:", user)
+        self.assertNotIn("Источники:", user)
+
     def test_answer_with_history_uses_followup_prompt(self) -> None:
         llm = make_llm()
         history = (

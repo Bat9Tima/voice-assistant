@@ -18,6 +18,7 @@ from app.image_search import (
     fallback_answer,
     format_results,
     match_request,
+    results_preview,
 )
 
 
@@ -224,6 +225,20 @@ class ParseAndFormatTest(unittest.TestCase):
         self.assertIn("Предприним…", text)
         self.assertNotIn("SpaceX", text)
         self.assertNotIn("https://", text)
+
+    def test_results_preview_lists_titles_and_hosts(self) -> None:
+        result = ImageSearchResult(
+            images=(
+                ImageMatch(page_title="Илон Маск", host="ru.wikipedia.org"),
+                ImageMatch(host="spacex.com"),
+                ImageMatch(page_title="Третья", host="example.com"),
+                ImageMatch(page_title="Четвёртая"),
+            )
+        )
+        self.assertEqual(
+            results_preview(result, limit=3),
+            "Илон Маск (ru.wikipedia.org) | spacex.com | Третья (example.com)",
+        )
 
     def test_fallback_uses_first_title(self) -> None:
         result = ImageSearchResult(images=(ImageMatch(page_title="Илон Маск"),))
