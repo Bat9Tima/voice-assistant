@@ -179,6 +179,19 @@ class ScreenVision:
             return False
         return not any(word in _QUESTION_WORDS for word in words)
 
+    def capture(self) -> bytes:
+        """Снимает экран и запоминает кадр, не требуя модель.
+
+        Нужно инструментам вроде обратного поиска: им достаточно
+        картинки, а недоступный GPT не должен блокировать снимок.
+        """
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        image = self._capture()
+        self._pending = image
+        self._pending_at = time.monotonic()
+        return image
+
     def snapshot(self) -> bytes:
         """Снимает экран и запоминает кадр для следующих вопросов."""
         if not self.enabled:
@@ -187,10 +200,11 @@ class ScreenVision:
             raise VisionError("не задана vision.model")
         if not self.llm.available():
             raise VisionError("зрение недоступно")
-        image = self._capture()
-        self._pending = image
-        self._pending_at = time.monotonic()
-        return image
+        return self.capture()
+
+    def pending_image(self) -> bytes | None:
+        """Свежий кадр для другого инструмента, если TTL не истёк."""
+        return self._pending_image()
 
     def has_pending(self) -> bool:
         """Есть ли свежий кадр для отдельного вопроса."""

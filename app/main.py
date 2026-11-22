@@ -35,6 +35,13 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .image_search import (
+    ImageSearchError,
+    YandexImageSearch,
+    clean_answer,
+    fallback_answer,
+    format_results,
+)
 from .intent_classifier import MODE_ACTIVE, IntentClassifier
 from .memory import MemoryService
 from .memory_manager import MemoryManager
@@ -149,6 +156,7 @@ class Assistant:
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
         self.vision = ScreenVision(cfg, self.llm)
+        self.image_search = YandexImageSearch(cfg)
         self.intent = IntentClassifier(cfg)
         self.addressee = AddresseeGate(cfg)
         self.tts = TTSService(cfg)
@@ -1016,6 +1024,87 @@ class Assistant:
         self._remember_vision_exchange(question or request, message)
         return message
 
+    def _image_search_problem(self, search: YandexImageSearch) -> str | None:
+        if not search.enabled:
+            return "Поиск по фото выключен"
+        if not search.available():
+            return "Поиск по фото не настроен: проверьте ключ и folder_id"
+        return None
+
+    def _image_search_failure(self, message: str) -> str:
+        self.notify(message[:250])
+        beep(320, 120)
+        self.tts.phrase("error")
+        return message
+
+    @staticmethod
+    def _image_search_frame(vision: ScreenVision) -> bytes:
+        """Свежий кадр из зрения или новый снимок экрана."""
+        pending = getattr(vision, "pending_image", None)
+        if callable(pending):
+            image = pending()
+            if image:
+                return image
+        capture = getattr(vision, "capture", None)
+        if callable(capture):
+            return capture()
+        return vision.snapshot()
+
+    def _answer_image_search(
+        self,
+        search: YandexImageSearch,
+        vision: ScreenVision | None,
+        request: str,
+        question: str = "",
+    ) -> str:
+        """Обратный поиск по картинке и короткий пересказ выдачи."""
+        problem = self._image_search_problem(search)
+        if problem is not None:
+            return self._image_search_failure(problem)
+        if vision is None:
+            return self._image_search_failure("Зрение недоступно")
+        try:
+            image = self._image_search_frame(vision)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Обратный поиск: не удалось снять экран: %s", exc)
+            return self._image_search_failure("Не удалось посмотреть на экран")
+        try:
+            result = search.search(image)
+        except ImageSearchError as exc:
+            log.warning("Обратный поиск: %s", exc)
+            return self._image_search_failure(str(exc))
+        if not result.images:
+            message = "Ничего похожего не нашёл"
+            self.notify(message)
+            self.tts.say(message)
+            self._remember_vision_exchange(question or request, message)
+            return message
+
+        context = format_results(
+            result,
+            limit=search.max_results,
+            max_passage_chars=search.max_passage_chars,
+        )
+        prompt = request or "Что это за фото?"
+        try:
+            message = clean_answer(
+                self.llm.answer(
+                    prompt,
+                    context=context,
+                    style="image_search",
+                    timeout=search.timeout,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Обратный поиск: не удалось пересказать: %s", exc)
+            message = clean_answer(fallback_answer(result))
+        if not message:
+            message = clean_answer(fallback_answer(result))
+        self.notify(message[:250])
+        self.tts.say(message)
+        self._remember_vision_exchange(question or request, message)
+        return message
+
     def _confirm(self, started: float) -> None:
         """«Готово» только если операция заняла заметное время."""
         if time.monotonic() - started >= 1.2:
@@ -1256,21 +1345,29 @@ class Assistant:
 
             qa = getattr(self, "qa", None)
             vision = getattr(self, "vision", None)
+            image_search = getattr(self, "image_search", None)
+            image_request: str | None = None
+            if image_search is not None:
+                matched, request = image_search.match(text)
+                if matched:
+                    image_request = request
             vision_request: str | None = None
             vision_pending = False
-            if vision is not None:
+            if image_request is None and vision is not None:
                 matched, request = vision.match(text)
                 if matched:
                     vision_request = request
                 elif vision.has_pending():
                     vision_pending = True
             # Разбираем фразу один раз: и для подводки, и для ответа.
-            # Команда зрения не должна уходить в Q&A как вопрос.
+            # Команды зрения и поиска по фото не должны уходить в Q&A.
             raw_route = (
-                None if vision_request is not None else (qa.route(text) if qa is not None else None)
+                None
+                if vision_request is not None or image_request is not None
+                else (qa.route(text) if qa is not None else None)
             )
             route = raw_route
-            if in_dialog and vision_request is None:
+            if in_dialog and vision_request is None and image_request is None:
                 route = self._dialog_route(text, route)
             if in_dialog and route is not None and route.kind not in DIALOG_QA_KINDS:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
@@ -1293,7 +1390,10 @@ class Assistant:
                     route = None
 
             snapshot_only = (
-                vision is not None and vision_request == "" and vision.wants_snapshot(text)
+                image_request is None
+                and vision is not None
+                and vision_request == ""
+                and vision.wants_snapshot(text)
             )
 
             result = None
@@ -1309,12 +1409,25 @@ class Assistant:
 
             if (
                 not acked
-                and (not in_dialog or route is not None or vision_request is not None)
+                and (
+                    not in_dialog
+                    or route is not None
+                    or vision_request is not None
+                    or image_request is not None
+                )
                 and not snapshot_only
             ):
                 self._ack(route)
             started = time.monotonic()
 
+            if image_request is not None:
+                assert image_search is not None
+                return self._answer_image_search(
+                    image_search,
+                    vision,
+                    image_request,
+                    question=text,
+                )
             if vision_request is not None:
                 if snapshot_only:
                     return self._remember_vision(vision)

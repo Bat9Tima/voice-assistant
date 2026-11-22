@@ -166,6 +166,27 @@
     ]
   },
 
+  "image_search": {
+    "enabled": true,
+    "api_key": "",
+    "folder_id": "",
+    "family_mode": "FAMILY_MODE_MODERATE",
+    "max_results": 5,
+    "max_passage_chars": 300,
+    "timeout_sec": 15,
+    "cooldown_sec": 3,
+    "triggers": [
+      "поищи по фото",
+      "поищи по картинке",
+      "поищи в интернете по фото",
+      "найди по фото",
+      "найди по картинке",
+      "что это за фото",
+      "что за фото",
+      "поиск по фото"
+    ]
+  },
+
   "local_planner": {
     "enabled": false,
     "base_url": "http://127.0.0.1:11434/v1",
