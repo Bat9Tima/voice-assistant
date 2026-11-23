@@ -111,7 +111,7 @@ class FakeVision:
         return b"jpeg"
 
     def pending_image(self) -> bytes | None:
-        return b"jpeg" if self.pending else None
+        return b"old-jpeg" if self.pending else None
 
     def snapshot(self) -> bytes:
         self.snapshots += 1
@@ -513,11 +513,11 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(assistant.llm.kwargs[0].get("style"), "image_search")
         self.assertEqual(assistant.tts.said, ["Это Илон Маск."])
 
-    def test_image_search_reuses_pending_frame(self) -> None:
+    def test_image_search_ignores_pending_frame(self) -> None:
         assistant = self.make()
         assistant.vision.pending = True
         assistant.run_text("поищи по фото")
-        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.vision.captures, 1)
         self.assertEqual(assistant.image_search.images, [b"jpeg"])
 
     def test_image_search_captures_without_pending(self) -> None:

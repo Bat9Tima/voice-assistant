@@ -1247,12 +1247,12 @@ class Assistant:
 
     @staticmethod
     def _image_search_frame(vision: ScreenVision) -> bytes:
-        """Свежий кадр из зрения или новый снимок экрана."""
-        pending = getattr(vision, "pending_image", None)
-        if callable(pending):
-            image = pending()
-            if image:
-                return image
+        """Новый снимок экрана для обратного поиска.
+
+        Кэш зрения может хранить кадр прошлой команды до
+        ``followup_ttl_sec``. Для «поиска по фото» он не подходит: экран
+        мог смениться, и поиск уйдёт по старой картинке.
+        """
         capture = getattr(vision, "capture", None)
         if callable(capture):
             return capture()
@@ -1276,7 +1276,7 @@ class Assistant:
         except Exception as exc:  # noqa: BLE001
             log.warning("Обратный поиск: не удалось снять экран: %s", exc)
             return self._image_search_failure("Не удалось посмотреть на экран")
-        log.info("Обратный поиск: кадр %s КБ", max(1, len(image) // 1024))
+        log.info("Обратный поиск: свежий кадр %s КБ", max(1, len(image) // 1024))
         try:
             result = search.search(image)
         except ImageSearchError as exc:
