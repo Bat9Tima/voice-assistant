@@ -435,7 +435,13 @@ class DialogService:
             return f"Забыла: {'; '.join(texts)}."
         return None
 
-    def reply(self, text: str, on_chunk: Callable[[str], None] | None = None) -> str:
+    def reply(
+        self,
+        text: str,
+        on_chunk: Callable[[str], None] | None = None,
+        *,
+        hint: str = "",
+    ) -> str:
         """Один ход: окно истории + текущая реплика.
 
         Реплики попадают в сессию только после успешного ответа, чтобы
@@ -445,6 +451,8 @@ class DialogService:
 
         ``on_chunk`` включает потоковый путь: куски ответа сразу отдаются
         в озвучку, а в историю попадает весь текст после завершения.
+        ``hint`` — дополнительный обязательный блок промпта, например
+        просьба отвечать по описанию последнего снимка экрана.
         """
         text = " ".join((text or "").split())
         if not text:
@@ -457,13 +465,20 @@ class DialogService:
                 on_chunk(answer)
         else:
             self.observe_style(text)
+            tail: list[ContextPart] = []
             character = self.character_part()
+            if character is not None:
+                tail.append(character)
+            if hint.strip():
+                # Свежая просьба пользователя важнее общей памяти, поэтому
+                # подсказка идёт последней и не режется.
+                tail.append(ContextPart("vision_context", hint.strip(), required=True))
             built = self.context.build(
                 parts=self.system_parts(),
                 history=self.sessions.history(),
                 user_text=text,
                 memory=self._memory_block(text),
-                tail=[character] if character is not None else [],
+                tail=tail,
             )
             if self.streaming and on_chunk is not None and hasattr(self.llm, "chat_stream"):
                 answer = self._reply_stream(built, on_chunk)
