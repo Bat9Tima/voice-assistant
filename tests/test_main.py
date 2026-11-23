@@ -274,6 +274,62 @@ class TrayStatusTest(unittest.TestCase):
         self.assertEqual(status["tray"], tray_status)
 
 
+class PauseHotkeyTest(unittest.TestCase):
+    @staticmethod
+    def make(**cfg: Any) -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        assistant.cfg = {
+            "hotkey": "ctrl+alt+space",
+            "pause_hotkey": "ctrl+alt+m",
+            **cfg,
+        }
+        assistant._paused = False
+        assistant.mic = None
+        assistant.notifications = []
+        assistant.states = []
+        assistant.tts = FakeTTS()
+        assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
+            message
+        )
+        assistant.set_state = assistant.states.append
+        return assistant
+
+    def test_bindings_include_pause_hotkey(self) -> None:
+        assistant = self.make()
+        bindings = assistant._hotkey_bindings()
+        self.assertEqual(
+            set(bindings),
+            {"<ctrl>+<alt>+<space>", "<ctrl>+<alt>+m"},
+        )
+        self.assertEqual(bindings["<ctrl>+<alt>+m"], assistant.toggle_pause)
+
+    def test_empty_pause_hotkey_disables_binding(self) -> None:
+        assistant = self.make(pause_hotkey="")
+        self.assertEqual(
+            set(assistant._hotkey_bindings()),
+            {"<ctrl>+<alt>+<space>"},
+        )
+
+    def test_duplicate_pause_hotkey_keeps_listen(self) -> None:
+        assistant = self.make(pause_hotkey="ctrl+alt+space")
+        bindings = assistant._hotkey_bindings()
+        self.assertEqual(set(bindings), {"<ctrl>+<alt>+<space>"})
+        self.assertEqual(bindings["<ctrl>+<alt>+<space>"], assistant.trigger_listen)
+
+    def test_toggle_pause_switches_state_and_speaks(self) -> None:
+        assistant = self.make()
+        assistant.toggle_pause()
+        self.assertTrue(assistant._paused)
+        self.assertEqual(assistant.states, ["paused"])
+        self.assertEqual(assistant.notifications, ["Пауза"])
+        self.assertEqual(assistant.tts.phrases, ["mic"])
+
+        assistant.toggle_pause()
+        self.assertFalse(assistant._paused)
+        self.assertEqual(assistant.states, ["paused", "idle"])
+        self.assertEqual(assistant.notifications, ["Пауза", "Снова слушаю"])
+
+
 class CommandRoutingTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
@@ -1794,6 +1850,12 @@ class RecordDialogLimitsTest(unittest.TestCase):
         assistant = self.make(dialog=False)
         self.assertEqual(assistant._record_command(dialog=False), b"")
         self.assertEqual(assistant.mic.reads, 60)
+
+    def test_pause_stops_recording_immediately(self) -> None:
+        assistant = self.make(dialog=False)
+        assistant._paused = True
+        self.assertEqual(assistant._record_command(dialog=False), b"")
+        self.assertEqual(assistant.mic.reads, 0)
 
 
 if __name__ == "__main__":

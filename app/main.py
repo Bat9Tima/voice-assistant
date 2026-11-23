@@ -335,6 +335,7 @@ class Assistant:
             "paused": self._paused,
             "wake_word": self.cfg.get("wake_word"),
             "hotkey": self.cfg.get("hotkey"),
+            "pause_hotkey": self.cfg.get("pause_hotkey"),
             "stt_loaded": self.stt.loaded,
             "stt_english_loaded": getattr(self.stt, "english_loaded", False),
             "wake_loaded": self.wake is not None,
@@ -637,15 +638,35 @@ class Assistant:
                 f"Распознавание речи не загрузилось: {exc}. Быстрые команды работают без него."
             )
 
+    def _hotkey_bindings(self) -> dict[str, Any]:
+        """Глобальные комбинации: что вызывать по каждой клавише."""
+        bindings: dict[str, Any] = {}
+        for name, action in (
+            ("hotkey", self.trigger_listen),
+            ("pause_hotkey", self.toggle_pause),
+        ):
+            value = str(self.cfg.get(name) or "").strip()
+            if not value:
+                continue
+            combo = to_pynput(value)
+            if combo in bindings:
+                log.warning("Горячая клавиша %s уже занята, пропускаю %s", value, name)
+                continue
+            bindings[combo] = action
+            log.info("Горячая клавиша %s: %s (%s)", name, value, combo)
+        return bindings
+
     def _start_hotkey(self) -> None:
         try:
+            bindings = self._hotkey_bindings()
+            if not bindings:
+                log.info("Горячие клавиши отключены")
+                return
             from pynput import keyboard
 
-            combo = to_pynput(self.cfg.get("hotkey", "ctrl+alt+space"))
-            listener = keyboard.GlobalHotKeys({combo: self.trigger_listen})
+            listener = keyboard.GlobalHotKeys(bindings)
             self._hotkey_listener = listener
             listener.start()
-            log.info("Горячая клавиша: %s (%s)", self.cfg.get("hotkey"), combo)
         except Exception:  # noqa: BLE001
             log.exception("Не удалось зарегистрировать горячую клавишу")
 
@@ -660,6 +681,9 @@ class Assistant:
 
     def toggle_pause(self) -> None:
         self._paused = not self._paused
+        if self._paused and getattr(self, "mic", None) is not None:
+            # Нажали паузу во время записи: уже накопленный звук не нужен.
+            self.mic.flush()
         self.set_state("paused" if self._paused else "idle")
         self.notify("Пауза" if self._paused else "Снова слушаю")
         self.tts.phrase("mic", phrase_id="mic_1" if self._paused else "mic_2")
@@ -668,7 +692,8 @@ class Assistant:
         info = self.status()
         self.notify(
             f"Состояние: {info['state']}. Wake word: «{info['wake_word']}». "
-            f"Горячая клавиша: {info['hotkey']}.",
+            f"Горячая клавиша: {info['hotkey']}. "
+            f"Пауза микрофона: {info['pause_hotkey'] or 'выключена'}.",
             "Статус",
         )
 
@@ -740,6 +765,14 @@ class Assistant:
                     log.exception("Не удалось вернуть звук приложений")
             if self.wake is not None:
                 self.wake.reset()
+
+        if getattr(self, "_paused", False):
+            # Паузу нажали во время записи: не отправляем речь в STT.
+            log.info("Пауза: запись отменена")
+            if self.mic is not None:
+                self.mic.flush()
+            self.set_state("paused")
+            return
 
         if not pcm:
             if dialog:
@@ -872,6 +905,8 @@ class Assistant:
 
         total_ms = 0.0
         while total_ms < max_ms:
+            if getattr(self, "_paused", False):
+                break
             chunk = self.mic.read(timeout=0.5)
             if chunk is None:
                 continue
