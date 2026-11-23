@@ -123,11 +123,19 @@ _PYNPUT_SPECIAL = {
 }
 
 
-def to_pynput(hotkey: str) -> str:
+def to_pynput(hotkey: str, *, by_vk: bool = False) -> str:
+    """Переводит комбинацию в синтаксис pynput.
+
+    ``by_vk`` привязывает одиночные буквы и цифры к виртуальному коду:
+    в русской раскладке та же клавиша даёт другой символ, и привязка
+    по символу перестаёт срабатывать.
+    """
     parts = []
     for part in hotkey.lower().split("+"):
         part = part.strip()
-        if part in {"ctrl", "alt", "shift"}:
+        if by_vk and re.fullmatch(r"[a-z0-9]", part):
+            parts.append(f"<{ord(part.upper())}>")
+        elif part in {"ctrl", "alt", "shift"}:
             parts.append(f"<{part}>")
         elif part in {"win", "cmd", "super"}:
             parts.append("<cmd>")
@@ -138,6 +146,53 @@ def to_pynput(hotkey: str) -> str:
         else:
             parts.append(part)
     return "+".join(parts)
+
+
+def _hotkey_key(key: Any) -> Any:
+    """Приводит клавишу к виду, который понимает ``HotKey.parse``.
+
+    Штатный ``GlobalHotKeys`` переводит клавишу в символ, а символ зависит
+    от раскладки: в русской раскладке M приходит как «ь», и привязка
+    ``ctrl+alt+m`` молчит. Здесь обычные клавиши переводятся в виртуальный
+    код, поэтому комбинация работает в любой раскладке.
+    """
+    from pynput import keyboard
+
+    modifiers = {
+        keyboard.Key.ctrl: keyboard.Key.ctrl,
+        keyboard.Key.ctrl_l: keyboard.Key.ctrl,
+        keyboard.Key.ctrl_r: keyboard.Key.ctrl,
+        keyboard.Key.alt: keyboard.Key.alt,
+        keyboard.Key.alt_l: keyboard.Key.alt,
+        keyboard.Key.alt_r: keyboard.Key.alt,
+        keyboard.Key.alt_gr: keyboard.Key.alt,
+        keyboard.Key.shift: keyboard.Key.shift,
+        keyboard.Key.shift_l: keyboard.Key.shift,
+        keyboard.Key.shift_r: keyboard.Key.shift,
+        keyboard.Key.cmd: keyboard.Key.cmd,
+        keyboard.Key.cmd_l: keyboard.Key.cmd,
+        keyboard.Key.cmd_r: keyboard.Key.cmd,
+    }
+    if key in modifiers:
+        return modifiers[key]
+    value = getattr(key, "value", None)
+    vk = getattr(key, "vk", None)
+    if vk is None and value is not None:
+        vk = getattr(value, "vk", None)
+    if vk is not None:
+        return keyboard.KeyCode.from_vk(vk)
+    return key
+
+
+def _make_hotkey_listener(bindings: dict[str, Any]) -> Any:
+    """Глобальный слушатель, не зависящий от текущей раскладки."""
+    from pynput import keyboard
+
+    listener = keyboard.GlobalHotKeys(bindings)
+    # GlobalHotKeys сам нормализует клавишу через символ. Заменяем только
+    # эту нормализацию, оставляя обработку нажатий и отпусканий штатной.
+    listener.canonical = _hotkey_key
+    return listener
 
 
 class Assistant:
@@ -648,12 +703,12 @@ class Assistant:
             value = str(self.cfg.get(name) or "").strip()
             if not value:
                 continue
-            combo = to_pynput(value)
+            combo = to_pynput(value, by_vk=True)
             if combo in bindings:
                 log.warning("Горячая клавиша %s уже занята, пропускаю %s", value, name)
                 continue
             bindings[combo] = action
-            log.info("Горячая клавиша %s: %s (%s)", name, value, combo)
+            log.info("Горячая клавиша %s: %s (%s)", name, value, to_pynput(value))
         return bindings
 
     def _start_hotkey(self) -> None:
@@ -662,9 +717,7 @@ class Assistant:
             if not bindings:
                 log.info("Горячие клавиши отключены")
                 return
-            from pynput import keyboard
-
-            listener = keyboard.GlobalHotKeys(bindings)
+            listener = _make_hotkey_listener(bindings)
             self._hotkey_listener = listener
             listener.start()
         except Exception:  # noqa: BLE001
@@ -681,6 +734,7 @@ class Assistant:
 
     def toggle_pause(self) -> None:
         self._paused = not self._paused
+        log.info("Пауза микрофона: %s", "включена" if self._paused else "выключена")
         if self._paused and getattr(self, "mic", None) is not None:
             # Нажали паузу во время записи: уже накопленный звук не нужен.
             self.mic.flush()
