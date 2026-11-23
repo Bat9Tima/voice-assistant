@@ -1020,6 +1020,33 @@ class Assistant:
         # не делая новый снимок.
         self._vision_context_at = time.monotonic()
 
+    def _vision_context_recent(self) -> bool:
+        """Есть ли в истории ещё свежее описание снимка."""
+        at = float(getattr(self, "_vision_context_at", 0.0) or 0.0)
+        if at <= 0:
+            return False
+        router = getattr(self, "visual_router", None)
+        ttl = float(getattr(router, "context_ttl", 0.0) or 0.0)
+        return ttl <= 0 or time.monotonic() - at <= ttl
+
+    def _vision_dialog_context(self) -> str:
+        """Последние реплики разговора для промпта зрения.
+
+        Картинка без истории теряет тему: «а какой ответ?» уже не знает,
+        о каком номере задачи шла речь. Вне разговора контекст не нужен.
+        """
+        if not getattr(self, "_dialog_active", False):
+            return ""
+        dialog = getattr(self, "dialog", None)
+        getter = getattr(dialog, "recent_context", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "").strip()
+        except Exception:  # noqa: BLE001
+            log.warning("Зрение: не удалось взять контекст диалога", exc_info=True)
+            return ""
+
     def _visual_decision(self, text: str, *, in_dialog: bool) -> VisualDecision | None:
         """Решение, нужен ли снимок. Сбой правил не должен ломать команду."""
         router = getattr(self, "visual_router", None)
@@ -1080,6 +1107,9 @@ class Assistant:
         except Exception as exc:  # noqa: BLE001
             log.warning("Зрение: %s", exc)
             return self._vision_failure("Не удалось посмотреть на экран")
+        # Новый кадр важнее старого описания: следующий вопрос должен
+        # увидеть именно его, а не отвечать по прошлому снимку.
+        self._vision_context_at = 0.0
         message = "Снимок экрана готов. Спрашивай, что на нём."
         self.notify(message)
         self.tts.phrase("ok")
@@ -1091,12 +1121,16 @@ class Assistant:
         if problem is not None:
             return self._vision_failure(problem)
         try:
-            message = vision.describe(request).strip() or "Не вижу, что на экране"
+            message = (
+                vision.describe(request, context=self._vision_dialog_context()).strip()
+                or "Не вижу, что на экране"
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("Зрение: %s", exc)
             return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
         self.tts.say(message)
+        log.info("Зрение: ответ по новому кадру, символов %s", len(message))
         self._remember_vision_exchange(question or request, message)
         return message
 
@@ -1106,10 +1140,21 @@ class Assistant:
         if problem is not None:
             return self._vision_failure(problem)
         try:
-            message = vision.describe_pending(request).strip() or "Не вижу, что на экране"
+            message = (
+                vision.describe_pending(request, context=self._vision_dialog_context()).strip()
+                or "Не вижу, что на экране"
+            )
         except VisionError as exc:
             log.warning("Зрение: %s", exc)
             if not vision.has_pending():
+                # Кадр истёк, но описание уже в истории: отвечаем по тексту,
+                # а не просим показывать экран заново.
+                if self._vision_context_recent():
+                    log.info("Зрение: кадр истёк, отвечаю по описанию снимка")
+                    return self._dialog_reply(
+                        question or request,
+                        hint=VISUAL_CONTEXT_HINT,
+                    )
                 return self._vision_failure("Снимок устарел. Скажи «посмотри на экран» ещё раз")
             return self._vision_failure("Не удалось посмотреть на экран")
         except Exception as exc:  # noqa: BLE001
@@ -1117,6 +1162,7 @@ class Assistant:
             return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
         self.tts.say(message)
+        log.info("Зрение: ответ по сохранённому кадру, символов %s", len(message))
         self._remember_vision_exchange(question or request, message)
         return message
 
@@ -1442,6 +1488,12 @@ class Assistant:
                 acked = True
                 result = self.router.handle(text)
                 if result is None:
+                    # Описание уже в истории: продолжение разговора ведёт
+                    # диалоговая модель, иначе кадр отвечает без контекста
+                    # и теряет, о каком задании шла речь.
+                    if self._vision_context_recent():
+                        log.info("Зрение: отвечаю по описанию снимка в диалоге")
+                        return self._dialog_reply(text, hint=VISUAL_CONTEXT_HINT)
                     return self._answer_pending_vision(vision, text, question=text)
                 vision_followup = False
 

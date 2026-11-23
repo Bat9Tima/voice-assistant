@@ -143,6 +143,24 @@ class ScreenVisionTest(unittest.TestCase):
         self.assertIn("что за ошибка", llm.calls[0]["prompt"])
         self.assertIn("по картинке", llm.calls[0]["prompt"])
 
+    def test_request_includes_dialog_context(self) -> None:
+        vision, llm = self.make()
+        vision.snapshot()
+        vision.describe_pending(
+            "найди область определения",
+            context="Пользователь: что ты номер 353 видишь\nЛуна: Номер 353",
+        )
+        prompt = llm.calls[0]["prompt"]
+        self.assertIn("найди область определения", prompt)
+        self.assertIn("Контекст разговора", prompt)
+        self.assertIn("номер 353", prompt)
+
+    def test_default_prompt_includes_dialog_context(self) -> None:
+        vision, llm = self.make()
+        vision.describe(context="Пользователь: покажи пример")
+        prompt = llm.calls[0]["prompt"]
+        self.assertEqual(prompt, "Опиши экран Контекст разговора: Пользователь: покажи пример")
+
     def test_snapshot_then_pending_question(self) -> None:
         vision, llm = self.make()
         vision.snapshot()
