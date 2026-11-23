@@ -508,6 +508,22 @@ class DialogService:
         self.sessions.add("assistant", answer)
         self.rolling.observe(self.sessions.current, self.sessions.window_start())
 
+    def recent_context(self, max_messages: int = 6, max_chars: int = 1200) -> str:
+        """Последние реплики разговора для промпта зрения.
+
+        Зрение получает картинку и текущую фразу, но не видит диалог.
+        Без короткого контекста вопрос «а какой ответ?» теряет номер задачи,
+        хотя он только что звучал в истории.
+        """
+        rows = self.sessions.history(max_messages=max_messages, max_chars=max_chars)
+        lines = []
+        for row in rows:
+            role = "Пользователь" if row.get("role") == "user" else "Луна"
+            content = clip_text(str(row.get("content") or ""), 400)
+            if content:
+                lines.append(f"{role}: {content}")
+        return "\n".join(lines)
+
     def _reply_stream(self, built: BuiltContext, on_chunk: Callable[[str], None]) -> str:
         """Читает поток модели и сразу отдаёт куски в озвучку."""
         pieces: list[str] = []

@@ -37,7 +37,7 @@ from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
-from app.vision import DEFAULT_TRIGGERS, match_request
+from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
 from app.visual_router import VisualRouter
 from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -78,6 +78,7 @@ class FakeVision:
         self.answer = answer
         self.error: Exception | None = None
         self.seen: list[str] = []
+        self.contexts: list[str] = []
         self.snapshots = 0
         self.pending = False
 
@@ -103,15 +104,17 @@ class FakeVision:
     def match_followup(self, text: str) -> bool:
         return "кнопка" in text or "написано" in text
 
-    def describe(self, request: str) -> str:
+    def describe(self, request: str = "", *, context: str = "") -> str:
         self.seen.append(request)
+        self.contexts.append(context)
         if self.error is not None:
             raise self.error
         self.pending = True
         return self.answer
 
-    def describe_pending(self, request: str) -> str:
+    def describe_pending(self, request: str, *, context: str = "") -> str:
         self.seen.append(request)
+        self.contexts.append(context)
         if self.error is not None:
             raise self.error
         return self.answer
@@ -1240,6 +1243,11 @@ class FakeDialog:
     def remember_exchange(self, question: str, answer: str) -> None:
         self.exchanges.append((question, answer))
 
+    def recent_context(self) -> str:
+        return "\n".join(
+            f"Пользователь: {question}\nЛуна: {answer}" for question, answer in self.exchanges
+        )
+
     def reply(self, text: str, on_chunk=None, hint: str = "") -> str:  # noqa: ANN001
         self.replied.append(text)
         self.hints.append(hint)
@@ -1430,6 +1438,69 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.vision.seen, ["реши номер 325"])
         self.assertEqual(assistant.dialog.replied, [])
         self.assertEqual(assistant.router.seen, ["реши номер 325"])
+
+    def test_dialog_question_after_vision_keeps_history(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран")
+        assistant.run_text("что ты номер 353 видишь")
+        assistant.vision.seen.clear()
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant.run_text("найди область определения функции")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.dialog.replied, ["найди область определения функции"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
+
+    def test_zero_context_ttl_disables_description_fallback(self) -> None:
+        assistant = self.make()
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 0}})
+        assistant._vision_context_at = time.monotonic()
+
+        self.assertFalse(assistant._vision_context_recent())
+
+    def test_new_snapshot_clears_old_visual_context(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+        self.assertGreater(assistant._vision_context_at, 0.0)
+
+        assistant.run_text("посмотри на экран")
+
+        self.assertEqual(assistant._vision_context_at, 0.0)
+
+    def test_vision_followup_receives_dialog_context(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.dialog.remember_exchange("обсуждали номер 353", "Номер 353: эллипс")
+
+        assistant.run_text("посмотри на экран")
+        assistant.run_text("реши его")
+
+        self.assertEqual(assistant.vision.seen, ["реши его"])
+        self.assertIn("обсуждали номер 353", assistant.vision.contexts[-1])
+
+    def test_expired_frame_answers_from_description(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.vision.pending = False
+        assistant.vision.error = VisionError("нет свежего снимка экрана")
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant._answer_pending_vision(assistant.vision, "где здесь кнопка")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["где здесь кнопка"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
 
     def test_dialog_followup_does_not_steal_command(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))

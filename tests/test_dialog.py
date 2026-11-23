@@ -298,6 +298,15 @@ class DialogServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_recent_context_formats_history(self) -> None:
+        service = DialogService({"dialog": {}}, FakeLLM())
+        service.remember_exchange("что ты номер 353 видишь", "Номер 353: эллипс")
+
+        context = service.recent_context()
+
+        self.assertIn("Пользователь: что ты номер 353 видишь", context)
+        self.assertIn("Луна: Номер 353: эллипс", context)
+
     def test_reply_after_remembered_vision_sees_description(self) -> None:
         llm = FakeLLM("Дальше")
         service = DialogService({"dialog": {}}, llm)
