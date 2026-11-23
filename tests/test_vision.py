@@ -143,6 +143,24 @@ class ScreenVisionTest(unittest.TestCase):
         self.assertIn("что за ошибка", llm.calls[0]["prompt"])
         self.assertIn("по картинке", llm.calls[0]["prompt"])
 
+    def test_request_includes_dialog_context(self) -> None:
+        vision, llm = self.make()
+        vision.snapshot()
+        vision.describe_pending(
+            "найди область определения",
+            context="Пользователь: что ты номер 353 видишь\nЛуна: Номер 353",
+        )
+        prompt = llm.calls[0]["prompt"]
+        self.assertIn("найди область определения", prompt)
+        self.assertIn("Контекст разговора", prompt)
+        self.assertIn("номер 353", prompt)
+
+    def test_default_prompt_includes_dialog_context(self) -> None:
+        vision, llm = self.make()
+        vision.describe(context="Пользователь: покажи пример")
+        prompt = llm.calls[0]["prompt"]
+        self.assertEqual(prompt, "Опиши экран Контекст разговора: Пользователь: покажи пример")
+
     def test_snapshot_then_pending_question(self) -> None:
         vision, llm = self.make()
         vision.snapshot()
@@ -175,6 +193,23 @@ class ScreenVisionTest(unittest.TestCase):
         self.assertFalse(vision.has_pending())
         with self.assertRaises(VisionError):
             vision.describe_pending("что тут")
+
+    def test_capture_does_not_require_model(self) -> None:
+        vision, _ = self.make(model="")
+        self.assertEqual(vision.capture(), b"jpeg-bytes")
+        self.assertEqual(vision.pending_image(), b"jpeg-bytes")
+
+    def test_pending_image_expires(self) -> None:
+        vision, _ = self.make()
+        vision.capture()
+        vision._pending_at -= vision.followup_ttl + 1
+        self.assertIsNone(vision.pending_image())
+
+    def test_snapshot_still_requires_llm(self) -> None:
+        vision, llm = self.make()
+        llm.available_result = False
+        with self.assertRaises(VisionError):
+            vision.snapshot()
 
     def test_snapshot_only_for_imperative(self) -> None:
         vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))

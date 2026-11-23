@@ -36,6 +36,9 @@ DEFAULT_TRIGGERS = (
     "что у меня на экране",
 )
 DEFAULT_FOLLOWUP_TTL = 60.0
+# Сколько символов диалога добавлять к вопросу по картинке. Контекст нужен
+# только чтобы понять, о чём речь; длинная история размывает вопрос.
+MAX_CONTEXT_CHARS = 1200
 # «посмотри на экран и скажи, какая ошибка» — служебное начало не вопрос.
 _LEAD_RE = re.compile(r"^(?:и\s+)?(?:скажи|ответь|подскажи)\s+")
 # «а что на экране?» — разговорная частица перед командой.
@@ -195,6 +198,19 @@ class ScreenVision:
             return False
         return not any(word in _QUESTION_WORDS for word in words)
 
+    def capture(self) -> bytes:
+        """Снимает экран и запоминает кадр, не требуя модель.
+
+        Нужно инструментам вроде обратного поиска: им достаточно
+        картинки, а недоступный GPT не должен блокировать снимок.
+        """
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        image = self._capture()
+        self._pending = image
+        self._pending_at = time.monotonic()
+        return image
+
     def snapshot(self) -> bytes:
         """Снимает экран и запоминает кадр для следующих вопросов."""
         if not self.enabled:
@@ -203,21 +219,22 @@ class ScreenVision:
             raise VisionError("не задана vision.model")
         if not self.llm.available():
             raise VisionError("зрение недоступно")
-        image = self._capture()
-        self._pending = image
-        self._pending_at = time.monotonic()
-        return image
+        return self.capture()
+
+    def pending_image(self) -> bytes | None:
+        """Свежий кадр для другого инструмента, если TTL не истёк."""
+        return self._pending_image()
 
     def has_pending(self) -> bool:
         """Есть ли свежий кадр для отдельного вопроса."""
         return self._pending_image() is not None
 
-    def describe(self, request: str = "") -> str:
+    def describe(self, request: str = "", *, context: str = "") -> str:
         """Снимает экран и возвращает короткий ответ модели."""
         image = self.snapshot()
-        return self._answer(image, request)
+        return self._answer(image, request, context=context)
 
-    def describe_pending(self, request: str) -> str:
+    def describe_pending(self, request: str, *, context: str = "") -> str:
         """Отвечает по кадру, снятому предыдущей командой."""
         image = self._pending_image()
         if image is None:
@@ -226,12 +243,12 @@ class ScreenVision:
             raise VisionError("зрение выключено")
         if not self.model:
             raise VisionError("не задана vision.model")
-        return self._answer(image, request)
+        return self._answer(image, request, context=context)
 
-    def _answer(self, image: bytes, request: str) -> str:
+    def _answer(self, image: bytes, request: str, *, context: str = "") -> str:
         return self.llm.answer_image(
             image,
-            self._prompt_for(request),
+            self._prompt_for(request, context),
             model=self.model,
             max_tokens=self.max_tokens,
             timeout=self.timeout,
@@ -245,13 +262,21 @@ class ScreenVision:
             return None
         return self._pending
 
-    def _prompt_for(self, request: str) -> str:
+    def _prompt_for(self, request: str, context: str = "") -> str:
         request = (request or "").strip()
+        context = " ".join((context or "").split())
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[: MAX_CONTEXT_CHARS - 1].rstrip() + "…"
+        if request:
+            prompt = f"Вопрос пользователя про изображение экрана: {request}."
+        else:
+            prompt = self.prompt
+        if context:
+            prompt = f"{prompt} Контекст разговора: {context}"
         if not request:
-            return self.prompt
+            return prompt
         return (
-            f"Вопрос пользователя про изображение экрана: {request}. "
-            "Ответь по картинке, коротко, в двух-трёх предложениях. "
+            f"{prompt} Ответь по картинке, коротко, в двух-трёх предложениях. "
             "Если ответа на экране нет, так и скажи."
         )
 

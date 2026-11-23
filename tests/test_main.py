@@ -21,6 +21,17 @@ from app.addressee import (
 from app.addressee import (
     MODE_SHADOW as ADDRESSEE_SHADOW,
 )
+from app.image_search import (
+    DEFAULT_TRIGGERS as IMAGE_TRIGGERS,
+)
+from app.image_search import (
+    ImageMatch,
+    ImageSearchError,
+    ImageSearchResult,
+)
+from app.image_search import (
+    match_request as match_image_request,
+)
 from app.intent_classifier import (
     ANSWER,
     DIALOG,
@@ -34,10 +45,10 @@ from app.intent_classifier import (
     IntentDecision,
 )
 from app.local_planner import LocalPlan, LocalPlannerError
-from app.main import Assistant
+from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
-from app.vision import DEFAULT_TRIGGERS, match_request
+from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
 from app.visual_router import VisualRouter
 from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -78,7 +89,9 @@ class FakeVision:
         self.answer = answer
         self.error: Exception | None = None
         self.seen: list[str] = []
+        self.contexts: list[str] = []
         self.snapshots = 0
+        self.captures = 0
         self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
@@ -90,12 +103,19 @@ class FakeVision:
     def available(self) -> bool:
         return True
 
-    def snapshot(self) -> bytes:
-        self.snapshots += 1
+    def capture(self) -> bytes:
+        self.captures += 1
         if self.error is not None:
             raise self.error
         self.pending = True
         return b"jpeg"
+
+    def pending_image(self) -> bytes | None:
+        return b"jpeg" if self.pending else None
+
+    def snapshot(self) -> bytes:
+        self.snapshots += 1
+        return self.capture()
 
     def has_pending(self) -> bool:
         return self.pending
@@ -103,18 +123,57 @@ class FakeVision:
     def match_followup(self, text: str) -> bool:
         return "кнопка" in text or "написано" in text
 
-    def describe(self, request: str) -> str:
+    def describe(self, request: str = "", *, context: str = "") -> str:
         self.seen.append(request)
+        self.contexts.append(context)
         if self.error is not None:
             raise self.error
         self.pending = True
         return self.answer
 
-    def describe_pending(self, request: str) -> str:
+    def describe_pending(self, request: str, *, context: str = "") -> str:
         self.seen.append(request)
+        self.contexts.append(context)
         if self.error is not None:
             raise self.error
         return self.answer
+
+
+class FakeImageSearch:
+    def __init__(
+        self,
+        result: ImageSearchResult | None = None,
+        available: bool = True,
+        error: Exception | None = None,
+    ) -> None:
+        self.enabled = True
+        self.is_available = available
+        self.result = result or ImageSearchResult(
+            images=(
+                ImageMatch(
+                    page_title="Илон Маск",
+                    host="ru.wikipedia.org",
+                    passage="Предприниматель и изобретатель.",
+                ),
+            )
+        )
+        self.error = error
+        self.images: list[bytes] = []
+        self.max_results = 5
+        self.max_passage_chars = 300
+        self.timeout = 1.0
+
+    def available(self) -> bool:
+        return self.is_available
+
+    def match(self, text: str) -> tuple[bool, str]:
+        return match_image_request(text, IMAGE_TRIGGERS)
+
+    def search(self, image: bytes, **kwargs: Any) -> ImageSearchResult:
+        self.images.append(image)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 class FakeTTS:
@@ -299,9 +358,9 @@ class PauseHotkeyTest(unittest.TestCase):
         bindings = assistant._hotkey_bindings()
         self.assertEqual(
             set(bindings),
-            {"<ctrl>+<alt>+<space>", "<ctrl>+<alt>+m"},
+            {"<ctrl>+<alt>+<space>", "<ctrl>+<alt>+<77>"},
         )
-        self.assertEqual(bindings["<ctrl>+<alt>+m"], assistant.toggle_pause)
+        self.assertEqual(bindings["<ctrl>+<alt>+<77>"], assistant.toggle_pause)
 
     def test_empty_pause_hotkey_disables_binding(self) -> None:
         assistant = self.make(pause_hotkey="")
@@ -330,6 +389,30 @@ class PauseHotkeyTest(unittest.TestCase):
         self.assertEqual(assistant.notifications, ["Пауза", "Снова слушаю"])
 
 
+class HotkeyLayoutTest(unittest.TestCase):
+    def test_russian_letter_uses_virtual_key(self) -> None:
+        from pynput import keyboard
+
+        key = keyboard.KeyCode(char="ь", vk=77)
+        self.assertEqual(_hotkey_key(key), keyboard.KeyCode.from_vk(77))
+
+    def test_modifiers_are_canonical(self) -> None:
+        from pynput import keyboard
+
+        self.assertEqual(_hotkey_key(keyboard.Key.ctrl_l), keyboard.Key.ctrl)
+        self.assertEqual(_hotkey_key(keyboard.Key.alt_r), keyboard.Key.alt)
+
+    def test_pause_hotkey_fires_in_russian_layout(self) -> None:
+        from pynput import keyboard
+
+        assistant = PauseHotkeyTest.make()
+        listener = _make_hotkey_listener(assistant._hotkey_bindings())
+        listener._on_press(keyboard.Key.ctrl_l, False)
+        listener._on_press(keyboard.Key.alt_l, False)
+        listener._on_press(keyboard.KeyCode(char="ь", vk=77), False)
+        self.assertTrue(assistant._paused)
+
+
 class CommandRoutingTest(unittest.TestCase):
     def make(self, result: CommandResult | None = None) -> Assistant:
         assistant = Assistant.__new__(Assistant)
@@ -337,6 +420,8 @@ class CommandRoutingTest(unittest.TestCase):
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
         assistant.vision = FakeVision()
+        assistant.image_search = FakeImageSearch()
+        assistant.llm = FakeLLM()
         assistant.tts = FakeTTS()
         assistant.notifications = []
         assistant.states = []
@@ -412,6 +497,70 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(message, "Не понял команду")
         self.assertEqual(assistant.vision.seen, [])
         self.assertEqual(assistant.router.seen, ["где здесь кнопка"])
+
+    def test_image_search_bypasses_router_and_vision(self) -> None:
+        assistant = self.make()
+        assistant.tts = FakeTTS(enabled=True)
+        assistant.llm = FakeLLM("Это Илон Маск.")
+        message = assistant.run_text("поищи по фото кто это")
+        self.assertEqual(message, "Это Илон Маск.")
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.image_search.images, [b"jpeg"])
+        self.assertEqual(assistant.llm.calls[0][0], "кто это")
+        self.assertIn("Илон Маск", assistant.llm.calls[0][1])
+        self.assertEqual(assistant.llm.kwargs[0].get("style"), "image_search")
+        self.assertEqual(assistant.tts.said, ["Это Илон Маск."])
+
+    def test_image_search_reuses_pending_frame(self) -> None:
+        assistant = self.make()
+        assistant.vision.pending = True
+        assistant.run_text("поищи по фото")
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.image_search.images, [b"jpeg"])
+
+    def test_image_search_captures_without_pending(self) -> None:
+        assistant = self.make()
+        assistant.vision.pending = False
+        assistant.run_text("поищи по фото")
+        self.assertEqual(assistant.vision.captures, 1)
+
+    def test_image_search_empty_results(self) -> None:
+        assistant = self.make()
+        assistant.image_search.result = ImageSearchResult()
+        message = assistant.run_text("поищи по фото")
+        self.assertEqual(message, "Ничего похожего не нашёл")
+        self.assertEqual(assistant.llm.calls, [])
+
+    def test_image_search_error_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.image_search.error = ImageSearchError("Яндекс не принял ключ поиска")
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("поищи по фото")
+        self.assertEqual(message, "Яндекс не принял ключ поиска")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.tts.phrases, ["error"])
+
+    def test_image_search_not_configured(self) -> None:
+        assistant = self.make()
+        assistant.image_search.is_available = False
+        with patch("app.main.beep"):
+            message = assistant.run_text("поищи по фото")
+        self.assertIn("не настроен", message)
+        self.assertEqual(assistant.image_search.images, [])
+
+    def test_image_search_llm_failure_uses_fallback(self) -> None:
+        assistant = self.make()
+        assistant.llm = FakeLLM(error=RuntimeError("нет сети"))
+        message = assistant.run_text("поищи по фото")
+        self.assertIn("Нашёл похожие изображения", message)
+
+    def test_kto_eto_does_not_call_image_search(self) -> None:
+        assistant = self.make()
+        with patch("app.main.beep"):
+            assistant.run_text("кто это")
+        self.assertEqual(assistant.image_search.images, [])
 
     def test_canonicalizes_text_before_routing(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю Google"))
@@ -1216,6 +1365,11 @@ class FakeDialog:
     def remember_exchange(self, question: str, answer: str) -> None:
         self.exchanges.append((question, answer))
 
+    def recent_context(self) -> str:
+        return "\n".join(
+            f"Пользователь: {question}\nЛуна: {answer}" for question, answer in self.exchanges
+        )
+
     def reply(self, text: str, on_chunk=None, hint: str = "") -> str:  # noqa: ANN001
         self.replied.append(text)
         self.hints.append(hint)
@@ -1406,6 +1560,69 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.vision.seen, ["реши номер 325"])
         self.assertEqual(assistant.dialog.replied, [])
         self.assertEqual(assistant.router.seen, ["реши номер 325"])
+
+    def test_dialog_question_after_vision_keeps_history(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран")
+        assistant.run_text("что ты номер 353 видишь")
+        assistant.vision.seen.clear()
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant.run_text("найди область определения функции")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.dialog.replied, ["найди область определения функции"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
+
+    def test_zero_context_ttl_disables_description_fallback(self) -> None:
+        assistant = self.make()
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 0}})
+        assistant._vision_context_at = time.monotonic()
+
+        self.assertFalse(assistant._vision_context_recent())
+
+    def test_new_snapshot_clears_old_visual_context(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+        self.assertGreater(assistant._vision_context_at, 0.0)
+
+        assistant.run_text("посмотри на экран")
+
+        self.assertEqual(assistant._vision_context_at, 0.0)
+
+    def test_vision_followup_receives_dialog_context(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.dialog.remember_exchange("обсуждали номер 353", "Номер 353: эллипс")
+
+        assistant.run_text("посмотри на экран")
+        assistant.run_text("реши его")
+
+        self.assertEqual(assistant.vision.seen, ["реши его"])
+        self.assertIn("обсуждали номер 353", assistant.vision.contexts[-1])
+
+    def test_expired_frame_answers_from_description(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.vision.pending = False
+        assistant.vision.error = VisionError("нет свежего снимка экрана")
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant._answer_pending_vision(assistant.vision, "где здесь кнопка")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["где здесь кнопка"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
 
     def test_dialog_followup_does_not_steal_command(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю YouTube"))
