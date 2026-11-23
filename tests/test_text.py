@@ -190,6 +190,18 @@ class TextTest(unittest.TestCase):
     def test_hotkey_letter(self) -> None:
         self.assertEqual(to_pynput("ctrl+shift+k"), "<ctrl>+<shift>+k")
 
+    def test_hotkey_letter_by_vk(self) -> None:
+        self.assertEqual(
+            to_pynput("ctrl+alt+m", by_vk=True),
+            "<ctrl>+<alt>+<77>",
+        )
+
+    def test_hotkey_space_by_vk(self) -> None:
+        self.assertEqual(
+            to_pynput("ctrl+alt+space", by_vk=True),
+            "<ctrl>+<alt>+<space>",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

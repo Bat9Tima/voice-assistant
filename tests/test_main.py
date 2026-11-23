@@ -34,7 +34,7 @@ from app.intent_classifier import (
     IntentDecision,
 )
 from app.local_planner import LocalPlan, LocalPlannerError
-from app.main import Assistant
+from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, match_request
@@ -299,9 +299,9 @@ class PauseHotkeyTest(unittest.TestCase):
         bindings = assistant._hotkey_bindings()
         self.assertEqual(
             set(bindings),
-            {"<ctrl>+<alt>+<space>", "<ctrl>+<alt>+m"},
+            {"<ctrl>+<alt>+<space>", "<ctrl>+<alt>+<77>"},
         )
-        self.assertEqual(bindings["<ctrl>+<alt>+m"], assistant.toggle_pause)
+        self.assertEqual(bindings["<ctrl>+<alt>+<77>"], assistant.toggle_pause)
 
     def test_empty_pause_hotkey_disables_binding(self) -> None:
         assistant = self.make(pause_hotkey="")
@@ -328,6 +328,30 @@ class PauseHotkeyTest(unittest.TestCase):
         self.assertFalse(assistant._paused)
         self.assertEqual(assistant.states, ["paused", "idle"])
         self.assertEqual(assistant.notifications, ["Пауза", "Снова слушаю"])
+
+
+class HotkeyLayoutTest(unittest.TestCase):
+    def test_russian_letter_uses_virtual_key(self) -> None:
+        from pynput import keyboard
+
+        key = keyboard.KeyCode(char="ь", vk=77)
+        self.assertEqual(_hotkey_key(key), keyboard.KeyCode.from_vk(77))
+
+    def test_modifiers_are_canonical(self) -> None:
+        from pynput import keyboard
+
+        self.assertEqual(_hotkey_key(keyboard.Key.ctrl_l), keyboard.Key.ctrl)
+        self.assertEqual(_hotkey_key(keyboard.Key.alt_r), keyboard.Key.alt)
+
+    def test_pause_hotkey_fires_in_russian_layout(self) -> None:
+        from pynput import keyboard
+
+        assistant = PauseHotkeyTest.make()
+        listener = _make_hotkey_listener(assistant._hotkey_bindings())
+        listener._on_press(keyboard.Key.ctrl_l, False)
+        listener._on_press(keyboard.Key.alt_l, False)
+        listener._on_press(keyboard.KeyCode(char="ь", vk=77), False)
+        self.assertTrue(assistant._paused)
 
 
 class CommandRoutingTest(unittest.TestCase):
