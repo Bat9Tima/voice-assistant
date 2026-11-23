@@ -954,9 +954,12 @@ class Assistant:
             return False
 
     def _remember_vision_exchange(self, question: str, answer: str) -> None:
-        """Зрение отвечает мимо ``dialog.reply``: сохраняем обмен в историю."""
-        if not getattr(self, "_dialog_active", False):
-            return
+        """Зрение отвечает мимо ``dialog.reply``: сохраняем обмен в историю.
+
+        Это обычная память, а не отдельное хранилище фото: ответ по экрану
+        остаётся текстом в сессии и дальше попадает в резюме и факты. Режим
+        разговора не обязателен — одиночная команда тоже должна запомниться.
+        """
         dialog = getattr(self, "dialog", None)
         remember = getattr(dialog, "remember_exchange", None)
         if not callable(remember):

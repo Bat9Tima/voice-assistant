@@ -298,6 +298,20 @@ class DialogServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_reply_after_remembered_vision_sees_description(self) -> None:
+        llm = FakeLLM("Дальше")
+        service = DialogService({"dialog": {}}, llm)
+        service.remember_exchange("посмотри на экран", "На экране ошибка 404")
+
+        service.reply("а что там было?")
+
+        messages, _ = llm.calls[0]
+        self.assertIn(
+            {"role": "assistant", "content": "На экране ошибка 404"},
+            messages,
+        )
+        self.assertEqual(messages[-1], {"role": "user", "content": "а что там было?"})
+
     def test_remember_exchange_ignores_empty_parts(self) -> None:
         service = DialogService({"dialog": {}}, FakeLLM())
 

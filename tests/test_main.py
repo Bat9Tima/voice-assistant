@@ -1412,6 +1412,18 @@ class DialogModeTest(unittest.TestCase):
             [("посмотри на экран что за ошибка", "На экране открыт браузер")],
         )
 
+    def test_one_shot_vision_is_saved_without_dialog(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = False
+
+        assistant.run_text("посмотри на экран, что за ошибка")
+
+        self.assertEqual(
+            assistant.dialog.exchanges,
+            [("посмотри на экран что за ошибка", "На экране открыт браузер")],
+        )
+
     def test_background_voice_utterance_is_ignored(self) -> None:
         assistant = self.make()
         assistant.addressee = FakeAddressee(BACKGROUND)
