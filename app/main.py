@@ -1027,7 +1027,10 @@ class Assistant:
             return False
         router = getattr(self, "visual_router", None)
         ttl = float(getattr(router, "context_ttl", 0.0) or 0.0)
-        return ttl <= 0 or time.monotonic() - at <= ttl
+        if ttl <= 0:
+            # Ноль отключает неявный контекст снимка, как и в VisualRouter.
+            return False
+        return time.monotonic() - at <= ttl
 
     def _vision_dialog_context(self) -> str:
         """Последние реплики разговора для промпта зрения.

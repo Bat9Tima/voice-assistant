@@ -1432,6 +1432,13 @@ class DialogModeTest(unittest.TestCase):
         self.assertEqual(assistant.dialog.replied, ["найди область определения функции"])
         self.assertIn("описание", assistant.dialog.hints[-1])
 
+    def test_zero_context_ttl_disables_description_fallback(self) -> None:
+        assistant = self.make()
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 0}})
+        assistant._vision_context_at = time.monotonic()
+
+        self.assertFalse(assistant._vision_context_recent())
+
     def test_new_snapshot_clears_old_visual_context(self) -> None:
         assistant = self.make()
         assistant.vision = FakeVision()
