@@ -25,7 +25,7 @@ from .session import (
     SessionMemory,
 )
 from .style_observer import StyleObserver
-from .text import normalize
+from .text import normalize, strip_markdown_links
 
 log = logging.getLogger(__name__)
 
@@ -214,6 +214,9 @@ class DialogService:
     ) -> None:
         section = (cfg or {}).get("dialog") or {}
         self.llm = llm
+        # Клиент сам знает, включён ли поиск в интернете. Заглушки без
+        # этого поля просто работают по-старому.
+        self.web_search = bool(getattr(llm, "web_search_enabled", False))
         self.profile = profile
         # Факты Луны о себе: отдельный блок, не смешивается с профилем
         # пользователя и эпизодической памятью.
@@ -489,8 +492,9 @@ class DialogService:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     timeout=self.timeout,
+                    web_search=self.web_search,
                 )
-                answer = " ".join((answer or "").split())
+                answer = " ".join(strip_markdown_links(answer or "").split())
                 if not answer:
                     raise ValueError("модель вернула пустой ответ")
         self.sessions.add("user", text)
@@ -534,6 +538,7 @@ class DialogService:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 timeout=self.timeout,
+                web_search=self.web_search,
             ):
                 # Сначала озвучка: если она сломается, ответ лучше не
                 # записывать в историю как сказанный.
@@ -545,7 +550,7 @@ class DialogService:
             # Часть ответа уже прозвучала: обрываем его молча, а не
             # заменяем ошибкой поверх сказанного.
             log.warning("Поток ответа оборвался, отдаю сказанную часть", exc_info=True)
-        answer = " ".join("".join(pieces).split())
+        answer = " ".join(strip_markdown_links("".join(pieces)).split())
         if not answer:
             raise ValueError("модель вернула пустой ответ")
         return answer

@@ -18,6 +18,7 @@ from .dialog import (
     clip_text,
 )
 from .search import SearchError, SearchResult, TavilySearch
+from .text import strip_markdown_links
 from .weather import (
     WeatherClient,
     WeatherError,
@@ -716,6 +717,7 @@ def _clean_answer(text: str) -> str:
         text,
     )
     text = re.sub(r"(?m)^\s*\[\d+\]\s*$", "", text)
+    text = strip_markdown_links(text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -1678,6 +1680,7 @@ footer {{ margin-top: 28px; color: #6b7280; font-size: 13px; }}
                 temperature=self.temperature,
                 timeout=self.timeout,
                 history=history,
+                web_search=bool(getattr(self.llm, "web_search_enabled", False)),
             )
         except LLMError as exc:
             return self._error(

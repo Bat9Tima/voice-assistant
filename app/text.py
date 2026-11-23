@@ -378,6 +378,21 @@ def numbers_to_digits(text: str) -> str:
     return " ".join(result)
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(\s*https?://[^)\s]+\s*\)")
+_PAREN_DOMAIN_RE = re.compile(r"\s*\(\s*([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\s*\)", re.IGNORECASE)
+
+
+def strip_markdown_links(text: str) -> str:
+    """Оставляет от markdown-ссылки только подпись: ответ читается вслух.
+
+    ``[sport-express.ru](https://…)`` → ``sport-express.ru``. Отдельная
+    ссылка в скобках после факта удаляется целиком, чтобы TTS не читал
+    домен и URL.
+    """
+    text = _MD_LINK_RE.sub(r"\1", text or "")
+    return _PAREN_DOMAIN_RE.sub("", text)
+
+
 def normalize(text: str) -> str:
     """Приводит распознанный текст к виду, удобному для сравнения.
 

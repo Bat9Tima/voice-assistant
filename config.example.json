@@ -143,7 +143,11 @@
     "max_completion_tokens": 2000,
     "temperature": 0.2,
     "timeout_sec": 90,
-    "retries": 2
+    "retries": 2,
+    "web_search": {
+      "enabled": true,
+      "model": ""
+    }
   },
 
   "vision": {
