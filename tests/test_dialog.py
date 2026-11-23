@@ -312,6 +312,16 @@ class DialogServiceTest(unittest.TestCase):
         )
         self.assertEqual(messages[-1], {"role": "user", "content": "а что там было?"})
 
+    def test_reply_hint_is_last_system_block(self) -> None:
+        llm = FakeLLM("Ответ")
+        service = DialogService({"dialog": {}}, llm)
+
+        service.reply("что в углу?", hint="Отвечай по описанию снимка")
+
+        _, kwargs = llm.calls[0]
+        self.assertIn("Отвечай по описанию снимка", kwargs["system"])
+        self.assertTrue(kwargs["system"].rstrip().endswith("Отвечай по описанию снимка"))
+
     def test_remember_exchange_ignores_empty_parts(self) -> None:
         service = DialogService({"dialog": {}}, FakeLLM())
 

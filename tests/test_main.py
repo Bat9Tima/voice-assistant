@@ -37,6 +37,8 @@ from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
+from app.vision import DEFAULT_TRIGGERS, match_request
+from app.visual_router import VisualRouter
 from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
 
@@ -80,11 +82,7 @@ class FakeVision:
         self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
-        if "экран" not in text:
-            return False, ""
-        if text == "посмотри на экран":
-            return True, ""
-        return True, "что за ошибка"
+        return match_request(text, DEFAULT_TRIGGERS)
 
     def wants_snapshot(self, text: str) -> bool:
         return text == "посмотри на экран"
@@ -1132,6 +1130,7 @@ class FakeDialog:
         self.answer = answer
         self.error = error
         self.replied: list[str] = []
+        self.hints: list[str] = []
         self.owned: list[str] = []
         self.exchanges: list[tuple[str, str]] = []
         self.started = 0
@@ -1161,8 +1160,9 @@ class FakeDialog:
     def remember_exchange(self, question: str, answer: str) -> None:
         self.exchanges.append((question, answer))
 
-    def reply(self, text: str) -> str:
+    def reply(self, text: str, on_chunk=None, hint: str = "") -> str:  # noqa: ANN001
         self.replied.append(text)
+        self.hints.append(hint)
         if self.error is not None:
             raise self.error
         return self.answer
@@ -1206,8 +1206,9 @@ class StreamingFakeDialog(FakeDialog):
         self.pieces = pieces if pieces is not None else [answer]
         self.error_after = error_after
 
-    def reply(self, text: str, on_chunk=None) -> str:  # noqa: ANN001
+    def reply(self, text: str, on_chunk=None, hint: str = "") -> str:  # noqa: ANN001
         self.replied.append(text)
+        self.hints.append(hint)
         for piece in self.pieces:
             if on_chunk is not None:
                 on_chunk(piece)
@@ -1230,10 +1231,12 @@ class DialogModeTest(unittest.TestCase):
         )
         assistant.set_state = lambda state: assistant.states.append(state)
         assistant.dialog = FakeDialog()
+        assistant.visual_router = VisualRouter({"vision": {}})
         assistant.cfg = {"dialog": {"auto_start": "off"}}
         assistant._dialog_active = False
         assistant._dialog_last = 0.0
         assistant._dialog_errors = 0
+        assistant._vision_context_at = 0.0
         return assistant
 
     def test_entry_phrase_enables_dialog(self) -> None:
@@ -1423,6 +1426,105 @@ class DialogModeTest(unittest.TestCase):
             assistant.dialog.exchanges,
             [("посмотри на экран что за ошибка", "На экране открыт браузер")],
         )
+
+    def test_visual_context_answers_without_new_snapshot(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        # Кадр ещё в памяти, но описание уже есть: вопрос идёт по тексту.
+        message = assistant.run_text("что написано на экране")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["что написано на экране"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
+        self.assertEqual(assistant.vision.seen, ["что за ошибка"])
+
+    def test_visual_context_in_dialog_uses_hint(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant.run_text("а что в левом верхнем углу")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.dialog.replied, ["а что в левом верхнем углу"])
+        self.assertIn("описание", assistant.dialog.hints[-1])
+        self.assertEqual(assistant.vision.seen, ["что за ошибка"])
+
+    def test_visual_question_without_context_asks_for_screen(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+
+        message = assistant.run_text("что на фото")
+
+        self.assertIn("Покажи экран", message)
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_specific_qa_topic_wins_over_deictic_visual(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.qa = FakeQA(kind="weather")
+
+        message = assistant.run_text("что там с погодой")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["что там с погодой"])
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_general_route_does_not_steal_visual_question(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.qa = FakeQA(kind="general")
+        assistant.dialog.replied.clear()
+        assistant.dialog.hints.clear()
+
+        message = assistant.run_text("где здесь кнопка")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.qa.answered, [])
+        self.assertEqual(assistant.vision.seen, ["что за ошибка"])
+
+    def test_general_question_after_vision_stays_text(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.vision.pending = False
+
+        with patch("app.main.beep"):
+            message = assistant.run_text("какая погода")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.dialog.replied, [])
+
+    def test_explicit_vision_command_still_takes_new_snapshot(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.vision.pending = False
+        assistant.vision.seen.clear()
+
+        message = assistant.run_text("посмотри на экран, что написано")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["что написано"])
+
+    def test_stopping_dialog_clears_visual_context(self) -> None:
+        assistant = self.make()
+        assistant.vision = FakeVision()
+        assistant._dialog_active = True
+        assistant.run_text("посмотри на экран, что за ошибка")
+
+        assistant._stop_dialog("phrase")
+
+        self.assertEqual(assistant._vision_context_at, 0.0)
 
     def test_background_voice_utterance_is_ignored(self) -> None:
         assistant = self.make()

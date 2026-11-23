@@ -51,6 +51,14 @@ from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
 from .vision import ScreenVision, VisionError
+from .visual_router import (
+    AMBIGUOUS,
+    CONTEXT_ONLY,
+    TEXT_ONLY,
+    VISUAL_CONTEXT_HINT,
+    VisualDecision,
+    VisualRouter,
+)
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
 
 log = logging.getLogger(__name__)
@@ -149,6 +157,7 @@ class Assistant:
         self.llm = CloudLLM(cfg)
         self.qa = QAService(cfg, self.llm, self.browser)
         self.vision = ScreenVision(cfg, self.llm)
+        self.visual_router = VisualRouter(cfg)
         self.intent = IntentClassifier(cfg)
         self.addressee = AddresseeGate(cfg)
         self.tts = TTSService(cfg)
@@ -226,6 +235,9 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
+        # Когда последний раз сохраняли описание снимка в текущую сессию.
+        # Ноль — активного визуального контекста нет.
+        self._vision_context_at = 0.0
         self.stt = create_transcriber(cfg)
         self.mic = Microphone(
             samplerate=int(audio_cfg["sample_rate"]),
@@ -968,6 +980,60 @@ class Assistant:
             remember(question, answer)
         except Exception:  # noqa: BLE001
             log.warning("Диалог: не удалось сохранить обмен зрения", exc_info=True)
+            return
+        # Описание уже в истории: следующие вопросы можно решать по нему,
+        # не делая новый снимок.
+        self._vision_context_at = time.monotonic()
+
+    def _visual_decision(self, text: str, *, in_dialog: bool) -> VisualDecision | None:
+        """Решение, нужен ли снимок. Сбой правил не должен ломать команду."""
+        router = getattr(self, "visual_router", None)
+        if router is None:
+            return None
+        at = float(getattr(self, "_vision_context_at", 0.0) or 0.0)
+        age = (time.monotonic() - at) if at > 0 else None
+        try:
+            return router.decide(
+                text,
+                has_context=at > 0,
+                context_age=age,
+                in_dialog=in_dialog,
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("Зрение: маршрутизатор не сработал", exc_info=True)
+            return None
+
+    def _answer_visual_context(self, text: str) -> str:
+        """Ответ по описанию снимка без нового кадра."""
+        dialog = getattr(self, "dialog", None)
+        if dialog is None:
+            return self._clarify_visual(VisualDecision(AMBIGUOUS, "no_context"))
+        try:
+            answer = dialog.reply(text, hint=VISUAL_CONTEXT_HINT).strip()
+        except Exception:  # noqa: BLE001
+            log.exception("Зрение: не удалось ответить по описанию снимка")
+            message = "Не получилось ответить по описанию снимка."
+            self.notify(message)
+            self.tts.phrase("error")
+            return message
+        if not answer:
+            return self._clarify_visual(VisualDecision(AMBIGUOUS, "empty_answer"))
+        self.notify(answer[:250])
+        self.tts.say(answer)
+        log.info("Зрение: ответ по описанию снимка, символов %s", len(answer))
+        return answer
+
+    def _clarify_visual(self, decision: VisualDecision) -> str:
+        """Снимка нет или он непонятен: просим показать экран, а не гадаем."""
+        if decision.reason == "no_context":
+            message = "У меня нет описания этого снимка. Покажи экран, и я посмотрю."
+        else:
+            message = "Не поняла, о каком снимке речь. Покажи экран, и я посмотрю."
+        if getattr(self, "_dialog_active", False):
+            self._dialog_last = time.monotonic()
+        self.notify(message)
+        self.tts.say(message)
+        return message
 
     def _remember_vision(self, vision: ScreenVision) -> str:
         """Первый шаг: запомнить кадр, не отправляя его в модель."""
@@ -1048,6 +1114,9 @@ class Assistant:
         self._dialog_ignored = 0
         self._dialog_turns = 0
         self._dialog_last = time.monotonic()
+        # Новая сессия: описание прошлого снимка осталось в резюме, но
+        # активного визуального контекста у неё ещё нет.
+        self._vision_context_at = 0.0
         self.set_state("idle")
         if not greet:
             log.info("Режим диалога включён")
@@ -1069,6 +1138,8 @@ class Assistant:
         self._dialog_errors = 0
         self._dialog_ignored = 0
         self._dialog_turns = 0
+        # Разговор закрыт: описание ушло в резюме, активный контекст сброшен.
+        self._vision_context_at = 0.0
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             dialog.stop()
@@ -1090,7 +1161,7 @@ class Assistant:
         log.info("Режим диалога выключен (%s)", reason)
         return message
 
-    def _dialog_reply(self, text: str) -> str:
+    def _dialog_reply(self, text: str, *, hint: str = "") -> str:
         """Ответ модели в разговоре. Ошибки не рвут цикл с первой попытки."""
         dialog = getattr(self, "dialog", None)
         if dialog is None:
@@ -1114,9 +1185,9 @@ class Assistant:
 
         try:
             if getattr(dialog, "streaming", False):
-                answer = dialog.reply(text, on_chunk=on_chunk)
+                answer = dialog.reply(text, on_chunk=on_chunk, hint=hint)
             else:
-                answer = dialog.reply(text)
+                answer = dialog.reply(text, hint=hint)
         except Exception:  # noqa: BLE001
             if stream is not None:
                 stream.close()
@@ -1279,6 +1350,18 @@ class Assistant:
                 # В разговоре всё, что не команда и не справка, уходит в чат.
                 route = None
 
+            # Решение по описанию считаем до кадра: если описание уже есть,
+            # вопрос по нему важнее повторного анализа картинки.
+            visual = self._visual_decision(text, in_dialog=in_dialog)
+            # «Что там с погодой» — это вопрос к Q&A, а не к снимку.
+            qa_priority = (
+                visual is not None
+                and visual.reason == "deictic"
+                and route is not None
+                and route.handled
+                and route.kind != "general"
+            )
+
             # Свежий кадр отвечает на вопросы в разговоре, но не перехватывает
             # команды, выход, память/манеру и явные темы Q&A.
             vision_followup = False
@@ -1294,6 +1377,23 @@ class Assistant:
                     vision_followup = vision.match_followup(text)
                 if vision_followup:
                     route = None
+            if (
+                vision_followup
+                and visual is not None
+                and visual.mode != TEXT_ONLY
+                and not qa_priority
+                and getattr(self, "_vision_context_at", 0.0) > 0
+            ):
+                # Описание снимка уже в истории: отвечаем по тексту, а не
+                # отправляем картинку в модель ещё раз. Кадр остаётся для
+                # фраз, которые роутер не считает вопросом о снимке.
+                log.info("Зрение: вопрос по описанию вместо кадра (%s)", visual.reason)
+                vision_followup = False
+            if qa_priority:
+                # Конкретная тема Q&A важнее описания снимка.
+                vision_followup = False
+                if route is None:
+                    route = raw_route
 
             snapshot_only = (
                 vision is not None and vision_request == "" and vision.wants_snapshot(text)
@@ -1337,6 +1437,24 @@ class Assistant:
                     beep(320, 120)
                     self.tts.phrase("error")
                 return message
+
+            # Вопрос по сохранённому описанию снимка: отвечаем текстом,
+            # без нового кадра. Команды уже отработали выше, поэтому
+            # «нажми на кнопку в левом верхнем углу» сюда не попадёт.
+            decision = None if qa_priority else visual
+            if decision is not None and decision.mode != TEXT_ONLY:
+                log.info(
+                    "Зрение: режим %s (%s), контекст %s",
+                    decision.mode,
+                    decision.reason,
+                    "есть" if getattr(self, "_vision_context_at", 0.0) else "нет",
+                )
+            if decision is not None and decision.mode == AMBIGUOUS:
+                return self._clarify_visual(decision)
+            if decision is not None and decision.mode == CONTEXT_ONLY:
+                if in_dialog:
+                    return self._dialog_reply(text, hint=VISUAL_CONTEXT_HINT)
+                return self._answer_visual_context(text)
 
             if qa is not None and route is not None and route.handled:
                 answer = qa.answer(text, route=route)

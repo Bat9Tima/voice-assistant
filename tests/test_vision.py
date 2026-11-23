@@ -69,6 +69,11 @@ class FollowupMatchTest(unittest.TestCase):
             "объясни что здесь",
             "тут что",
             "а здесь ссылка",
+            "а что в левом верхнем углу",
+            "что в правом нижнем углу",
+            "что слева",
+            "что на фоне",
+            "какого цвета кнопка",
         ):
             with self.subTest(phrase=phrase):
                 self.assertTrue(match_followup(phrase))
@@ -81,6 +86,8 @@ class FollowupMatchTest(unittest.TestCase):
             "открой это",
             "нажми на кнопку",
             "посмотри на экран",
+            "перемести окно в левый верхний угол",
+            "что в центре города",
             "",
         ):
             with self.subTest(phrase=phrase):
