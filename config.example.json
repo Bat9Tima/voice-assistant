@@ -22,6 +22,7 @@
   },
   "language": "ru",
   "hotkey": "ctrl+alt+space",
+  "pause_hotkey": "ctrl+alt+m",
   "notifications": true,
   "log_level": "INFO",
 

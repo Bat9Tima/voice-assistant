@@ -60,6 +60,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "language": "ru",
     "hotkey": "ctrl+alt+space",
+    # Пауза микрофона. Пустая строка выключает комбинацию.
+    "pause_hotkey": "ctrl+alt+m",
     "notifications": True,
     "log_level": "INFO",
     "audio": {
