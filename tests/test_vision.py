@@ -194,6 +194,23 @@ class ScreenVisionTest(unittest.TestCase):
         with self.assertRaises(VisionError):
             vision.describe_pending("что тут")
 
+    def test_capture_does_not_require_model(self) -> None:
+        vision, _ = self.make(model="")
+        self.assertEqual(vision.capture(), b"jpeg-bytes")
+        self.assertEqual(vision.pending_image(), b"jpeg-bytes")
+
+    def test_pending_image_expires(self) -> None:
+        vision, _ = self.make()
+        vision.capture()
+        vision._pending_at -= vision.followup_ttl + 1
+        self.assertIsNone(vision.pending_image())
+
+    def test_snapshot_still_requires_llm(self) -> None:
+        vision, llm = self.make()
+        llm.available_result = False
+        with self.assertRaises(VisionError):
+            vision.snapshot()
+
     def test_snapshot_only_for_imperative(self) -> None:
         vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))
         self.assertTrue(vision.wants_snapshot("посмотри на экран"))

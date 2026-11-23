@@ -21,6 +21,17 @@ from app.addressee import (
 from app.addressee import (
     MODE_SHADOW as ADDRESSEE_SHADOW,
 )
+from app.image_search import (
+    DEFAULT_TRIGGERS as IMAGE_TRIGGERS,
+)
+from app.image_search import (
+    ImageMatch,
+    ImageSearchError,
+    ImageSearchResult,
+)
+from app.image_search import (
+    match_request as match_image_request,
+)
 from app.intent_classifier import (
     ANSWER,
     DIALOG,
@@ -80,6 +91,7 @@ class FakeVision:
         self.seen: list[str] = []
         self.contexts: list[str] = []
         self.snapshots = 0
+        self.captures = 0
         self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
@@ -91,12 +103,19 @@ class FakeVision:
     def available(self) -> bool:
         return True
 
-    def snapshot(self) -> bytes:
-        self.snapshots += 1
+    def capture(self) -> bytes:
+        self.captures += 1
         if self.error is not None:
             raise self.error
         self.pending = True
         return b"jpeg"
+
+    def pending_image(self) -> bytes | None:
+        return b"jpeg" if self.pending else None
+
+    def snapshot(self) -> bytes:
+        self.snapshots += 1
+        return self.capture()
 
     def has_pending(self) -> bool:
         return self.pending
@@ -118,6 +137,43 @@ class FakeVision:
         if self.error is not None:
             raise self.error
         return self.answer
+
+
+class FakeImageSearch:
+    def __init__(
+        self,
+        result: ImageSearchResult | None = None,
+        available: bool = True,
+        error: Exception | None = None,
+    ) -> None:
+        self.enabled = True
+        self.is_available = available
+        self.result = result or ImageSearchResult(
+            images=(
+                ImageMatch(
+                    page_title="Илон Маск",
+                    host="ru.wikipedia.org",
+                    passage="Предприниматель и изобретатель.",
+                ),
+            )
+        )
+        self.error = error
+        self.images: list[bytes] = []
+        self.max_results = 5
+        self.max_passage_chars = 300
+        self.timeout = 1.0
+
+    def available(self) -> bool:
+        return self.is_available
+
+    def match(self, text: str) -> tuple[bool, str]:
+        return match_image_request(text, IMAGE_TRIGGERS)
+
+    def search(self, image: bytes, **kwargs: Any) -> ImageSearchResult:
+        self.images.append(image)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 class FakeTTS:
@@ -364,6 +420,8 @@ class CommandRoutingTest(unittest.TestCase):
         assistant.planner = FakeLocalPlanner()
         assistant.qa = None
         assistant.vision = FakeVision()
+        assistant.image_search = FakeImageSearch()
+        assistant.llm = FakeLLM()
         assistant.tts = FakeTTS()
         assistant.notifications = []
         assistant.states = []
@@ -439,6 +497,70 @@ class CommandRoutingTest(unittest.TestCase):
         self.assertEqual(message, "Не понял команду")
         self.assertEqual(assistant.vision.seen, [])
         self.assertEqual(assistant.router.seen, ["где здесь кнопка"])
+
+    def test_image_search_bypasses_router_and_vision(self) -> None:
+        assistant = self.make()
+        assistant.tts = FakeTTS(enabled=True)
+        assistant.llm = FakeLLM("Это Илон Маск.")
+        message = assistant.run_text("поищи по фото кто это")
+        self.assertEqual(message, "Это Илон Маск.")
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.planner.seen, [])
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.image_search.images, [b"jpeg"])
+        self.assertEqual(assistant.llm.calls[0][0], "кто это")
+        self.assertIn("Илон Маск", assistant.llm.calls[0][1])
+        self.assertEqual(assistant.llm.kwargs[0].get("style"), "image_search")
+        self.assertEqual(assistant.tts.said, ["Это Илон Маск."])
+
+    def test_image_search_reuses_pending_frame(self) -> None:
+        assistant = self.make()
+        assistant.vision.pending = True
+        assistant.run_text("поищи по фото")
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.image_search.images, [b"jpeg"])
+
+    def test_image_search_captures_without_pending(self) -> None:
+        assistant = self.make()
+        assistant.vision.pending = False
+        assistant.run_text("поищи по фото")
+        self.assertEqual(assistant.vision.captures, 1)
+
+    def test_image_search_empty_results(self) -> None:
+        assistant = self.make()
+        assistant.image_search.result = ImageSearchResult()
+        message = assistant.run_text("поищи по фото")
+        self.assertEqual(message, "Ничего похожего не нашёл")
+        self.assertEqual(assistant.llm.calls, [])
+
+    def test_image_search_error_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.image_search.error = ImageSearchError("Яндекс не принял ключ поиска")
+        with patch("app.main.beep") as beep:
+            message = assistant.run_text("поищи по фото")
+        self.assertEqual(message, "Яндекс не принял ключ поиска")
+        beep.assert_called_once_with(320, 120)
+        self.assertEqual(assistant.tts.phrases, ["error"])
+
+    def test_image_search_not_configured(self) -> None:
+        assistant = self.make()
+        assistant.image_search.is_available = False
+        with patch("app.main.beep"):
+            message = assistant.run_text("поищи по фото")
+        self.assertIn("не настроен", message)
+        self.assertEqual(assistant.image_search.images, [])
+
+    def test_image_search_llm_failure_uses_fallback(self) -> None:
+        assistant = self.make()
+        assistant.llm = FakeLLM(error=RuntimeError("нет сети"))
+        message = assistant.run_text("поищи по фото")
+        self.assertIn("Нашёл похожие изображения", message)
+
+    def test_kto_eto_does_not_call_image_search(self) -> None:
+        assistant = self.make()
+        with patch("app.main.beep"):
+            assistant.run_text("кто это")
+        self.assertEqual(assistant.image_search.images, [])
 
     def test_canonicalizes_text_before_routing(self) -> None:
         assistant = self.make(CommandResult(True, True, "Открываю Google"))

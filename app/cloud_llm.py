@@ -162,7 +162,11 @@ class CloudLLM:
         history = (history or "").strip()
         if context:
             system = RAG_PROMPTS.get(style, RAG_SYSTEM)
-            user = f"Вопрос: {question}\n\nИсточники:\n{context}"
+            # Для поиска по картинке это не «источники» с цитатами, а
+            # результаты похожих изображений: иначе модель ждёт ссылки
+            # и отказывается отвечать при неполном совпадении.
+            label = "Результаты поиска по картинке" if style == "image_search" else "Источники"
+            user = f"Вопрос: {question}\n\n{label}:\n{context}"
             if history:
                 user = f"{history}\n\n{user}"
         elif history:
