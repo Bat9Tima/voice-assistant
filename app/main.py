@@ -2258,7 +2258,10 @@ class Assistant:
             observed_decision: bool | None = None
             if (
                 vision is not None
-                and not vision_pending
+                # Ожидающий снимок забирает только продолжение («где здесь
+                # кнопка»). Новый вопрос о занятии не должен теряться из-за
+                # того, что предыдущий ответ оставил кадр для уточнений.
+                and not (vision_pending and (in_dialog or vision.match_followup(text)))
                 and vision_request is None
                 and image_request is None
                 and not snapshot_only

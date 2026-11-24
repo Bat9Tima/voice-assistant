@@ -29,6 +29,14 @@ class LooksVisualTest(unittest.TestCase):
             "что за фигня",
             "как это исправить",
             "не открывается",
+            "что я сейчас делаю",
+            "что я делаю",
+            "что я тут делаю",
+            "что я сейчас буду делать",
+            "как думаешь что я сейчас буду делать",
+            "чем я сейчас занят",
+            "чем я занимаюсь",
+            "что у меня сейчас происходит",
         ):
             with self.subTest(phrase=phrase):
                 self.assertTrue(looks_visual(phrase))
@@ -43,6 +51,8 @@ class LooksVisualTest(unittest.TestCase):
             "открой ютуб",
             "который час",
             "как дела на работе",
+            "что ты делаешь",
+            "чем ты занят",
         ):
             with self.subTest(phrase=phrase):
                 self.assertFalse(looks_visual(phrase))
