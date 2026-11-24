@@ -50,7 +50,7 @@ from .memory_manager import MemoryManager
 from .persona import DEFAULT_MAX_FACTS, PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
-from .screen_capture import ScreenCapture
+from .screen_capture import Frame, ScreenCapture
 from .screen_watch import ScreenWatcher
 from .session_store import SessionStore
 from .single_instance import acquire
@@ -142,6 +142,11 @@ WATCH_CHANGE_PHRASES = frozenset(
         "что там изменилось",
     }
 )
+
+# Кадр наблюдения годится для явного вопроса, пока он не старше двух
+# интервалов, но не меньше пяти секунд. Иначе лучше сделать новый снимок,
+# чем отвечать по устаревшей картинке.
+OBSERVED_FRAME_MAX_AGE_SEC = 5.0
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -1158,6 +1163,24 @@ class Assistant:
             category = "ack"
         self.tts.phrase(category)
 
+    def _observed_frame(self) -> Frame | None:
+        """Свежий кадр наблюдения для явного вопроса, без нового захвата."""
+        observer = getattr(self, "vision_watch", None)
+        if observer is None or not getattr(observer, "active", False):
+            return None
+        frame = getattr(observer, "last_frame", None)
+        if frame is None:
+            return None
+        try:
+            age = time.monotonic() - float(frame.captured_at)
+            interval = float(getattr(observer, "interval_sec", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        limit = max(OBSERVED_FRAME_MAX_AGE_SEC, interval * 2)
+        if age < 0 or age > limit:
+            return None
+        return frame
+
     def _vision_problem(self, vision: ScreenVision) -> str | None:
         if not vision.enabled:
             return "Зрение выключено"
@@ -1330,8 +1353,14 @@ class Assistant:
         problem = self._vision_problem(vision)
         if problem is not None:
             return self._vision_failure(problem)
+        frame = self._observed_frame()
         try:
-            vision.snapshot()
+            if frame is not None:
+                # Режим наблюдения уже снял кадр: второй захват не нужен.
+                vision.remember_frame(frame)
+                log.info("Зрение: снимок взят из наблюдения без нового захвата")
+            else:
+                vision.snapshot()
         except Exception as exc:  # noqa: BLE001
             log.warning("Зрение: %s", exc)
             return self._vision_failure("Не удалось посмотреть на экран")
@@ -1348,17 +1377,29 @@ class Assistant:
         problem = self._vision_problem(vision)
         if problem is not None:
             return self._vision_failure(problem)
+        frame = self._observed_frame()
         try:
-            message = (
-                vision.describe(request, context=self._vision_dialog_context()).strip()
-                or "Не вижу, что на экране"
-            )
+            if frame is not None:
+                # Наблюдение уже держит свежий кадр: отвечаем по нему.
+                message = vision.describe_frame(
+                    frame,
+                    request,
+                    context=self._vision_dialog_context(),
+                )
+                source = "кадру наблюдения"
+            else:
+                message = vision.describe(
+                    request,
+                    context=self._vision_dialog_context(),
+                )
+                source = "новому кадру"
+            message = message.strip() or "Не вижу, что на экране"
         except Exception as exc:  # noqa: BLE001
             log.warning("Зрение: %s", exc)
             return self._vision_failure("Не удалось посмотреть на экран")
         self.notify(message[:250])
         self.tts.say(message)
-        log.info("Зрение: ответ по новому кадру, символов %s", len(message))
+        log.info("Зрение: ответ по %s, символов %s", source, len(message))
         self._remember_vision_exchange(question or request, message)
         return message
 

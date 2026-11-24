@@ -5,6 +5,9 @@
 можно было задать отдельный вопрос по тому же кадру. После TTL кадр
 считается устаревшим и не используется. Команда вызывается только явно,
 фон и диалог сами зрение не запускают.
+
+С v3.0 сюда же приходит кадр из режима наблюдения: ``describe_frame``
+отвечает по уже снятому ``Frame`` и не делает второй захват.
 """
 
 from __future__ import annotations
@@ -15,7 +18,10 @@ import re
 import time
 from typing import Any
 
+from PIL import Image
+
 from .cloud_llm import CloudLLM
+from .screen_capture import Frame
 from .text import normalize
 
 log = logging.getLogger(__name__)
@@ -31,9 +37,14 @@ DEFAULT_TRIGGERS = (
     "посмотри что на экране",
     "глянь на экран",
     "что на экране",
+    "что сейчас на экране",
+    "что происходит на экране",
+    "что сейчас происходит на экране",
     "что видно на экране",
     "что ты видишь на экране",
     "что у меня на экране",
+    "опиши экран",
+    "опиши что на экране",
 )
 DEFAULT_FOLLOWUP_TTL = 60.0
 # Сколько символов диалога добавлять к вопросу по картинке. Контекст нужен
@@ -221,6 +232,24 @@ class ScreenVision:
             raise VisionError("зрение недоступно")
         return self.capture()
 
+    def remember_frame(self, frame: Frame) -> bytes:
+        """Запоминает уже снятый кадр наблюдения, без второго захвата.
+
+        Кодирование в JPEG и проверка TTL те же, что у ``capture``: кадр
+        живёт в памяти и после ``followup_ttl_sec`` считается устаревшим.
+        """
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        if frame is None:
+            raise VisionError("нет кадра наблюдения")
+        try:
+            image = self._encode(frame.image)
+        except Exception as exc:  # noqa: BLE001
+            raise VisionError(f"не удалось подготовить кадр: {exc}") from exc
+        self._pending = image
+        self._pending_at = time.monotonic()
+        return image
+
     def pending_image(self) -> bytes | None:
         """Свежий кадр для другого инструмента, если TTL не истёк."""
         return self._pending_image()
@@ -243,6 +272,15 @@ class ScreenVision:
             raise VisionError("зрение выключено")
         if not self.model:
             raise VisionError("не задана vision.model")
+        return self._answer(image, request, context=context)
+
+    def describe_frame(self, frame: Frame, request: str = "", *, context: str = "") -> str:
+        """Отвечает по уже снятому кадру наблюдения, без нового захвата."""
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        if not self.model:
+            raise VisionError("не задана vision.model")
+        image = self.remember_frame(frame)
         return self._answer(image, request, context=context)
 
     def _answer(self, image: bytes, request: str, *, context: str = "") -> str:
@@ -283,19 +321,23 @@ class ScreenVision:
     def _capture(self) -> bytes:
         """JPEG основного экрана в памяти, без записи на диск."""
         try:
-            from PIL import Image, ImageGrab
+            from PIL import ImageGrab
 
             image = ImageGrab.grab()
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            if self.max_width > 0 and image.width > self.max_width:
-                height = round(image.height * self.max_width / image.width)
-                image = image.resize((self.max_width, height), Image.Resampling.LANCZOS)
-            buffer = io.BytesIO()
-            image.save(buffer, format="JPEG", quality=self.quality, optimize=True)
-            return buffer.getvalue()
+            return self._encode(image)
         except Exception as exc:  # noqa: BLE001
             raise VisionError(f"не удалось снять экран: {exc}") from exc
+
+    def _encode(self, image: Image.Image) -> bytes:
+        """Сжимает кадр так же, как обычный снимок зрения."""
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        if self.max_width > 0 and image.width > self.max_width:
+            height = round(image.height * self.max_width / image.width)
+            image = image.resize((self.max_width, height), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=self.quality, optimize=True)
+        return buffer.getvalue()
 
 
 __all__ = [
