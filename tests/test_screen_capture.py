@@ -35,6 +35,24 @@ class ScreenCaptureTest(unittest.TestCase):
 
         self.assertEqual(frame.image.mode, "RGB")
 
+    def test_grab_reads_window_title(self) -> None:
+        source = Image.new("RGB", (40, 20), "white")
+        with patch("app.screen_capture.ImageGrab.grab", return_value=source):
+            frame = ScreenCapture(title_provider=lambda: "  Chrome — GitHub  ").grab()
+
+        self.assertEqual(frame.window_title, "Chrome — GitHub")
+
+    def test_title_error_does_not_break_capture(self) -> None:
+        source = Image.new("RGB", (40, 20), "white")
+
+        def broken() -> str | None:
+            raise RuntimeError("нет окна")
+
+        with patch("app.screen_capture.ImageGrab.grab", return_value=source):
+            frame = ScreenCapture(title_provider=broken).grab()
+
+        self.assertIsNone(frame.window_title)
+
     def test_grab_wraps_capture_error(self) -> None:
         with patch("app.screen_capture.ImageGrab.grab", side_effect=OSError("нет доступа")):
             with self.assertRaises(ScreenCaptureError) as ctx:

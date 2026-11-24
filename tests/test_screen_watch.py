@@ -10,14 +10,23 @@ from app.screen_watch import ScreenWatcher, format_event
 
 
 class FakeCapture:
-    def __init__(self, images: list[Image.Image]) -> None:
+    def __init__(
+        self,
+        images: list[Image.Image],
+        titles: list[str | None] | None = None,
+    ) -> None:
         self.images = list(images)
+        self.titles = list(titles) if titles is not None else [None] * len(self.images)
         self.calls = 0
 
     def grab(self) -> Frame:
         index = min(self.calls, len(self.images) - 1)
         self.calls += 1
-        return Frame(image=self.images[index], captured_at=float(self.calls))
+        return Frame(
+            image=self.images[index],
+            captured_at=float(self.calls),
+            window_title=self.titles[index],
+        )
 
 
 class ScreenWatcherTest(unittest.TestCase):
@@ -87,6 +96,51 @@ class ScreenWatcherTest(unittest.TestCase):
 
         self.assertIsNone(event.result)
         self.assertFalse(event.changed)
+
+    def test_window_change_with_same_image_is_reported(self) -> None:
+        white = Image.new("RGB", (320, 180), "white")
+        watcher = ScreenWatcher(
+            FakeCapture([white, white.copy()], titles=["Терминал", "Chrome"]),
+            FrameProcessor(),
+        )
+        watcher.poll()
+
+        event = watcher.poll()
+
+        self.assertTrue(event.changed)
+        self.assertTrue(event.window_changed)
+        assert event.result is not None
+        self.assertFalse(event.result.changed)
+        text = format_event(event, 2.0)
+        self.assertIn("window", text)
+        self.assertIn("Chrome", text)
+
+    def test_same_window_title_is_not_reported(self) -> None:
+        white = Image.new("RGB", (320, 180), "white")
+        watcher = ScreenWatcher(
+            FakeCapture([white, white.copy()], titles=["Chrome", "Chrome"]),
+            FrameProcessor(),
+        )
+        watcher.poll()
+
+        event = watcher.poll()
+
+        self.assertFalse(event.changed)
+        self.assertFalse(event.window_changed)
+
+    def test_baseline_shows_window_title(self) -> None:
+        watcher = ScreenWatcher(
+            FakeCapture(
+                [Image.new("RGB", (320, 180), "white")],
+                titles=["Терминал"],
+            ),
+            FrameProcessor(),
+        )
+
+        text = format_event(watcher.poll(), 0.0)
+
+        self.assertIn("старт", text)
+        self.assertIn("Терминал", text)
 
     def test_format_baseline_and_change(self) -> None:
         watcher = ScreenWatcher(
