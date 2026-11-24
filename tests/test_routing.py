@@ -94,6 +94,11 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(DEFAULTS["cloud_llm"]["enabled"])
         self.assertIn("proxyapi", DEFAULTS["cloud_llm"]["base_url"])
         self.assertEqual(DEFAULTS["cloud_llm"]["model"], "openai/gpt-6-luna")
+        comments = DEFAULTS["vision"]["watch"]["comments"]
+        self.assertTrue(comments["enabled"])
+        self.assertTrue(comments["use_frame"])
+        self.assertEqual(comments["min_interval_sec"], 90)
+        self.assertEqual(comments["max_per_hour"], 10)
 
 
 if __name__ == "__main__":

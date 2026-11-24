@@ -53,6 +53,14 @@ MAX_CONTEXT_CHARS = 1200
 # Больше трёх ключевых кадров дорого и размывает ответ: модель теряет,
 # что именно изменилось между соседними состояниями.
 MAX_MULTI_FRAMES = 3
+# Проактивный комментарий — одна короткая реплика, а не описание экрана.
+COMMENT_PROMPT = (
+    "Ты — голосовой ассистент Луна. Перед тобой один кадр экрана и краткая "
+    "история событий. Если уместен один короткий комментарий или полезная "
+    "подсказка — ответь одним предложением по-русски, не длиннее 15 слов. "
+    "Если комментировать нечего или это отвлечёт — ответь ровно SKIP. "
+    "Не пересказывай очевидное, не выдумывай и не предлагай опасных действий."
+)
 # «посмотри на экран и скажи, какая ошибка» — служебное начало не вопрос.
 _LEAD_RE = re.compile(r"^(?:и\s+)?(?:скажи|ответь|подскажи)\s+")
 # «а что на экране?» — разговорная частица перед командой.
@@ -320,6 +328,44 @@ class ScreenVision:
             timeout=self.timeout,
         )
 
+    def comment_frame(
+        self,
+        frame: Frame,
+        *,
+        context: str = "",
+        model: str | None = None,
+        max_tokens: int = 160,
+        timeout: float | None = None,
+    ) -> str:
+        """Один короткий комментарий по кадру наблюдения, без нового захвата.
+
+        Кадр не становится ``pending``: проактивная реплика не должна
+        подменять снимок, к которому пользователь задаёт уточнения.
+        """
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        if not self.model:
+            raise VisionError("не задана vision.model")
+        if frame is None:
+            raise VisionError("нет кадра наблюдения")
+        try:
+            image = self._encode(frame.image)
+        except Exception as exc:  # noqa: BLE001
+            raise VisionError(f"не удалось подготовить кадр: {exc}") from exc
+        prompt = COMMENT_PROMPT
+        context = " ".join((context or "").split())
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[: MAX_CONTEXT_CHARS - 1].rstrip() + "…"
+        if context:
+            prompt += f" История событий: {context}"
+        return self.llm.answer_image(
+            image,
+            prompt,
+            model=model or self.model,
+            max_tokens=max(1, int(max_tokens)),
+            timeout=self.timeout if timeout is None else float(timeout),
+        )
+
     def _answer(self, image: bytes, request: str, *, context: str = "") -> str:
         return self.llm.answer_image(
             image,
@@ -395,9 +441,11 @@ class ScreenVision:
 
 
 __all__ = [
+    "COMMENT_PROMPT",
     "DEFAULT_FOLLOWUP_TTL",
     "DEFAULT_PROMPT",
     "DEFAULT_TRIGGERS",
+    "MAX_MULTI_FRAMES",
     "ScreenVision",
     "VisionError",
     "match_followup",

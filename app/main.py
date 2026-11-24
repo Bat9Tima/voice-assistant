@@ -62,12 +62,14 @@ from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
 from .vision import MAX_MULTI_FRAMES, ScreenVision, VisionError
+from .vision_comments import ProactiveCommenter, build_text_prompt
 from .vision_events import (
     DEFAULT_FRAME_GAP_SEC,
     DEFAULT_IDLE_AFTER_SEC,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_FRAMES,
     EventTimeline,
+    VisionEvent,
 )
 from .vision_watch import (
     DEFAULT_AUTO_OFF_SEC,
@@ -183,6 +185,36 @@ WATCH_COMPARE_PHRASES = frozenset(
         "что было и что стало",
         "что было сначала и что сейчас",
         "покажи что изменилось",
+    }
+)
+# Проактивные комментарии — отдельный режим поверх наблюдения. Включается
+# только явной фразой; наблюдение само по себе комментарии не запускает.
+COMMENTS_ON_PHRASES = frozenset(
+    {
+        "включи комментарии",
+        "включи комментарии к экрану",
+        "включи комментарии по экрану",
+        "комментируй экран",
+        "комментируй что видишь",
+        "начни комментировать экран",
+    }
+)
+COMMENTS_OFF_PHRASES = frozenset(
+    {
+        "выключи комментарии",
+        "выключи комментарии к экрану",
+        "выключи комментарии по экрану",
+        "не комментируй экран",
+        "хватит комментировать",
+        "перестань комментировать",
+    }
+)
+COMMENTS_STATUS_PHRASES = frozenset(
+    {
+        "статус комментариев",
+        "что с комментариями",
+        "ты комментируешь",
+        "комментарии включены",
     }
 )
 
@@ -452,6 +484,7 @@ class Assistant:
         # если пользователь заговорил сразу после ключевой фразы.
         self._preroll: deque[bytes] = deque(maxlen=12)
         self.vision_watch = self._make_vision_watch(cfg)
+        self.vision_comments = self._make_vision_comments(cfg)
 
     def _make_vision_watch(self, cfg: dict[str, Any]) -> VisionObserver | None:
         """Собирает режим наблюдения, если он разрешён в конфиге.
@@ -502,8 +535,111 @@ class Assistant:
             interval_sec=float(watch_cfg.get("interval_sec") or DEFAULT_INTERVAL_SEC),
             auto_off_sec=auto_off,
             on_stop=self._vision_watch_stopped,
+            on_event=self._on_vision_event,
             timeline=timeline,
         )
+
+    def _make_vision_comments(self, cfg: dict[str, Any]) -> ProactiveCommenter:
+        """Собирает режим комментариев; сам он стартует только командой."""
+        vision_cfg = cfg.get("vision") or {}
+        watch_cfg = vision_cfg.get("watch") or {}
+        raw = watch_cfg.get("comments")
+        comments_cfg = raw if isinstance(raw, dict) else {}
+        raw_timeout = comments_cfg.get("timeout_sec", 20.0)
+        timeout = 20.0 if raw_timeout is None else float(raw_timeout)
+        model = str(comments_cfg.get("model") or "").strip()
+        raw_interval = comments_cfg.get("min_interval_sec", 90.0)
+        min_interval = 90.0 if raw_interval is None else float(raw_interval)
+        raw_max = comments_cfg.get("max_per_hour", 10)
+        max_per_hour = 10 if raw_max is None else int(raw_max)
+
+        def compose(event: VisionEvent, frame: Frame | None) -> str | None:
+            return self._compose_vision_comment(
+                event,
+                frame,
+                timeout=timeout,
+                model=model,
+            )
+
+        return ProactiveCommenter(
+            compose=compose,
+            on_comment=self._vision_comment_ready,
+            is_busy=self._vision_comment_busy,
+            available=bool(comments_cfg.get("enabled", True)),
+            use_frame=bool(comments_cfg.get("use_frame", True)),
+            min_interval_sec=min_interval,
+            max_per_hour=max_per_hour,
+        )
+
+    def _on_vision_event(self, event: VisionEvent, frame: Frame | None) -> None:
+        """Наблюдатель сообщил о событии: комментарии решают сами."""
+        comments = getattr(self, "vision_comments", None)
+        if comments is not None:
+            comments.enqueue(event, frame)
+
+    def _compose_vision_comment(
+        self,
+        event: VisionEvent,
+        frame: Frame | None,
+        *,
+        timeout: float,
+        model: str,
+    ) -> str | None:
+        """Готовит комментарий по кадру или только по тексту события."""
+        timeline = getattr(getattr(self, "vision_watch", None), "timeline", None)
+        context = ""
+        if timeline is not None:
+            context = timeline.describe(now=time.monotonic(), limit=6)
+        if frame is not None:
+            vision = getattr(self, "vision", None)
+            if vision is not None and vision.available():
+                try:
+                    return vision.comment_frame(
+                        frame,
+                        context=context,
+                        model=model or None,
+                        max_tokens=160,
+                        timeout=timeout,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Комментарии: кадр не отправлен: %s", exc.__class__.__name__)
+                    return None
+        llm = getattr(self, "llm", None)
+        if llm is None or not llm.available():
+            return None
+        try:
+            return llm.answer(
+                build_text_prompt(event, context),
+                max_tokens=160,
+                timeout=timeout,
+                model=model or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Комментарии: текст не отправлен: %s", exc.__class__.__name__)
+            return None
+
+    def _vision_comment_ready(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        log.info("Зрение: проактивный комментарий, символов %s", len(text))
+        self.notify(text[:250])
+        self.tts.say(text)
+
+    def _vision_comment_busy(self) -> bool:
+        """Не комментируем, пока пользователь говорит или ассистент занят."""
+        if getattr(self, "_paused", False) or getattr(self, "_dialog_active", False):
+            return True
+        if self.state in {"listening", "thinking"}:
+            return True
+        tts = getattr(self, "tts", None)
+        if tts is not None and getattr(tts, "speaking", False):
+            return True
+        observer = getattr(self, "vision_watch", None)
+        if observer is None:
+            return True
+        status = observer.status()
+        return not status.active or status.paused
 
     # ------------------------------------------------------------------ memory
     def _recover_sessions_async(self) -> None:
@@ -562,13 +698,19 @@ class Assistant:
         # что экран всё ещё под наблюдением.
         tray_state = state
         observer = getattr(self, "vision_watch", None)
+        comments = getattr(self, "vision_comments", None)
         if state == "idle" and observer is not None and observer.active:
-            tray_state = "watching"
+            if comments is not None and comments.active:
+                tray_state = "commenting"
+            else:
+                tray_state = "watching"
         self.tray.set_state(tray_state)
 
     def status(self) -> dict[str, Any]:
         observer = getattr(self, "vision_watch", None)
         watch = observer.status() if observer is not None else None
+        comments = getattr(self, "vision_comments", None)
+        comment_status = comments.status() if comments is not None else None
         return {
             "state": self.state,
             "paused": self._paused,
@@ -587,6 +729,18 @@ class Assistant:
                     "changes": watch.changes,
                 }
                 if watch is not None
+                else None
+            ),
+            "comments": (
+                {
+                    "available": comment_status.available,
+                    "active": comment_status.active,
+                    "paused": comment_status.paused,
+                    "use_frame": comment_status.use_frame,
+                    "comments": comment_status.comments,
+                    "attempts": comment_status.attempts,
+                }
+                if comment_status is not None
                 else None
             ),
             "tray": self.tray.status() if self.tray is not None else None,
@@ -936,6 +1090,12 @@ class Assistant:
                 observer.pause()
             else:
                 observer.resume()
+        comments = getattr(self, "vision_comments", None)
+        if comments is not None:
+            if self._paused:
+                comments.pause()
+            else:
+                comments.resume()
         if self._paused and getattr(self, "mic", None) is not None:
             # Нажали паузу во время записи: уже накопленный звук не нужен.
             self.mic.flush()
@@ -1369,8 +1529,46 @@ class Assistant:
             log.warning("Зрение: не удалось взять контекст диалога", exc_info=True)
             return ""
 
+    def _vision_comments_reply(self, text: str, *, in_dialog: bool) -> str | None:
+        """Явные команды проактивных комментариев."""
+        comments = getattr(self, "vision_comments", None)
+        if comments is None:
+            return None
+        if text in COMMENTS_ON_PHRASES:
+            if not comments.available:
+                return "Комментарии выключены в настройках зрения."
+            observer = getattr(self, "vision_watch", None)
+            if observer is None:
+                return "Наблюдение недоступно в настройках."
+            started = False
+            if not observer.status().active:
+                started = observer.start()
+                if not started:
+                    return "Не удалось включить наблюдение."
+            if not comments.start():
+                return "Комментарии уже включены."
+            self.set_state(self.state)
+            prefix = "Наблюдение и комментарии включены." if started else "Комментарии включены."
+            interval = format_duration(comments.min_interval_sec)
+            return (
+                f"{prefix} В облако уходит текст события и не больше одного "
+                f"кадра на комментарий, не чаще {interval}. "
+                "Выключить — «выключи комментарии»."
+            )
+        if text in COMMENTS_OFF_PHRASES:
+            if comments.stop():
+                self.set_state(self.state)
+                return "Комментарии выключены. Наблюдение продолжается."
+            return "Комментарии и так выключены."
+        if text in COMMENTS_STATUS_PHRASES:
+            return comments.describe(now=time.monotonic())
+        return None
+
     def _vision_watch_reply(self, text: str, *, in_dialog: bool) -> str | None:
         """Команды режима наблюдения. ``None`` — фраза не про него."""
+        comments_reply = self._vision_comments_reply(text, in_dialog=in_dialog)
+        if comments_reply is not None:
+            return comments_reply
         observer = getattr(self, "vision_watch", None)
         if observer is None:
             return None
@@ -1382,8 +1580,15 @@ class Assistant:
                 )
             return "Наблюдение уже включено."
         if text in WATCH_OFF_PHRASES:
+            comments = getattr(self, "vision_comments", None)
+            comments_stopped = comments.stop() if comments is not None else False
             if observer.stop():
-                return "Наблюдение выключено. Кадры больше не снимаю."
+                self.set_state(self.state)
+                suffix = " Комментарии тоже выключены." if comments_stopped else ""
+                return f"Наблюдение выключено. Кадры больше не снимаю.{suffix}"
+            if comments_stopped:
+                self.set_state(self.state)
+                return "Комментарии выключены. Наблюдение и так выключено."
             return "Наблюдение и так выключено."
         if text in WATCH_STATUS_PHRASES:
             return describe_status(observer.status(), now=time.monotonic())
@@ -1475,9 +1680,14 @@ class Assistant:
         """Режим выключился сам: сообщаем, чтобы не оставался незаметным."""
         if reason != "timeout":
             return
+        comments = getattr(self, "vision_comments", None)
+        comments_stopped = comments.stop() if comments is not None else False
         observer = getattr(self, "vision_watch", None)
         limit = observer.status().auto_off_sec if observer is not None else DEFAULT_AUTO_OFF_SEC
-        message = f"Наблюдение выключено: прошло {format_duration(limit)}."
+        if comments_stopped:
+            message = f"Наблюдение и комментарии выключены: прошло {format_duration(limit)}."
+        else:
+            message = f"Наблюдение выключено: прошло {format_duration(limit)}."
         log.info("Зрение: %s", message)
         self.notify(message)
         self.tts.say(message)
@@ -2231,6 +2441,9 @@ class Assistant:
 
     def _cleanup(self) -> None:
         log.info("Завершаю работу")
+        comments = getattr(self, "vision_comments", None)
+        if comments is not None:
+            comments.stop()
         observer = getattr(self, "vision_watch", None)
         if observer is not None:
             observer.stop()

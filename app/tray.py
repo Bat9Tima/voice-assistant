@@ -32,6 +32,7 @@ COLORS = {
     "thinking": "#f39c12",
     "paused": "#95a5a6",
     "watching": "#9b59b6",
+    "commenting": "#e67e22",
     "error": "#e74c3c",
 }
 
@@ -42,6 +43,7 @@ TITLES = {
     "thinking": "Ассистент: думаю",
     "paused": "Ассистент: пауза",
     "watching": "Ассистент: наблюдаю",
+    "commenting": "Ассистент: наблюдаю и комментирую",
     "error": "Ассистент: ошибка",
 }
 

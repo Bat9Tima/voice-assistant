@@ -189,6 +189,14 @@ DEFAULTS: dict[str, Any] = {
             "enabled": True,
             "interval_sec": 2.0,
             "auto_off_sec": 600,
+            "comments": {
+                "enabled": True,
+                "min_interval_sec": 90,
+                "max_per_hour": 10,
+                "use_frame": True,
+                "timeout_sec": 20,
+                "model": "",
+            },
         },
         "prompt": (
             "Опиши, что видно на экране, в двух-трёх предложениях. "

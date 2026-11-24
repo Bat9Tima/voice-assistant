@@ -333,6 +333,46 @@ class ScreenVisionTest(unittest.TestCase):
         with self.assertRaises(VisionError):
             vision.describe_frames([self.frame(), self.frame()])
 
+    def test_comment_frame_uses_existing_frame_without_pending(self) -> None:
+        vision, llm = self.make()
+        vision._capture = lambda: self.fail("повторный захват")  # type: ignore[method-assign]
+
+        answer = vision.comment_frame(
+            self.frame(),
+            context="Событие: окно сменилось на Chrome.",
+        )
+
+        self.assertEqual(answer, "На экране открыт браузер")
+        call = llm.calls[0]
+        self.assertTrue(call["image"].startswith(b"\xff\xd8"))
+        self.assertIn("Chrome", call["prompt"])
+        self.assertIn("SKIP", call["prompt"])
+        self.assertFalse(vision.has_pending())
+
+    def test_comment_frame_passes_model_and_limits(self) -> None:
+        vision, llm = self.make()
+
+        vision.comment_frame(
+            self.frame(),
+            model="other/model",
+            max_tokens=80,
+            timeout=5.0,
+        )
+
+        call = llm.calls[0]
+        self.assertEqual(call["model"], "other/model")
+        self.assertEqual(call["max_tokens"], 80)
+        self.assertEqual(call["timeout"], 5.0)
+
+    def test_comment_frame_requires_model_and_frame(self) -> None:
+        vision, _ = self.make(model="")
+        with self.assertRaises(VisionError):
+            vision.comment_frame(self.frame())
+
+        vision, _ = self.make()
+        with self.assertRaises(VisionError):
+            vision.comment_frame(None)  # type: ignore[arg-type]
+
     def test_snapshot_only_for_imperative(self) -> None:
         vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))
         self.assertTrue(vision.wants_snapshot("посмотри на экран"))
