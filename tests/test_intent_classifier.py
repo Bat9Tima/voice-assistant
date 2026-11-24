@@ -313,6 +313,40 @@ class VisualIntentClassifierTest(unittest.TestCase):
         self.assertEqual(decision.intent, OTHER)
         self.assertEqual(decision.source, SOURCE_MODEL)
 
+    def test_binary_threshold_uses_probability_not_margin(self) -> None:
+        classifier = self.make(threshold=0.6)
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            return_value=FakeResponse(
+                response_body(
+                    SCREEN,
+                    0.38,
+                    {SCREEN: 0.69, OTHER: 0.31},
+                    key="visual",
+                )
+            ),
+        ):
+            decision = classifier.classify_visual(
+                "почему это не работает",
+                in_dialog=False,
+            )
+
+        self.assertEqual(decision.intent, SCREEN)
+        self.assertEqual(decision.confidence, 0.69)
+
+    def test_general_classifier_keeps_margin_confidence(self) -> None:
+        classifier = IntentClassifier(make_cfg(threshold=0.6))
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            return_value=FakeResponse(response_body(DIALOG, 0.38, {DIALOG: 0.69, ANSWER: 0.31})),
+        ):
+            decision = classifier.classify("а да нормально", in_dialog=True)
+
+        self.assertEqual(decision.intent, UNKNOWN)
+        self.assertEqual(decision.confidence, 0.38)
+
     def test_low_confidence_becomes_unknown(self) -> None:
         classifier = self.make(threshold=0.6)
 

@@ -305,6 +305,7 @@ class IntentClassifier:
                 question_key="visual",
                 allowed=VISUAL_INTENTS,
                 threshold=self.visual_threshold,
+                use_probability=True,
             )
         self.last_visual = decision
         self._log_decision(
@@ -472,6 +473,7 @@ class IntentClassifier:
         question_key: str = "intent",
         allowed: frozenset[str] = INTENTS,
         threshold: float | None = None,
+        use_probability: bool = False,
     ) -> IntentDecision:
         elapsed = time.monotonic() - started
         answers = data.get("answers")
@@ -499,6 +501,13 @@ class IntentClassifier:
             confidence = None
         if confidence is None:
             confidence = probabilities.get(raw, 0.0)
+        elif use_probability and raw in probabilities:
+            # В decisions-ответе confidence — отрыв лидера от второго
+            # варианта, а не вероятность выбора. Для бинарного вопроса
+            # «экран / не экран» нужна именно вероятность: иначе
+            # «почему это не работает» (0.69 против 0.31) выглядит как
+            # неуверенность 0.38. Общий классификатор оставляем на отрыве.
+            confidence = probabilities[raw]
 
         usage = data.get("usage") or {}
         try:
