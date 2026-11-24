@@ -7,6 +7,7 @@ from app.visual_intent import (
     SCREEN,
     VISUAL_INTENTS,
     VISUAL_QUESTION,
+    looks_like_look_request,
     looks_visual,
 )
 
@@ -37,6 +38,10 @@ class LooksVisualTest(unittest.TestCase):
             "чем я сейчас занят",
             "чем я занимаюсь",
             "что у меня сейчас происходит",
+            "смотри что выделено курсором",
+            "что у меня выделено",
+            "посмотри что у меня выделено на экране вот я выделил курсором",
+            "смотри а что такое шоколад",
         ):
             with self.subTest(phrase=phrase):
                 self.assertTrue(looks_visual(phrase))
@@ -69,6 +74,29 @@ class LooksVisualTest(unittest.TestCase):
         self.assertFalse(looks_visual("   "))
 
 
+class LookRequestTest(unittest.TestCase):
+    def test_direct_look_requests(self) -> None:
+        for phrase in (
+            "смотри что выделено курсором",
+            "посмотри что у меня выделено на экране",
+            "глянь что тут",
+            "посмотри на экран",
+            "смотри а что такое шоколад",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(looks_like_look_request(phrase))
+
+    def test_plain_questions_are_not_look_requests(self) -> None:
+        for phrase in (
+            "что такое шоколад",
+            "как дела",
+            "посмотри фильм",
+            "открой ютуб",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(looks_like_look_request(phrase))
+
+
 class VisualQuestionTest(unittest.TestCase):
     def test_prompt_has_two_choices(self) -> None:
         self.assertEqual(VISUAL_QUESTION["type"], "choice")
@@ -79,6 +107,8 @@ class VisualQuestionTest(unittest.TestCase):
         instructions = VISUAL_QUESTION["instructions"]
         self.assertIn("экране", instructions)
         self.assertIn("Не считай screen", instructions)
+        self.assertIn("dialog_context", instructions)
+        self.assertIn("screen_state", instructions)
 
 
 if __name__ == "__main__":

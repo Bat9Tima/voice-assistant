@@ -78,7 +78,7 @@ from .vision_watch import (
     describe_status,
     format_duration,
 )
-from .visual_intent import OTHER, SCREEN, looks_visual
+from .visual_intent import OTHER, SCREEN, looks_like_look_request, looks_visual
 from .visual_router import (
     AMBIGUOUS,
     CONTEXT_ONLY,
@@ -1414,7 +1414,13 @@ class Assistant:
         ``None`` — фраза не похожа на вопрос о снимке или классификатор
         недоступен: остаётся прежняя детерминированная маршрутизация.
         """
-        if self._observed_frame() is None or not looks_visual(text):
+        frame = self._observed_frame()
+        if not looks_visual(text):
+            return None
+        if frame is None and not looks_like_look_request(text):
+            # Без свежего кадра спрашиваем модель только про прямые
+            # просьбы посмотреть. Остальные фразы не должны внезапно
+            # делать снимок экрана.
             return None
         vision = getattr(self, "vision", None)
         if vision is None or self._vision_problem(vision) is not None:
@@ -1426,7 +1432,12 @@ class Assistant:
         if not callable(classify):
             return None
         try:
-            decision = classify(text, in_dialog=in_dialog)
+            decision = classify(
+                text,
+                in_dialog=in_dialog,
+                context=self._vision_classifier_context(),
+                screen_state=self._vision_screen_state(frame),
+            )
         except Exception:  # noqa: BLE001
             log.warning("Зрение: классификатор экрана упал", exc_info=True)
             return None
@@ -1528,6 +1539,45 @@ class Assistant:
         except Exception:  # noqa: BLE001
             log.warning("Зрение: не удалось взять контекст диалога", exc_info=True)
             return ""
+
+    def _vision_classifier_context(self) -> str:
+        """Последние реплики для решения «экран или нет».
+
+        В отличие от промпта зрения контекст нужен и вне разговорного
+        режима: «смотри, что выделено» может продолжать одиночный ответ
+        по кадру. Длинную историю не берём: она размывает решение.
+        """
+        dialog = getattr(self, "dialog", None)
+        getter = getattr(dialog, "recent_context", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter() or "").strip()[:1200]
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "Зрение: не удалось взять контекст для классификатора",
+                exc_info=True,
+            )
+            return ""
+
+    def _vision_screen_state(self, frame: Frame | None) -> str:
+        """Состояние наблюдения для decisions-модели, словами."""
+        if frame is not None:
+            try:
+                age = max(0.0, time.monotonic() - float(frame.captured_at))
+            except (TypeError, ValueError):
+                age = 0.0
+            return f"наблюдение включено, свежий кадр есть (возраст {age:.1f} с)"
+        observer = getattr(self, "vision_watch", None)
+        if observer is not None and getattr(observer, "active", False):
+            return (
+                "наблюдение включено, но свежего кадра пока нет; "
+                "снимок можно сделать по прямой просьбе посмотреть"
+            )
+        return (
+            "наблюдение выключено, свежего кадра нет; снимок можно сделать "
+            "только если пользователь прямо просит посмотреть"
+        )
 
     def _vision_comments_reply(self, text: str, *, in_dialog: bool) -> str | None:
         """Явные команды проактивных комментариев."""
@@ -2213,10 +2263,25 @@ class Assistant:
                 and route.kind != "general"
             )
 
+            # Спорную фразу после снимка тоже решает модель, а не только
+            # указатели вроде «здесь». Иначе «смотри, а что такое шоколад»
+            # уходило в старый кадр и отвечало про экран.
+            early_observed: bool | None = None
+            if (
+                vision_pending
+                and looks_like_look_request(text)
+                and (visual is None or visual.reason != "command")
+                and not self._dialog_owns(dialog, text)
+            ):
+                early_observed = self._observed_screen_question(
+                    text,
+                    in_dialog=in_dialog,
+                )
+
             # Свежий кадр отвечает на вопросы в разговоре, но не перехватывает
             # команды, выход, память/манеру и явные темы Q&A.
             vision_followup = False
-            if vision_pending:
+            if vision_pending and early_observed is not False:
                 if in_dialog:
                     blocked = raw_route is not None and (
                         raw_route.kind in DIALOG_QA_KINDS or raw_route.kind == "followup"
@@ -2255,9 +2320,10 @@ class Assistant:
 
             # В наблюдении спорную фразу решает модель: про экран она или
             # нет. Команды, Q&A и явное зрение сюда не доходят.
-            observed_decision: bool | None = None
+            observed_decision: bool | None = early_observed
             if (
-                vision is not None
+                observed_decision is None
+                and vision is not None
                 # Ожидающий снимок забирает только продолжение («где здесь
                 # кнопка»). Новый вопрос о занятии не должен теряться из-за
                 # того, что предыдущий ответ оставил кадр для уточнений.
@@ -2266,9 +2332,22 @@ class Assistant:
                 and image_request is None
                 and not snapshot_only
                 # Общий вопрос — как раз спорный случай; погода, новости,
-                # поиск и дата решаются до классификатора.
-                and (raw_route is None or not raw_route.handled or raw_route.kind == "general")
-                and (visual is None or visual.mode in {TEXT_ONLY, AMBIGUOUS})
+                # поиск и дата решаются до классификатора. Исключение —
+                # прямая просьба посмотреть: «смотри что выделено» может
+                # по ошибке уйти в поиск, и модель решает это раньше.
+                and (
+                    raw_route is None
+                    or not raw_route.handled
+                    or raw_route.kind == "general"
+                    or looks_like_look_request(text)
+                )
+                and (
+                    visual is None
+                    or visual.mode in {TEXT_ONLY, AMBIGUOUS}
+                    # Прямая просьба посмотреть важнее сохранённого
+                    # описания: модель решает, нужен ли новый кадр.
+                    or (visual.mode == CONTEXT_ONLY and looks_like_look_request(text))
+                )
                 and (visual is None or visual.reason != "command")
                 and not self._dialog_owns(dialog, text)
             ):
@@ -2277,16 +2356,23 @@ class Assistant:
                     in_dialog=in_dialog,
                 )
             if observed_decision is True and (
-                visual is None or visual.mode in {TEXT_ONLY, AMBIGUOUS}
+                visual is None
+                or visual.mode in {TEXT_ONLY, AMBIGUOUS}
+                or (visual.mode == CONTEXT_ONLY and looks_like_look_request(text))
             ):
                 # Наблюдение уже держит свежий кадр, а модель подтвердила,
                 # что вопрос про экран. Не просим «показать экран» и не
                 # делаем новый снимок: отвечаем по готовому кадру.
                 log.info("Зрение: модель относит фразу к экрану, беру кадр наблюдения")
                 vision_request = text
-            elif observed_decision is False and visual is not None and visual.mode == AMBIGUOUS:
+            elif (
+                observed_decision is False
+                and visual is not None
+                and visual.mode in (AMBIGUOUS, CONTEXT_ONLY)
+            ):
                 # Наблюдение активно, но модель не считает фразу вопросом
-                # о снимке: не просим «показать экран», идём обычным путём.
+                # о снимке: не просим «показать экран» и не отвечаем по
+                # старому описанию, идём обычным путём.
                 log.info("Зрение: модель не относит фразу к экрану (%s)", visual.reason)
                 visual = VisualDecision(TEXT_ONLY, "observed_not_screen")
 

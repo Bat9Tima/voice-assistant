@@ -441,6 +441,7 @@ class FakeIntent:
         self.observed: list[tuple[str, bool]] = []
         self.classified: list[tuple[str, bool]] = []
         self.visual_classified: list[tuple[str, bool]] = []
+        self.visual_contexts: list[tuple[str, str]] = []
 
     def observe(self, text: str, *, in_dialog: bool) -> None:
         self.observed.append((text, in_dialog))
@@ -449,8 +450,16 @@ class FakeIntent:
         self.classified.append((text, in_dialog))
         return self.decision
 
-    def classify_visual(self, text: str, *, in_dialog: bool) -> IntentDecision:
+    def classify_visual(
+        self,
+        text: str,
+        *,
+        in_dialog: bool,
+        context: str = "",
+        screen_state: str = "",
+    ) -> IntentDecision:
         self.visual_classified.append((text, in_dialog))
+        self.visual_contexts.append((context, screen_state))
         return self.visual
 
     def blocks_lookup(self, decision: IntentDecision) -> bool:
@@ -2694,6 +2703,97 @@ class VisionWatchRoutingTest(unittest.TestCase):
         )
         self.assertEqual(assistant.vision.frame_answers, 0)
 
+    def test_look_request_uses_observed_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        message = assistant.run_text("смотри что выделено курсором")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.snapshots, 0)
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("смотри что выделено курсором", False)],
+        )
+
+    def test_look_request_can_decline_screen(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(OTHER))
+
+        with patch("app.main.beep"):
+            assistant.run_text("смотри а что такое шоколад")
+
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("смотри а что такое шоколад", False)],
+        )
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+
+    def test_pending_look_request_other_stays_chat(self) -> None:
+        assistant = self.make()
+        assistant._dialog_active = True
+        assistant.dialog = FakeDialog()
+        assistant.vision = FakeVision()
+        assistant.vision.pending = True
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 1800}})
+        assistant.intent = FakeIntent(visual=self.model_choice(OTHER))
+
+        message = assistant.run_text("смотри а что такое шоколад")
+
+        self.assertEqual(message, "ответ диалога")
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.dialog.replied, ["смотри а что такое шоколад"])
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("смотри а что такое шоколад", True)],
+        )
+
+    def test_pending_look_request_screen_uses_pending_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant._dialog_active = True
+        assistant.vision.pending = True
+
+        message = assistant.run_text("смотри что выделено курсором")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["смотри что выделено курсором"])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_look_request_without_observation_captures_new_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.vision_watch.active = False
+        assistant.vision_watch.last_frame = None
+
+        message = assistant.run_text("смотри что выделено курсором")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.describe_calls, 1)
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_general_question_without_observation_skips_classifier(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.vision_watch.active = False
+        assistant.vision_watch.last_frame = None
+
+        with patch("app.main.beep"):
+            assistant.run_text("что такое шоколад")
+
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_visual_classifier_gets_dialog_context_and_screen_state(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.dialog = FakeDialog()
+        assistant.dialog.exchanges.append(("что у меня на экране", "Открыт браузер"))
+
+        assistant.run_text("смотри что выделено курсором")
+
+        context, screen_state = assistant.intent.visual_contexts[0]
+        self.assertIn("Пользователь: что у меня на экране", context)
+        self.assertIn("свежий кадр", screen_state)
+
     def test_activity_question_after_vision_answer_uses_observed_frame(self) -> None:
         assistant = self.make_with_visual_model(self.model_choice(SCREEN))
         # Предыдущий ответ по кадру оставил снимок для уточнений.
@@ -2762,6 +2862,26 @@ class VisionWatchRoutingTest(unittest.TestCase):
         self.assertEqual(message, "На экране открыт браузер")
         self.assertEqual(assistant.vision.frame_answers, 1)
         self.assertEqual(assistant.qa.answered, [])
+
+    def test_look_request_beats_search_route(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.qa = FakeQA(kind="search")
+
+        message = assistant.run_text("смотри что выделено курсором")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.qa.answered, [])
+
+    def test_look_request_other_keeps_search_route(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(OTHER))
+        assistant.qa = FakeQA(kind="search")
+
+        message = assistant.run_text("смотри а что такое шоколад")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertEqual(assistant.qa.answered, ["смотри а что такое шоколад"])
 
     def test_general_qa_route_answers_normally_for_other(self) -> None:
         assistant = self.make_with_visual_model(self.model_choice(OTHER))

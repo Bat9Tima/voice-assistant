@@ -256,12 +256,21 @@ class IntentClassifier:
         """Можно ли спросить модель, относится ли фраза к экрану."""
         return bool(self.enabled and self.visual_enabled and self.model and self.api_key)
 
-    def classify_visual(self, text: str, *, in_dialog: bool) -> IntentDecision:
+    def classify_visual(
+        self,
+        text: str,
+        *,
+        in_dialog: bool,
+        context: str = "",
+        screen_state: str = "",
+    ) -> IntentDecision:
         """Решает, про текущий экран ли реплика. Исключений не бросает.
 
         Это отдельный вопрос к той же decisions-модели: картинка не
-        передаётся, поэтому вызов дешёвый. Низкая уверенность становится
-        ``unknown``, и вызывающий код остаётся на прежнем маршруте.
+        передаётся, поэтому вызов дешёвый. ``context`` — последние реплики
+        разговора, ``screen_state`` — включено ли наблюдение и есть ли
+        свежий кадр. Низкая уверенность становится ``unknown``, и
+        вызывающий код остаётся на прежнем маршруте.
         """
         text = _one_line(text)
         if not text:
@@ -282,6 +291,12 @@ class IntentClassifier:
             )
             return decision
 
+        extra_state: dict[str, Any] = {}
+        if context:
+            extra_state["dialog_context"] = str(context).strip()[:1200]
+        if screen_state:
+            extra_state["screen_state"] = str(screen_state).strip()[:300]
+
         started = time.monotonic()
         try:
             data = self._request(
@@ -290,6 +305,7 @@ class IntentClassifier:
                 question_key="visual",
                 question=VISUAL_QUESTION,
                 timeout=self.visual_timeout,
+                extra_state=extra_state or None,
             )
         except (IntentError, urllib.error.URLError, TimeoutError, OSError) as exc:
             decision = self._decision(
@@ -424,15 +440,19 @@ class IntentClassifier:
         question_key: str = "intent",
         question: dict[str, Any] | None = None,
         timeout: float | None = None,
+        extra_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        state = {
+            "dialog_mode": bool(in_dialog),
+            "awaiting_answer": self.state.awaiting_answer,
+            "last_luna_question": self.state.question(),
+            "utterance": text,
+        }
+        if extra_state:
+            state.update(extra_state)
         payload = {
             "model": self.model,
-            "state": {
-                "dialog_mode": bool(in_dialog),
-                "awaiting_answer": self.state.awaiting_answer,
-                "last_luna_question": self.state.question(),
-                "utterance": text,
-            },
+            "state": state,
             "questions": {question_key: question or QUESTION},
         }
         request = urllib.request.Request(
