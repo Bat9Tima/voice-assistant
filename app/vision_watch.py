@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .human_time import format_duration, plural
 from .screen_capture import Frame
 from .screen_watch import ScreenWatcher, WatchEvent
-from .vision_events import EventTimeline
+from .vision_events import EventTimeline, VisionEvent
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ MIN_INTERVAL_SEC = 0.25
 JOIN_TIMEOUT_SEC = 2.0
 
 StopCallback = Callable[[str], None]
+EventCallback = Callable[[VisionEvent, Frame | None], None]
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class VisionObserver:
         auto_off_sec: float = DEFAULT_AUTO_OFF_SEC,
         clock: Callable[[], float] = time.monotonic,
         on_stop: StopCallback | None = None,
+        on_event: EventCallback | None = None,
         timeline: EventTimeline | None = None,
     ) -> None:
         self.watcher = watcher
@@ -69,6 +71,7 @@ class VisionObserver:
         self.auto_off_sec = max(0.0, float(auto_off_sec))
         self._clock = clock
         self._on_stop = on_stop
+        self._on_event = on_event
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -177,6 +180,8 @@ class VisionObserver:
         """
         timeout = False
         event: WatchEvent | None = None
+        recorded: VisionEvent | None = None
+        frame: Frame | None = None
         with self._lock:
             if not self._active:
                 return None
@@ -213,15 +218,18 @@ class VisionObserver:
                     self._changes += 1
                     self._last_change_at = current
                 if self.timeline is not None:
-                    self.timeline.record(
+                    frame = self.watcher.last_frame
+                    recorded = self.timeline.record(
                         event,
                         now=current,
-                        frame=self.watcher.last_frame,
+                        frame=frame,
                     )
         if timeout:
             log.info("Наблюдение выключено: время вышло")
             self._report_stop("timeout")
             return None
+        if recorded is not None:
+            self._report_event(recorded, frame)
         return event
 
     def status(self) -> WatchStatus:
@@ -258,6 +266,15 @@ class VisionObserver:
             callback(reason)
         except Exception:  # noqa: BLE001
             log.exception("Наблюдение: обработчик остановки упал")
+
+    def _report_event(self, event: VisionEvent, frame: Frame | None) -> None:
+        callback = self._on_event
+        if callback is None:
+            return
+        try:
+            callback(event, frame)
+        except Exception:  # noqa: BLE001
+            log.exception("Наблюдение: обработчик события упал")
 
     def _run(self) -> None:
         try:

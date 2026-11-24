@@ -81,6 +81,7 @@ class VisionObserverTest(unittest.TestCase):
         events: list[WatchEvent] | None = None,
         *,
         timeline: EventTimeline | None = None,
+        on_event=None,
         **kwargs: float,
     ) -> tuple[VisionObserver, FakeWatcher]:
         watcher = FakeWatcher(events or [make_event(baseline=True)])
@@ -89,6 +90,7 @@ class VisionObserverTest(unittest.TestCase):
             watcher,
             clock=lambda: 100.0,
             timeline=timeline,
+            on_event=on_event,
             **kwargs,
         )
         return observer, watcher
@@ -260,6 +262,60 @@ class VisionObserverTest(unittest.TestCase):
 
         self.assertEqual(timeline.events(), ())
         self.assertEqual(timeline.frames(), ())
+
+    def test_event_callback_receives_event_and_frame(self) -> None:
+        timeline = EventTimeline(frame_gap_sec=0.0)
+        received: list[tuple[object, Frame | None]] = []
+        observer, _ = self.make(
+            [make_event(baseline=True, title="Терминал")],
+            timeline=timeline,
+            on_event=lambda event, frame: received.append((event, frame)),
+        )
+        observer.start(background=False)
+
+        observer.tick(100.0)
+
+        self.assertEqual(len(received), 1)
+        event, frame = received[0]
+        self.assertEqual(event.kind, KIND_START)  # type: ignore[attr-defined]
+        self.assertIsNotNone(frame)
+
+    def test_event_callback_is_not_called_for_unchanged_tick(self) -> None:
+        timeline = EventTimeline()
+        received: list[object] = []
+        events = [
+            make_event(baseline=True, title="Терминал"),
+            make_event(title="Терминал"),
+        ]
+        observer, _ = self.make(
+            events,
+            timeline=timeline,
+            on_event=lambda event, frame: received.append(event),
+        )
+        observer.start(background=False)
+        observer.tick(100.0)
+        observer.tick(102.0)
+
+        self.assertEqual(len(received), 1)
+
+    def test_event_callback_failure_does_not_break_tick(self) -> None:
+        timeline = EventTimeline()
+
+        def boom(event: object, frame: object) -> None:
+            raise RuntimeError("boom")
+
+        observer, _ = self.make(
+            [make_event(baseline=True, title="Терминал")],
+            timeline=timeline,
+            on_event=boom,
+        )
+        observer.start(background=False)
+
+        event = observer.tick(100.0)
+
+        self.assertIsNotNone(event)
+        self.assertTrue(observer.status().active)
+        self.assertEqual(len(timeline.events()), 1)
 
 
 class VisionObserverThreadTest(unittest.TestCase):

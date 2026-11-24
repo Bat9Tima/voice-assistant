@@ -54,6 +54,7 @@ from app.screen_capture import Frame
 from app.screen_watch import WatchEvent
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
+from app.vision_comments import CommentStatus
 from app.vision_events import (
     DEFAULT_FRAME_GAP_SEC,
     DEFAULT_IDLE_AFTER_SEC,
@@ -325,6 +326,75 @@ class FakeVisionWatch:
         )
 
 
+class FakeVisionComments:
+    def __init__(self, available: bool = True) -> None:
+        self.available = available
+        self.active = False
+        self.paused = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.pause_calls = 0
+        self.resume_calls = 0
+        self.enqueued: list[tuple[Any, Any]] = []
+        self.use_frame = True
+        self.comments = 0
+        self.attempts = 0
+        self.described = "Комментарии включены."
+        self.min_interval_sec = 90.0
+
+    def start(self) -> bool:
+        self.start_calls += 1
+        if not self.available or self.active:
+            return False
+        self.active = True
+        self.paused = False
+        return True
+
+    def stop(self) -> bool:
+        self.stop_calls += 1
+        if not self.active:
+            return False
+        self.active = False
+        self.paused = False
+        return True
+
+    def pause(self) -> bool:
+        self.pause_calls += 1
+        if not self.active or self.paused:
+            return False
+        self.paused = True
+        return True
+
+    def resume(self) -> bool:
+        self.resume_calls += 1
+        if not self.active or not self.paused:
+            return False
+        self.paused = False
+        return True
+
+    def enqueue(self, event: Any, frame: Any) -> bool:
+        self.enqueued.append((event, frame))
+        return self.active and not self.paused
+
+    def status(self) -> CommentStatus:
+        return CommentStatus(
+            available=self.available,
+            active=self.active,
+            paused=self.paused,
+            use_frame=self.use_frame,
+            min_interval_sec=self.min_interval_sec,
+            max_per_hour=10,
+            attempts=self.attempts,
+            comments=self.comments,
+            last_attempt_at=None,
+            last_comment_at=None,
+            next_allowed_at=None,
+        )
+
+    def describe(self, *, now: float | None = None) -> str:
+        return self.described
+
+
 class FakeQA:
     def __init__(self, answer: QAAnswer | None = None, kind: str = "general") -> None:
         self.result = answer or QAAnswer(
@@ -489,6 +559,34 @@ class TrayStatusTest(unittest.TestCase):
         assistant.vision_watch.active = False
         assistant.set_state("idle")
         self.assertEqual(assistant.tray.states, ["watching", "idle"])
+
+    def test_comments_make_tray_commenting(self) -> None:
+        assistant = self.make(FakeTray({}))
+        assistant.vision_watch = FakeVisionWatch()
+        assistant.vision_watch.active = True
+        assistant.vision_comments = FakeVisionComments()
+        assistant.vision_comments.active = True
+
+        assistant.set_state("idle")
+        self.assertEqual(assistant.tray.states, ["commenting"])
+
+        assistant.vision_comments.active = False
+        assistant.set_state("idle")
+        self.assertEqual(assistant.tray.states, ["commenting", "watching"])
+
+    def test_status_exposes_comments(self) -> None:
+        assistant = self.make(None)
+        assistant.vision_comments = FakeVisionComments()
+        assistant.vision_comments.active = True
+        assistant.vision_comments.comments = 2
+        assistant.vision_comments.attempts = 3
+
+        comments = assistant.status()["comments"]
+
+        assert comments is not None
+        self.assertTrue(comments["active"])
+        self.assertEqual(comments["comments"], 2)
+        self.assertEqual(comments["attempts"], 3)
 
 
 class PauseHotkeyTest(unittest.TestCase):
@@ -2256,12 +2354,15 @@ class VisionWatchRoutingTest(unittest.TestCase):
         assistant.llm = FakeLLM()
         assistant.tts = FakeTTS(enabled=True)
         assistant.vision_watch = FakeVisionWatch()
+        assistant.vision_comments = FakeVisionComments()
         assistant.notifications = []
         assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
             message
         )
         assistant._state_lock = threading.Lock()
         assistant._state = "idle"
+        assistant._paused = False
+        assistant._dialog_active = False
         assistant.states = []
         assistant.set_state = assistant.states.append
         return assistant
@@ -2303,6 +2404,107 @@ class VisionWatchRoutingTest(unittest.TestCase):
         message = assistant.run_text("выключи наблюдение")
 
         self.assertEqual(message, "Наблюдение и так выключено.")
+
+    def test_enable_comments_starts_observation_and_comments(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("включи комментарии")
+
+        self.assertTrue(assistant.vision_watch.active)
+        self.assertTrue(assistant.vision_comments.active)
+        self.assertEqual(assistant.vision_comments.start_calls, 1)
+        self.assertIn("Наблюдение и комментарии включены", message)
+        self.assertIn("кадра", message)
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.vision.seen, [])
+
+    def test_enable_comments_keeps_running_observation(self) -> None:
+        assistant = self.make()
+        assistant.run_text("включи зрение")
+
+        message = assistant.run_text("включи комментарии")
+
+        self.assertEqual(assistant.vision_watch.start_calls, 1)
+        self.assertTrue(assistant.vision_comments.active)
+        self.assertIn("Комментарии включены", message)
+
+    def test_disable_comments_keeps_observation(self) -> None:
+        assistant = self.make()
+        assistant.run_text("включи комментарии")
+
+        message = assistant.run_text("выключи комментарии")
+
+        self.assertFalse(assistant.vision_comments.active)
+        self.assertTrue(assistant.vision_watch.active)
+        self.assertEqual(message, "Комментарии выключены. Наблюдение продолжается.")
+
+    def test_disable_observation_stops_comments(self) -> None:
+        assistant = self.make()
+        assistant.run_text("включи комментарии")
+
+        message = assistant.run_text("выключи зрение")
+
+        self.assertFalse(assistant.vision_comments.active)
+        self.assertFalse(assistant.vision_watch.active)
+        self.assertIn("Комментарии тоже выключены", message)
+
+    def test_comments_status_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision_comments.described = "Комментарии включены: 1 комментарий."
+
+        message = assistant.run_text("статус комментариев")
+
+        self.assertEqual(message, "Комментарии включены: 1 комментарий.")
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_comments_disabled_in_config_are_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision_comments.available = False
+
+        message = assistant.run_text("включи комментарии")
+
+        self.assertFalse(assistant.vision_comments.active)
+        self.assertIn("выключены в настройках", message)
+
+    def test_mic_pause_pauses_and_resumes_comments(self) -> None:
+        assistant = self.make()
+        assistant.mic = None
+        assistant.run_text("включи комментарии")
+
+        assistant.toggle_pause()
+        self.assertTrue(assistant.vision_comments.paused)
+
+        assistant.toggle_pause()
+        self.assertFalse(assistant.vision_comments.paused)
+
+    def test_comment_busy_during_dialog_and_speech(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant._dialog_active = False
+        assistant._state = "idle"
+        self.assertFalse(assistant._vision_comment_busy())
+
+        assistant._dialog_active = True
+        self.assertTrue(assistant._vision_comment_busy())
+
+        assistant._dialog_active = False
+        assistant.tts.speaking = True
+        self.assertTrue(assistant._vision_comment_busy())
+
+        assistant.tts.speaking = False
+        assistant._state = "listening"
+        self.assertTrue(assistant._vision_comment_busy())
+
+    def test_timeout_stops_comments_too(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.auto_off_sec = 60.0
+        assistant.vision_comments.active = True
+
+        assistant._vision_watch_stopped("timeout")
+
+        self.assertFalse(assistant.vision_comments.active)
+        self.assertIn("комментарии выключены", assistant.notifications[0].lower())
 
     @staticmethod
     def frame(age: float = 0.0) -> Frame:
@@ -2854,6 +3056,61 @@ class VisionWatchConfigTest(unittest.TestCase):
         self.assertEqual(observer.timeline.idle_after_sec, 30.0)
         self.assertEqual(observer.timeline.max_frames, 2)
         self.assertEqual(observer.timeline.frame_gap_sec, 7.5)
+
+    def test_comments_are_available_but_inactive_by_default(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        comments = assistant._make_vision_comments({"vision": {"enabled": True}})
+
+        self.assertTrue(comments.available)
+        self.assertFalse(comments.active)
+        self.assertTrue(comments.use_frame)
+        self.assertEqual(comments.min_interval_sec, 90.0)
+        self.assertEqual(comments.max_per_hour, 10)
+
+    def test_comments_can_be_disabled_and_tuned(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        comments = assistant._make_vision_comments(
+            {
+                "vision": {
+                    "enabled": True,
+                    "watch": {
+                        "comments": {
+                            "enabled": False,
+                            "min_interval_sec": 30,
+                            "max_per_hour": 3,
+                            "use_frame": False,
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertFalse(comments.available)
+        self.assertFalse(comments.use_frame)
+        self.assertEqual(comments.min_interval_sec, 30.0)
+        self.assertEqual(comments.max_per_hour, 3)
+
+    def test_zero_comments_limits_are_preserved(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        comments = assistant._make_vision_comments(
+            {
+                "vision": {
+                    "enabled": True,
+                    "watch": {
+                        "comments": {
+                            "min_interval_sec": 0,
+                            "max_per_hour": 0,
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(comments.min_interval_sec, 0.0)
+        self.assertEqual(comments.max_per_hour, 0)
 
 
 if __name__ == "__main__":
