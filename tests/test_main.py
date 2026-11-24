@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+from PIL import Image
+
 from app.actions import CommandResult
 from app.addressee import (
     ADDRESSED,
@@ -47,6 +49,7 @@ from app.intent_classifier import (
 from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
+from app.screen_capture import Frame
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
 from app.vision_watch import WatchStatus
@@ -93,6 +96,10 @@ class FakeVision:
         self.contexts: list[str] = []
         self.snapshots = 0
         self.captures = 0
+        self.describe_calls = 0
+        self.frame_answers = 0
+        self.remembered = 0
+        self.frames: list[Any] = []
         self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
@@ -118,6 +125,14 @@ class FakeVision:
         self.snapshots += 1
         return self.capture()
 
+    def remember_frame(self, frame: Any) -> bytes:
+        self.remembered += 1
+        self.frames.append(frame)
+        if self.error is not None:
+            raise self.error
+        self.pending = True
+        return b"jpeg"
+
     def has_pending(self) -> bool:
         return self.pending
 
@@ -125,6 +140,17 @@ class FakeVision:
         return "кнопка" in text or "написано" in text
 
     def describe(self, request: str = "", *, context: str = "") -> str:
+        self.describe_calls += 1
+        self.seen.append(request)
+        self.contexts.append(context)
+        if self.error is not None:
+            raise self.error
+        self.pending = True
+        return self.answer
+
+    def describe_frame(self, frame: Any, request: str = "", *, context: str = "") -> str:
+        self.frame_answers += 1
+        self.frames.append(frame)
         self.seen.append(request)
         self.contexts.append(context)
         if self.error is not None:
@@ -224,6 +250,7 @@ class FakeVisionWatch:
         self.error: str | None = None
         self.interval_sec = 2.0
         self.auto_off_sec = 600.0
+        self.last_frame: Any = None
 
     def start(self) -> bool:
         self.start_calls += 1
@@ -2235,6 +2262,94 @@ class VisionWatchRoutingTest(unittest.TestCase):
         message = assistant.run_text("выключи наблюдение")
 
         self.assertEqual(message, "Наблюдение и так выключено.")
+
+    @staticmethod
+    def frame(age: float = 0.0) -> Frame:
+        return Frame(
+            image=Image.new("RGB", (32, 18), "white"),
+            captured_at=time.monotonic() - age,
+        )
+
+    def test_explicit_question_uses_observed_frame(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        frame = self.frame()
+        assistant.vision_watch.last_frame = frame
+
+        message = assistant.run_text("посмотри на экран, что за ошибка")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.snapshots, 0)
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.vision.frames, [frame])
+
+    def test_snapshot_only_uses_observed_frame(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.last_frame = self.frame()
+
+        message = assistant.run_text("посмотри на экран")
+
+        self.assertEqual(message, "Снимок экрана готов. Спрашивай, что на нём.")
+        self.assertEqual(assistant.vision.remembered, 1)
+        self.assertEqual(assistant.vision.snapshots, 0)
+        self.assertEqual(assistant.vision.captures, 0)
+
+    def test_stale_observed_frame_falls_back_to_new_capture(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.last_frame = self.frame(age=60.0)
+
+        message = assistant.run_text("посмотри на экран, что за ошибка")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertEqual(assistant.vision.describe_calls, 1)
+
+    def test_inactive_observation_ignores_last_frame(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = False
+        assistant.vision_watch.last_frame = self.frame()
+
+        assistant.run_text("что на экране")
+
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertEqual(assistant.vision.describe_calls, 1)
+
+    def test_observation_without_frame_uses_new_capture(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+
+        assistant.run_text("что на экране")
+
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertEqual(assistant.vision.describe_calls, 1)
+
+    def test_frame_freshness_scales_with_interval(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.interval_sec = 30.0
+        assistant.vision_watch.last_frame = self.frame(age=20.0)
+
+        assistant.run_text("что происходит на экране")
+
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+
+    def test_observed_frame_stays_for_followup(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.last_frame = self.frame()
+        assistant.run_text("посмотри на экран, что за ошибка")
+        assistant.vision.seen.clear()
+
+        message = assistant.run_text("где здесь кнопка")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.seen, ["где здесь кнопка"])
+        self.assertEqual(assistant.vision.frame_answers, 1)
 
     def test_status_reports_changes_and_window(self) -> None:
         assistant = self.make()

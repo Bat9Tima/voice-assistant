@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import io
 import unittest
 from unittest.mock import patch
 
+from PIL import Image
+
 from app.cloud_llm import CloudLLM, LLMError
+from app.screen_capture import Frame
 from app.vision import (
     DEFAULT_TRIGGERS,
     ScreenVision,
@@ -53,6 +57,17 @@ class MatchRequestTest(unittest.TestCase):
 
     def test_empty_triggers(self) -> None:
         self.assertEqual(match_request("посмотри на экран", []), (False, ""))
+
+    def test_observation_phrases(self) -> None:
+        for phrase in (
+            "что сейчас на экране",
+            "что происходит на экране",
+            "что сейчас происходит на экране",
+            "опиши экран",
+            "опиши что на экране",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(match_request(phrase, DEFAULT_TRIGGERS), (True, ""))
 
 
 class FollowupMatchTest(unittest.TestCase):
@@ -210,6 +225,61 @@ class ScreenVisionTest(unittest.TestCase):
         llm.available_result = False
         with self.assertRaises(VisionError):
             vision.snapshot()
+
+    @staticmethod
+    def frame(width: int = 64, height: int = 36) -> Frame:
+        return Frame(
+            image=Image.new("RGB", (width, height), "white"),
+            captured_at=1.0,
+        )
+
+    def test_describe_frame_uses_existing_frame(self) -> None:
+        vision, llm = self.make()
+        vision._capture = lambda: self.fail("повторный захват")  # type: ignore[method-assign]
+
+        answer = vision.describe_frame(self.frame(), "что за ошибка")
+
+        self.assertEqual(answer, "На экране открыт браузер")
+        call = llm.calls[0]
+        self.assertTrue(call["image"].startswith(b"\xff\xd8"))
+        self.assertIn("что за ошибка", call["prompt"])
+
+    def test_describe_frame_keeps_frame_for_followup(self) -> None:
+        vision, llm = self.make()
+        vision.describe_frame(self.frame(), "что тут написано")
+        self.assertTrue(vision.has_pending())
+
+        vision.describe_pending("а это что")
+
+        self.assertEqual(len(llm.calls), 2)
+        self.assertEqual(llm.calls[0]["image"], llm.calls[1]["image"])
+
+    def test_remember_frame_does_not_call_model(self) -> None:
+        vision, llm = self.make()
+
+        image = vision.remember_frame(self.frame())
+
+        self.assertTrue(image.startswith(b"\xff\xd8"))
+        self.assertEqual(llm.calls, [])
+        self.assertTrue(vision.has_pending())
+
+    def test_remember_frame_resizes_like_capture(self) -> None:
+        vision, _ = self.make(max_width=32)
+
+        image = vision.remember_frame(self.frame(width=64, height=36))
+
+        with Image.open(io.BytesIO(image)) as decoded:
+            self.assertEqual(decoded.size, (32, 18))
+
+    def test_describe_frame_requires_model(self) -> None:
+        vision, _ = self.make(model="")
+        with self.assertRaises(VisionError):
+            vision.describe_frame(self.frame())
+
+    def test_describe_frame_disabled(self) -> None:
+        vision, _ = self.make(enabled=False)
+        with self.assertRaises(VisionError):
+            vision.describe_frame(self.frame())
 
     def test_snapshot_only_for_imperative(self) -> None:
         vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))
