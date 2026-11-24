@@ -23,6 +23,7 @@ from app.addressee import (
 from app.addressee import (
     MODE_SHADOW as ADDRESSEE_SHADOW,
 )
+from app.frame_processor import ChangeResult
 from app.image_search import (
     DEFAULT_TRIGGERS as IMAGE_TRIGGERS,
 )
@@ -50,8 +51,14 @@ from app.local_planner import LocalPlan, LocalPlannerError
 from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
 from app.screen_capture import Frame
+from app.screen_watch import WatchEvent
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
+from app.vision_events import (
+    DEFAULT_IDLE_AFTER_SEC,
+    DEFAULT_MAX_EVENTS,
+    EventTimeline,
+)
 from app.vision_watch import WatchStatus
 from app.visual_intent import OTHER, SCREEN
 from app.visual_router import VisualRouter
@@ -252,11 +259,13 @@ class FakeVisionWatch:
         self.interval_sec = 2.0
         self.auto_off_sec = 600.0
         self.last_frame: Any = None
+        self.timeline = EventTimeline()
 
     def start(self) -> bool:
         self.start_calls += 1
         if self.active:
             return False
+        self.timeline.reset()
         self.active = True
         self.started_at = time.monotonic()
         return True
@@ -266,12 +275,14 @@ class FakeVisionWatch:
         if not self.active:
             return False
         self.active = False
+        self.timeline.reset()
         return True
 
     def pause(self) -> bool:
         if not self.active:
             return False
         self.paused = True
+        self.timeline.reset()
         return True
 
     def resume(self) -> bool:
@@ -2282,6 +2293,33 @@ class VisionWatchRoutingTest(unittest.TestCase):
             captured_at=time.monotonic() - age,
         )
 
+    @staticmethod
+    def watch_event(
+        *,
+        baseline: bool = False,
+        changed: bool = False,
+        title: str | None = None,
+    ) -> WatchEvent:
+        result = None
+        if not baseline:
+            result = ChangeResult(
+                changed=changed,
+                score=0.2 if changed else 0.0,
+                pixel_diff=0.1 if changed else 0.0,
+                hash_distance=3 if changed else 0,
+                hash_ratio=0.05 if changed else 0.0,
+                reason="content" if changed else "same",
+            )
+        return WatchEvent(
+            at=time.monotonic(),
+            changed=changed,
+            window_changed=False,
+            result=result,
+            width=320,
+            height=180,
+            window_title=title,
+        )
+
     def test_explicit_question_uses_observed_frame(self) -> None:
         assistant = self.make()
         assistant.vision_watch.active = True
@@ -2534,6 +2572,58 @@ class VisionWatchRoutingTest(unittest.TestCase):
 
         self.assertIsNone(assistant._vision_watch_reply("что изменилось", in_dialog=True))
 
+    def test_history_reports_timeline_without_model(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.timeline.record(
+            self.watch_event(baseline=True, title="Терминал"),
+            now=time.monotonic(),
+        )
+
+        message = assistant.run_text("что происходило на экране")
+
+        self.assertIn("наблюдение началось", message)
+        self.assertIn("Терминал", message)
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+
+    def test_history_short_phrase_falls_through_in_dialog(self) -> None:
+        assistant = self.make()
+
+        self.assertIsNone(assistant._vision_watch_reply("что происходило", in_dialog=True))
+
+    def test_history_explicit_phrase_works_in_dialog(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.timeline.record(
+            self.watch_event(baseline=True, title="Терминал"),
+            now=time.monotonic(),
+        )
+
+        message = assistant._vision_watch_reply("история наблюдения", in_dialog=True)
+
+        self.assertIsNotNone(message)
+        assert message is not None
+        self.assertIn("наблюдение началось", message)
+
+    def test_history_without_observation_suggests_enabling(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("что происходило на экране")
+
+        self.assertIn("включи зрение", message)
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_history_with_events_disabled(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.timeline = None
+
+        message = assistant.run_text("история наблюдения")
+
+        self.assertIn("выключена", message)
+
     def test_timeout_is_announced(self) -> None:
         assistant = self.make()
         assistant.vision_watch.auto_off_sec = 60.0
@@ -2588,6 +2678,49 @@ class VisionWatchConfigTest(unittest.TestCase):
         assert observer is not None
         self.assertEqual(observer.interval_sec, 3.5)
         self.assertEqual(observer.auto_off_sec, 120.0)
+
+    def test_events_are_enabled_by_default(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        observer = assistant._make_vision_watch({"vision": {"enabled": True}})
+
+        assert observer is not None
+        self.assertIsNotNone(observer.timeline)
+        assert observer.timeline is not None
+        self.assertEqual(observer.timeline.max_events, DEFAULT_MAX_EVENTS)
+        self.assertEqual(observer.timeline.idle_after_sec, DEFAULT_IDLE_AFTER_SEC)
+
+    def test_events_can_be_disabled(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        observer = assistant._make_vision_watch(
+            {
+                "vision": {
+                    "enabled": True,
+                    "watch": {"events": {"enabled": False}},
+                }
+            }
+        )
+
+        assert observer is not None
+        self.assertIsNone(observer.timeline)
+
+    def test_custom_event_settings_are_applied(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        observer = assistant._make_vision_watch(
+            {
+                "vision": {
+                    "enabled": True,
+                    "watch": {"events": {"max_events": 5, "idle_after_sec": 30}},
+                }
+            }
+        )
+
+        assert observer is not None
+        assert observer.timeline is not None
+        self.assertEqual(observer.timeline.max_events, 5)
+        self.assertEqual(observer.timeline.idle_after_sec, 30.0)
 
 
 if __name__ == "__main__":

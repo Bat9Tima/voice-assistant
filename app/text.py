@@ -393,6 +393,14 @@ def strip_markdown_links(text: str) -> str:
     return _PAREN_DOMAIN_RE.sub("", text)
 
 
+def short_title(title: str, limit: int = 60) -> str:
+    """Сжимает заголовок окна для голоса и ленты событий."""
+    cleaned = " ".join((title or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 1)].rstrip() + "…"
+
+
 def normalize(text: str) -> str:
     """Приводит распознанный текст к виду, удобному для сравнения.
 

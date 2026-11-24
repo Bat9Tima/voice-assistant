@@ -5,8 +5,9 @@
 пишется, в облако ничего не уходит.
 
 Режим включается только явно (командой «включи зрение»), выключается
-командой, паузой микрофона или по таймеру ``auto_off_sec``. Это граница
-этапа: описание кадра моделью появится в v3.0.
+командой, паузой микрофона или по таймеру ``auto_off_sec``. С v4.0 сюда
+же передаётся ``EventTimeline``: наблюдатель записывает в неё события,
+а пауза и остановка ленту забывают.
 """
 
 from __future__ import annotations
@@ -17,8 +18,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .human_time import format_duration, plural
 from .screen_capture import Frame
 from .screen_watch import ScreenWatcher, WatchEvent
+from .vision_events import EventTimeline
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +61,10 @@ class VisionObserver:
         auto_off_sec: float = DEFAULT_AUTO_OFF_SEC,
         clock: Callable[[], float] = time.monotonic,
         on_stop: StopCallback | None = None,
+        timeline: EventTimeline | None = None,
     ) -> None:
         self.watcher = watcher
+        self.timeline = timeline
         self.interval_sec = max(MIN_INTERVAL_SEC, float(interval_sec))
         self.auto_off_sec = max(0.0, float(auto_off_sec))
         self._clock = clock
@@ -98,6 +103,8 @@ class VisionObserver:
             if self._active:
                 return False
             self.watcher.reset()
+            if self.timeline is not None:
+                self.timeline.reset()
             self._active = True
             self._paused = False
             self._started_at = self._clock()
@@ -145,6 +152,8 @@ class VisionObserver:
                 return False
             self._paused = True
             self.watcher.reset()
+            if self.timeline is not None:
+                self.timeline.reset()
             self._last_poll_at = None
             self._window_title = None
             log.info("Наблюдение на паузе")
@@ -203,6 +212,8 @@ class VisionObserver:
                 if event.changed:
                     self._changes += 1
                     self._last_change_at = current
+                if self.timeline is not None:
+                    self.timeline.record(event, now=current)
         if timeout:
             log.info("Наблюдение выключено: время вышло")
             self._report_stop("timeout")
@@ -231,6 +242,8 @@ class VisionObserver:
         self._paused = False
         self._stop_event.set()
         self.watcher.reset()
+        if self.timeline is not None:
+            self.timeline.reset()
         self._window_title = None
 
     def _report_stop(self, reason: str) -> None:
@@ -254,27 +267,6 @@ class VisionObserver:
                     self._thread = None
 
 
-def _plural(count: int, one: str, few: str, many: str) -> str:
-    number = abs(int(count))
-    if number % 10 == 1 and number % 100 != 11:
-        return one
-    if 2 <= number % 10 <= 4 and not 12 <= number % 100 <= 14:
-        return few
-    return many
-
-
-def format_duration(seconds: float) -> str:
-    """«5 минут 3 секунды» — без таблиц склонений в вызывающем коде."""
-    total = int(max(0.0, seconds))
-    minutes, rest = divmod(total, 60)
-    parts: list[str] = []
-    if minutes:
-        parts.append(f"{minutes} {_plural(minutes, 'минуту', 'минуты', 'минут')}")
-    if rest or not parts:
-        parts.append(f"{rest} {_plural(rest, 'секунду', 'секунды', 'секунд')}")
-    return " ".join(parts)
-
-
 def _short_title(title: str, limit: int = 60) -> str:
     cleaned = " ".join(title.split())
     if len(cleaned) <= limit:
@@ -296,7 +288,7 @@ def describe_status(status: WatchStatus, *, now: float | None = None) -> str:
     elif status.changes == 0:
         parts.append("Экран пока не менялся.")
     else:
-        times = _plural(status.changes, "раз", "раза", "раз")
+        times = plural(status.changes, "раз", "раза", "раз")
         parts.append(f"Экран менялся {status.changes} {times}.")
         if status.last_change_at is not None:
             age = max(0.0, current - status.last_change_at)
