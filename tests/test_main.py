@@ -2668,6 +2668,57 @@ class VisionWatchRoutingTest(unittest.TestCase):
             [("почему это не работает", False)],
         )
 
+    def test_activity_question_uses_observed_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        message = assistant.run_text("что я сейчас делаю")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.snapshots, 0)
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("что я сейчас делаю", False)],
+        )
+
+    def test_activity_question_other_keeps_chat(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(OTHER))
+
+        with patch("app.main.beep"):
+            assistant.run_text("что я сейчас делаю")
+
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("что я сейчас делаю", False)],
+        )
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_activity_question_after_vision_answer_uses_observed_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        # Предыдущий ответ по кадру оставил снимок для уточнений.
+        assistant.vision.pending = True
+
+        message = assistant.run_text("что я сейчас делаю")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("что я сейчас делаю", False)],
+        )
+
+    def test_pending_followup_does_not_ask_visual_classifier(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.vision.pending = True
+
+        message = assistant.run_text("где здесь кнопка")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
     def test_model_screen_decision_replaces_clarify_for_ambiguous(self) -> None:
         assistant = self.make_with_visual_model(self.model_choice(SCREEN))
 
