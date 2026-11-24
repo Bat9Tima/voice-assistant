@@ -397,7 +397,33 @@ class CloudLLM:
         timeout: float | None = None,
     ) -> str:
         """Отвечает по изображению. Запасные текстовые модели не подставляются."""
-        if not image:
+        return self.answer_images(
+            [image],
+            prompt,
+            mime=mime,
+            model=model,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def answer_images(
+        self,
+        images: list[bytes],
+        prompt: str,
+        *,
+        mime: str = "image/jpeg",
+        model: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """Отвечает по нескольким изображениям в одном запросе.
+
+        Картинки идут по порядку: модель видит их как последовательность
+        кадров. Пустой список и пустые изображения отклоняются.
+        """
+        if not images:
+            raise LLMError("пустое изображение")
+        if any(not image for image in images):
             raise LLMError("пустое изображение")
         if not self.enabled:
             raise LLMError("облачная LLM выключена")
@@ -407,19 +433,16 @@ class CloudLLM:
         if not self.api_key:
             raise LLMError("не задан ключ cloud_llm.api_key")
         text = (prompt or "").strip() or "Опиши изображение."
-        encoded = base64.b64encode(image).decode("ascii")
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": text},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{encoded}"},
-                    },
-                ],
-            }
-        ]
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        for image in images:
+            encoded = base64.b64encode(image).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                }
+            )
+        messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
         last_error: LLMError | None = None
         for attempt in range(self.retries + 1):
             try:

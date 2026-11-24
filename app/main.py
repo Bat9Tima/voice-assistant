@@ -61,10 +61,12 @@ from .text import canonicalize, normalize, strip_wake_word
 from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
-from .vision import ScreenVision, VisionError
+from .vision import MAX_MULTI_FRAMES, ScreenVision, VisionError
 from .vision_events import (
+    DEFAULT_FRAME_GAP_SEC,
     DEFAULT_IDLE_AFTER_SEC,
     DEFAULT_MAX_EVENTS,
+    DEFAULT_MAX_FRAMES,
     EventTimeline,
 )
 from .vision_watch import (
@@ -165,6 +167,22 @@ WATCH_HISTORY_SHORT_PHRASES = frozenset(
         "что ты заметила",
         "что ты видела",
         "расскажи что происходило",
+    }
+)
+# Явное сравнение ключевых кадров: только здесь в облако уходит несколько
+# изображений. Обычный вопрос по экрану по-прежнему отправляет один кадр.
+WATCH_COMPARE_PHRASES = frozenset(
+    {
+        "сравни что было на экране",
+        "сравни кадры",
+        "сравни кадры наблюдения",
+        "что изменилось с начала наблюдения",
+        "что изменилось за время наблюдения",
+        "что изменилось за это время на экране",
+        "посмотри что изменилось на экране",
+        "что было и что стало",
+        "что было сначала и что сейчас",
+        "покажи что изменилось",
     }
 )
 
@@ -462,9 +480,15 @@ class Assistant:
             max_events = DEFAULT_MAX_EVENTS if raw_max is None else int(raw_max)
             raw_idle = events_cfg.get("idle_after_sec", DEFAULT_IDLE_AFTER_SEC)
             idle_after = DEFAULT_IDLE_AFTER_SEC if raw_idle is None else float(raw_idle)
+            raw_frames = events_cfg.get("max_frames", DEFAULT_MAX_FRAMES)
+            max_frames = DEFAULT_MAX_FRAMES if raw_frames is None else int(raw_frames)
+            raw_gap = events_cfg.get("frame_gap_sec", DEFAULT_FRAME_GAP_SEC)
+            frame_gap = DEFAULT_FRAME_GAP_SEC if raw_gap is None else float(raw_gap)
             timeline = EventTimeline(
                 max_events=max_events,
                 idle_after_sec=idle_after,
+                max_frames=max_frames,
+                frame_gap_sec=frame_gap,
             )
         watcher = ScreenWatcher(
             ScreenCapture(
@@ -1387,6 +1411,66 @@ class Assistant:
                 )
         return None
 
+    def _vision_watch_compare(self, text: str, *, in_dialog: bool) -> str | None:
+        """Сравнение ключевых кадров наблюдения по явной команде.
+
+        ``None`` — фраза не про сравнение. В отличие от «что происходило»,
+        здесь в модель уходят несколько кадров: это единственный путь,
+        который отправляет в облако больше одного изображения.
+        """
+        if text not in WATCH_COMPARE_PHRASES:
+            return None
+        observer = getattr(self, "vision_watch", None)
+        if observer is None:
+            return None
+        if not observer.status().active:
+            if in_dialog:
+                return None
+            message = "Наблюдение выключено. Включи зрение, и я накоплю кадры для сравнения."
+            self.notify(message)
+            self.tts.say(message)
+            return message
+        vision = getattr(self, "vision", None)
+        if vision is None:
+            return None
+        problem = self._vision_problem(vision)
+        if problem is not None:
+            return self._vision_failure(problem)
+        timeline = getattr(observer, "timeline", None)
+        if timeline is None or timeline.max_frames <= 0:
+            message = "Ключевые кадры выключены в настройках наблюдения."
+            self.notify(message)
+            self.tts.say(message)
+            return message
+        frames = timeline.frames(limit=MAX_MULTI_FRAMES)
+        if len(frames) < 2:
+            detail = timeline.describe(now=time.monotonic())
+            message = f"Для сравнения нужно хотя бы два ключевых кадра. {detail}"
+            self.notify(message[:250])
+            self.tts.say(message)
+            return message
+        try:
+            message = (
+                vision.describe_frames(
+                    [item.frame for item in frames],
+                    text,
+                    context=self._vision_dialog_context(),
+                ).strip()
+                or "Не вижу, что изменилось на экране"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Зрение: %s", exc)
+            return self._vision_failure("Не удалось сравнить кадры")
+        self.notify(message[:250])
+        self.tts.say(message)
+        log.info(
+            "Зрение: ответ по %s ключевым кадрам наблюдения, символов %s",
+            len(frames),
+            len(message),
+        )
+        self._remember_vision_exchange(text, message)
+        return message
+
     def _vision_watch_stopped(self, reason: str) -> None:
         """Режим выключился сам: сообщаем, чтобы не оставался незаметным."""
         if reason != "timeout":
@@ -1870,6 +1954,12 @@ class Assistant:
                 self.notify(watch_reply[:250])
                 self.tts.say(watch_reply)
                 return watch_reply
+
+            # Сравнение ключевых кадров — явная команда: только она отправляет
+            # в модель несколько изображений. Ответ и озвучку метод делает сам.
+            compare_reply = self._vision_watch_compare(text, in_dialog=in_dialog)
+            if compare_reply is not None:
+                return compare_reply
 
             qa = getattr(self, "qa", None)
             vision = getattr(self, "vision", None)

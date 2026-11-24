@@ -50,6 +50,9 @@ DEFAULT_FOLLOWUP_TTL = 60.0
 # Сколько символов диалога добавлять к вопросу по картинке. Контекст нужен
 # только чтобы понять, о чём речь; длинная история размывает вопрос.
 MAX_CONTEXT_CHARS = 1200
+# Больше трёх ключевых кадров дорого и размывает ответ: модель теряет,
+# что именно изменилось между соседними состояниями.
+MAX_MULTI_FRAMES = 3
 # «посмотри на экран и скажи, какая ошибка» — служебное начало не вопрос.
 _LEAD_RE = re.compile(r"^(?:и\s+)?(?:скажи|ответь|подскажи)\s+")
 # «а что на экране?» — разговорная частица перед командой.
@@ -283,6 +286,40 @@ class ScreenVision:
         image = self.remember_frame(frame)
         return self._answer(image, request, context=context)
 
+    def describe_frames(
+        self,
+        frames: list[Frame] | tuple[Frame, ...],
+        request: str = "",
+        *,
+        context: str = "",
+    ) -> str:
+        """Отвечает по нескольким ключевым кадрам наблюдения.
+
+        Кадры уже сняты и живут в памяти: второй захват не нужен. В облако
+        уходит только этот явный запрос, не фон наблюдения.
+        """
+        if not self.enabled:
+            raise VisionError("зрение выключено")
+        if not self.model:
+            raise VisionError("не задана vision.model")
+        items = [frame for frame in frames if frame is not None][-MAX_MULTI_FRAMES:]
+        if not items:
+            raise VisionError("нет кадров наблюдения")
+        try:
+            images = [self._encode(frame.image) for frame in items]
+        except Exception as exc:  # noqa: BLE001
+            raise VisionError(f"не удалось подготовить кадры: {exc}") from exc
+        # Последний кадр остаётся для уточнений после ответа.
+        self._pending = images[-1]
+        self._pending_at = time.monotonic()
+        return self.llm.answer_images(
+            images,
+            self._multi_prompt_for(request, context),
+            model=self.model,
+            max_tokens=self.max_tokens,
+            timeout=self.timeout,
+        )
+
     def _answer(self, image: bytes, request: str, *, context: str = "") -> str:
         return self.llm.answer_image(
             image,
@@ -317,6 +354,23 @@ class ScreenVision:
             f"{prompt} Ответь по картинке, коротко, в двух-трёх предложениях. "
             "Если ответа на экране нет, так и скажи."
         )
+
+    def _multi_prompt_for(self, request: str, context: str = "") -> str:
+        """Промпт для последовательности ключевых кадров."""
+        request = (request or "").strip()
+        context = " ".join((context or "").split())
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[: MAX_CONTEXT_CHARS - 1].rstrip() + "…"
+        prompt = (
+            "Это несколько ключевых кадров экрана по порядку, от раннего к "
+            "позднему. Скажи, что происходило и что изменилось между ними."
+        )
+        if request:
+            prompt += f" Вопрос пользователя: {request}."
+        prompt += " Ответь коротко, в двух-трёх предложениях. Если на кадрах ошибка — назови её."
+        if context:
+            prompt += f" Контекст разговора: {context}"
+        return prompt
 
     def _capture(self) -> bytes:
         """JPEG основного экрана в памяти, без записи на диск."""

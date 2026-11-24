@@ -213,7 +213,11 @@ class VisionObserver:
                     self._changes += 1
                     self._last_change_at = current
                 if self.timeline is not None:
-                    self.timeline.record(event, now=current)
+                    self.timeline.record(
+                        event,
+                        now=current,
+                        frame=self.watcher.last_frame,
+                    )
         if timeout:
             log.info("Наблюдение выключено: время вышло")
             self._report_stop("timeout")

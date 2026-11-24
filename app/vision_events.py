@@ -2,12 +2,13 @@
 
 Слой поверх ``ScreenWatcher``: превращает шаги наблюдения в короткую
 историю — старт, смена окна, изменение экрана, долгий простой. Модели не
-вызываются, кадры не сохраняются, на диск ничего не пишется. Лента живёт
-в памяти, пока режим наблюдения включён, и забывается при паузе или
-остановке.
+вызываются, на диск ничего не пишется. Лента живёт в памяти, пока режим
+наблюдения включён, и забывается при паузе или остановке.
 
-Это фундамент v4.0: по нему можно ответить «что происходило» без модели,
-а следующие шаги добавят к событиям ключевые кадры и уместные комментарии.
+Здесь же хранятся ключевые кадры (до ``max_frames``): старт, смена окна и
+заметные изменения с паузой не меньше ``frame_gap_sec``. Это и есть
+контекст нескольких фото для v4.0; кадры уходят в облако только по
+явному вопросу вроде «сравни кадры».
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import time
 from dataclasses import dataclass, replace
 
 from .human_time import format_duration, plural
+from .screen_capture import Frame
 from .screen_watch import WatchEvent
 from .text import short_title
 
@@ -28,6 +30,8 @@ KIND_IDLE = "idle"
 DEFAULT_MAX_EVENTS = 40
 DEFAULT_IDLE_AFTER_SEC = 120.0
 DEFAULT_COALESCE_SEC = 10.0
+DEFAULT_MAX_FRAMES = 3
+DEFAULT_FRAME_GAP_SEC = 15.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,16 @@ class VisionEvent:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class KeyFrame:
+    """Ключевой кадр наблюдения: живёт только в памяти."""
+
+    at: float
+    kind: str
+    window_title: str | None
+    frame: Frame
+
+
 class EventTimeline:
     """Потокобезопасная лента событий с ограниченной длиной."""
 
@@ -51,39 +65,54 @@ class EventTimeline:
         max_events: int = DEFAULT_MAX_EVENTS,
         idle_after_sec: float = DEFAULT_IDLE_AFTER_SEC,
         coalesce_sec: float = DEFAULT_COALESCE_SEC,
+        max_frames: int = DEFAULT_MAX_FRAMES,
+        frame_gap_sec: float = DEFAULT_FRAME_GAP_SEC,
     ) -> None:
         self.max_events = max(1, int(max_events))
         self.idle_after_sec = max(0.0, float(idle_after_sec))
         self.coalesce_sec = max(0.0, float(coalesce_sec))
+        self.max_frames = max(0, int(max_frames))
+        self.frame_gap_sec = max(0.0, float(frame_gap_sec))
         self._lock = threading.RLock()
         self._events: list[VisionEvent] = []
+        self._frames: list[KeyFrame] = []
         self._window_title: str | None = None
         self._last_activity_at: float | None = None
         self._idle_reported = False
 
     def reset(self) -> None:
-        """Забывает историю: новый старт наблюдения начинается с чистого листа."""
+        """Забывает историю и ключевые кадры."""
         with self._lock:
             self._events.clear()
+            self._frames.clear()
             self._window_title = None
             self._last_activity_at = None
             self._idle_reported = False
 
-    def record(self, event: WatchEvent, *, now: float | None = None) -> VisionEvent | None:
+    def record(
+        self,
+        event: WatchEvent,
+        *,
+        now: float | None = None,
+        frame: Frame | None = None,
+    ) -> VisionEvent | None:
         """Добавляет событие по шагу наблюдения.
 
-        Возвращает записанное событие или ``None``, если шаг ничего
-        заметного не дал. Смена окна важнее изменения картинки; частые
-        изменения в одном окне склеиваются, чтобы лента не состояла из
-        одинаковых строк.
+        ``frame`` — кадр этого шага; он сохраняется как ключевой, если
+        событие заметное. Возвращает записанное событие или ``None``,
+        если шаг ничего заметного не дал. Смена окна важнее изменения
+        картинки; частые изменения в одном окне склеиваются, чтобы лента
+        не состояла из одинаковых строк.
         """
         current = float(event.at if now is None else now)
         with self._lock:
             if event.result is None:
                 self._events.clear()
+                self._frames.clear()
                 self._window_title = event.window_title
                 self._last_activity_at = current
                 self._idle_reported = False
+                self._remember_frame(KIND_START, current, frame)
                 return self._append(
                     VisionEvent(
                         KIND_START,
@@ -106,6 +135,7 @@ class EventTimeline:
                 self._idle_reported = False
                 if kind == KIND_CHANGE and self._coalesce(current, event.window_title):
                     return self._events[-1]
+                self._remember_frame(kind, current, frame)
                 return self._append(
                     VisionEvent(
                         kind,
@@ -139,6 +169,16 @@ class EventTimeline:
             return ()
         return items[-limit:]
 
+    def frames(self, *, limit: int | None = None) -> tuple[KeyFrame, ...]:
+        """Ключевые кадры по порядку; ``limit`` оставляет только последние."""
+        with self._lock:
+            items = tuple(self._frames)
+        if limit is None:
+            return items
+        if limit <= 0:
+            return ()
+        return items[-limit:]
+
     def describe(self, *, now: float | None = None, limit: int = 6) -> str:
         """Короткий рассказ о событиях без модели."""
         with self._lock:
@@ -157,6 +197,20 @@ class EventTimeline:
         return prefix + "; ".join(parts) + "."
 
     # ------------------------------------------------------------- internals
+    def _remember_frame(self, kind: str, current: float, frame: Frame | None) -> None:
+        """Сохраняет ключевой кадр, не давая ленте разрастись."""
+        if frame is None or self.max_frames <= 0:
+            return
+        if (
+            kind == KIND_CHANGE
+            and self._frames
+            and current - self._frames[-1].at < self.frame_gap_sec
+        ):
+            return
+        self._frames.append(KeyFrame(current, kind, frame.window_title, frame))
+        if len(self._frames) > self.max_frames:
+            del self._frames[: len(self._frames) - self.max_frames]
+
     def _append(self, event: VisionEvent) -> VisionEvent:
         self._events.append(event)
         if len(self._events) > self.max_events:
@@ -209,12 +263,15 @@ def _phrase(event: VisionEvent) -> str:
 
 __all__ = [
     "DEFAULT_COALESCE_SEC",
+    "DEFAULT_FRAME_GAP_SEC",
     "DEFAULT_IDLE_AFTER_SEC",
     "DEFAULT_MAX_EVENTS",
+    "DEFAULT_MAX_FRAMES",
     "KIND_CHANGE",
     "KIND_IDLE",
     "KIND_START",
     "KIND_WINDOW",
     "EventTimeline",
+    "KeyFrame",
     "VisionEvent",
 ]
