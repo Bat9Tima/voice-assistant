@@ -212,7 +212,7 @@ class VisionObserverTest(unittest.TestCase):
         self.assertEqual(observer.interval_sec, MIN_INTERVAL_SEC)
 
     def test_timeline_records_start_and_changes(self) -> None:
-        timeline = EventTimeline()
+        timeline = EventTimeline(frame_gap_sec=0.0)
         events = [
             make_event(baseline=True, title="Терминал"),
             make_event(changed=True, title="Chrome"),
@@ -227,6 +227,7 @@ class VisionObserverTest(unittest.TestCase):
             [event.kind for event in timeline.events()],
             [KIND_START, KIND_CHANGE],
         )
+        self.assertEqual(len(timeline.frames()), 2)
 
     def test_pause_and_stop_forget_timeline(self) -> None:
         timeline = EventTimeline()
@@ -234,16 +235,20 @@ class VisionObserverTest(unittest.TestCase):
         observer.start(background=False)
         observer.tick(100.0)
         self.assertTrue(timeline.events())
+        self.assertTrue(timeline.frames())
 
         observer.pause()
         self.assertEqual(timeline.events(), ())
+        self.assertEqual(timeline.frames(), ())
 
         observer.resume()
         observer.tick(102.0)
         self.assertTrue(timeline.events())
+        self.assertTrue(timeline.frames())
 
         observer.stop()
         self.assertEqual(timeline.events(), ())
+        self.assertEqual(timeline.frames(), ())
 
     def test_auto_off_forgets_timeline(self) -> None:
         timeline = EventTimeline()
@@ -254,6 +259,7 @@ class VisionObserverTest(unittest.TestCase):
         observer.tick(110.0)
 
         self.assertEqual(timeline.events(), ())
+        self.assertEqual(timeline.frames(), ())
 
 
 class VisionObserverThreadTest(unittest.TestCase):

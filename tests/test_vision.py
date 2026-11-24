@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import unittest
 from unittest.mock import patch
@@ -119,6 +120,10 @@ class FakeLLM:
 
     def answer_image(self, image: bytes, prompt: str, **kwargs) -> str:
         self.calls.append({"image": image, "prompt": prompt, **kwargs})
+        return "На экране открыт браузер"
+
+    def answer_images(self, images: list[bytes], prompt: str, **kwargs) -> str:
+        self.calls.append({"images": list(images), "prompt": prompt, **kwargs})
         return "На экране открыт браузер"
 
 
@@ -281,6 +286,53 @@ class ScreenVisionTest(unittest.TestCase):
         with self.assertRaises(VisionError):
             vision.describe_frame(self.frame())
 
+    def test_describe_frames_sends_several_images(self) -> None:
+        vision, llm = self.make()
+        frames = [self.frame(), self.frame(), self.frame()]
+
+        answer = vision.describe_frames(frames, "что изменилось")
+
+        self.assertEqual(answer, "На экране открыт браузер")
+        call = llm.calls[0]
+        self.assertEqual(len(call["images"]), 3)
+        for image in call["images"]:
+            self.assertTrue(image.startswith(b"\xff\xd8"))
+        self.assertIn("что изменилось", call["prompt"])
+        self.assertIn("ключевых кадров", call["prompt"])
+
+    def test_describe_frames_limits_to_three(self) -> None:
+        vision, llm = self.make()
+
+        vision.describe_frames([self.frame() for _ in range(4)], "сравни")
+
+        self.assertEqual(len(llm.calls[0]["images"]), 3)
+
+    def test_describe_frames_includes_dialog_context(self) -> None:
+        vision, llm = self.make()
+
+        vision.describe_frames(
+            [self.frame(), self.frame()],
+            "сравни",
+            context="Пользователь: что тут происходит",
+        )
+
+        self.assertIn("Контекст разговора", llm.calls[0]["prompt"])
+        self.assertIn("что тут происходит", llm.calls[0]["prompt"])
+
+    def test_describe_frames_rejects_empty(self) -> None:
+        vision, llm = self.make()
+
+        with self.assertRaises(VisionError):
+            vision.describe_frames([])
+
+        self.assertEqual(llm.calls, [])
+
+    def test_describe_frames_requires_model(self) -> None:
+        vision, _ = self.make(model="")
+
+        with self.assertRaises(VisionError):
+            vision.describe_frames([self.frame(), self.frame()])
+
     def test_snapshot_only_for_imperative(self) -> None:
         vision, _ = self.make(triggers=list(DEFAULT_TRIGGERS))
         self.assertTrue(vision.wants_snapshot("посмотри на экран"))
@@ -353,6 +405,33 @@ class AnswerImageTest(unittest.TestCase):
         llm = self.make_llm()
         with self.assertRaises(LLMError):
             llm.answer_image(b"", "что тут")
+
+    def test_payload_has_all_data_urls(self) -> None:
+        llm = self.make_llm()
+
+        with patch.object(llm, "_post", return_value="ответ") as post:
+            result = llm.answer_images([b"one", b"two"], "сравни кадры")
+
+        self.assertEqual(result, "ответ")
+        content = post.call_args.args[1][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "сравни кадры"})
+        self.assertEqual(len(content), 3)
+        for item, expected in zip(content[1:], (b"one", b"two"), strict=True):
+            url = item["image_url"]["url"]
+            self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+            self.assertEqual(base64.b64decode(url.split(",", 1)[1]), expected)
+
+    def test_empty_image_list_is_rejected(self) -> None:
+        llm = self.make_llm()
+
+        with self.assertRaises(LLMError):
+            llm.answer_images([], "что тут")
+
+    def test_any_empty_image_is_rejected(self) -> None:
+        llm = self.make_llm()
+
+        with self.assertRaises(LLMError):
+            llm.answer_images([b"one", b""], "что тут")
 
 
 if __name__ == "__main__":

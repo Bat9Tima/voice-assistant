@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
+from PIL import Image
+
 from app.frame_processor import ChangeResult
+from app.screen_capture import Frame
 from app.screen_watch import WatchEvent
 from app.vision_events import (
     KIND_CHANGE,
@@ -38,6 +41,14 @@ def make_event(
         result=result,
         width=320,
         height=180,
+        window_title=title,
+    )
+
+
+def make_frame(*, at: float = 0.0, title: str | None = None) -> Frame:
+    return Frame(
+        image=Image.new("RGB", (32, 18), "white"),
+        captured_at=at,
         window_title=title,
     )
 
@@ -159,11 +170,16 @@ class EventTimelineTest(unittest.TestCase):
 
     def test_reset_forgets_everything(self) -> None:
         timeline = self.make()
-        timeline.record(make_event(baseline=True, title="Терминал"), now=100.0)
+        timeline.record(
+            make_event(baseline=True, title="Терминал"),
+            now=100.0,
+            frame=make_frame(title="Терминал"),
+        )
 
         timeline.reset()
 
         self.assertEqual(timeline.events(), ())
+        self.assertEqual(timeline.frames(), ())
         self.assertEqual(timeline.describe(now=100.0), "Событий пока нет.")
 
     def test_events_limit_returns_the_tail(self) -> None:
@@ -174,6 +190,101 @@ class EventTimelineTest(unittest.TestCase):
 
         self.assertEqual([e.window_title for e in timeline.events(limit=2)], ["B", "C"])
         self.assertEqual(timeline.events(limit=0), ())
+
+    def test_key_frames_store_start_and_window(self) -> None:
+        timeline = self.make()
+        timeline.record(
+            make_event(baseline=True, title="A"),
+            now=100.0,
+            frame=make_frame(title="A"),
+        )
+        timeline.record(
+            make_event(window_changed=True, title="B"),
+            now=102.0,
+            frame=make_frame(title="B"),
+        )
+
+        frames = timeline.frames()
+
+        self.assertEqual([item.kind for item in frames], [KIND_START, KIND_WINDOW])
+        self.assertEqual([item.frame.window_title for item in frames], ["A", "B"])
+
+    def test_change_frames_respect_gap(self) -> None:
+        timeline = self.make(coalesce_sec=0.0, frame_gap_sec=10.0)
+        timeline.record(
+            make_event(baseline=True, title="A"),
+            now=100.0,
+            frame=make_frame(title="A"),
+        )
+        timeline.record(
+            make_event(changed=True, title="A"),
+            now=105.0,
+            frame=make_frame(title="A"),
+        )
+
+        self.assertEqual(len(timeline.frames()), 1)
+
+        timeline.record(
+            make_event(changed=True, title="A"),
+            now=112.0,
+            frame=make_frame(title="A"),
+        )
+
+        self.assertEqual(len(timeline.frames()), 2)
+
+    def test_window_change_ignores_frame_gap(self) -> None:
+        timeline = self.make(frame_gap_sec=60.0)
+        timeline.record(
+            make_event(baseline=True, title="A"),
+            now=100.0,
+            frame=make_frame(title="A"),
+        )
+        timeline.record(
+            make_event(window_changed=True, title="B"),
+            now=102.0,
+            frame=make_frame(title="B"),
+        )
+
+        self.assertEqual([item.window_title for item in timeline.frames()], ["A", "B"])
+
+    def test_key_frames_are_bounded(self) -> None:
+        timeline = self.make(max_frames=2)
+        for index, title in enumerate(("A", "B", "C"), start=1):
+            timeline.record(
+                make_event(window_changed=True, title=title),
+                now=100.0 + index,
+                frame=make_frame(title=title),
+            )
+
+        self.assertEqual([item.window_title for item in timeline.frames()], ["B", "C"])
+
+    def test_zero_max_frames_disables_key_frames(self) -> None:
+        timeline = self.make(max_frames=0)
+        timeline.record(
+            make_event(baseline=True, title="A"),
+            now=100.0,
+            frame=make_frame(title="A"),
+        )
+
+        self.assertEqual(timeline.frames(), ())
+
+    def test_frames_limit_returns_the_tail(self) -> None:
+        timeline = self.make(max_frames=4)
+        for index, title in enumerate(("A", "B", "C"), start=1):
+            timeline.record(
+                make_event(window_changed=True, title=title),
+                now=100.0 + index,
+                frame=make_frame(title=title),
+            )
+
+        self.assertEqual([item.window_title for item in timeline.frames(limit=2)], ["B", "C"])
+        self.assertEqual(timeline.frames(limit=0), ())
+
+    def test_record_without_frame_does_not_break(self) -> None:
+        timeline = self.make()
+        timeline.record(make_event(baseline=True, title="A"), now=100.0)
+
+        self.assertEqual(timeline.frames(), ())
 
 
 class DescribeEventsTest(unittest.TestCase):

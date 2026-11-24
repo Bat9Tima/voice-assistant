@@ -55,8 +55,10 @@ from app.screen_watch import WatchEvent
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
 from app.vision_events import (
+    DEFAULT_FRAME_GAP_SEC,
     DEFAULT_IDLE_AFTER_SEC,
     DEFAULT_MAX_EVENTS,
+    DEFAULT_MAX_FRAMES,
     EventTimeline,
 )
 from app.vision_watch import WatchStatus
@@ -108,6 +110,7 @@ class FakeVision:
         self.frame_answers = 0
         self.remembered = 0
         self.frames: list[Any] = []
+        self.frame_batches: list[list[Any]] = []
         self.pending = False
 
     def match(self, text: str) -> tuple[bool, str]:
@@ -159,6 +162,21 @@ class FakeVision:
     def describe_frame(self, frame: Any, request: str = "", *, context: str = "") -> str:
         self.frame_answers += 1
         self.frames.append(frame)
+        self.seen.append(request)
+        self.contexts.append(context)
+        if self.error is not None:
+            raise self.error
+        self.pending = True
+        return self.answer
+
+    def describe_frames(
+        self,
+        frames: list[Any] | tuple[Any, ...],
+        request: str = "",
+        *,
+        context: str = "",
+    ) -> str:
+        self.frame_batches.append(list(frames))
         self.seen.append(request)
         self.contexts.append(context)
         if self.error is not None:
@@ -2298,6 +2316,7 @@ class VisionWatchRoutingTest(unittest.TestCase):
         *,
         baseline: bool = False,
         changed: bool = False,
+        window_changed: bool = False,
         title: str | None = None,
     ) -> WatchEvent:
         result = None
@@ -2312,13 +2331,28 @@ class VisionWatchRoutingTest(unittest.TestCase):
             )
         return WatchEvent(
             at=time.monotonic(),
-            changed=changed,
-            window_changed=False,
+            changed=changed or window_changed,
+            window_changed=window_changed,
             result=result,
             width=320,
             height=180,
             window_title=title,
         )
+
+    def add_key_frames(self, assistant: Assistant, count: int = 2) -> None:
+        timeline = assistant.vision_watch.timeline
+        now = time.monotonic() - 10.0
+        timeline.record(
+            self.watch_event(baseline=True, title="Терминал"),
+            now=now,
+            frame=self.frame(age=10.0),
+        )
+        for index in range(1, count):
+            timeline.record(
+                self.watch_event(window_changed=True, title=f"Окно {index}"),
+                now=now + index,
+                frame=self.frame(age=10.0 - index),
+            )
 
     def test_explicit_question_uses_observed_frame(self) -> None:
         assistant = self.make()
@@ -2624,6 +2658,94 @@ class VisionWatchRoutingTest(unittest.TestCase):
 
         self.assertIn("выключена", message)
 
+    def test_compare_frames_uses_key_frames_without_capture(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        self.add_key_frames(assistant)
+
+        message = assistant.run_text("сравни кадры")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(len(assistant.vision.frame_batches), 1)
+        self.assertEqual(len(assistant.vision.frame_batches[0]), 2)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.tts.said, [message])
+
+    def test_compare_frames_needs_two_key_frames(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        self.add_key_frames(assistant, count=1)
+
+        message = assistant.run_text("что изменилось с начала наблюдения")
+
+        self.assertIn("хотя бы два ключевых кадра", message)
+        self.assertEqual(assistant.vision.frame_batches, [])
+        self.assertEqual(assistant.vision.captures, 0)
+
+    def test_compare_frames_without_observation_suggests_enabling(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("сравни кадры")
+
+        self.assertIn("Включи зрение", message)
+        self.assertEqual(assistant.vision.frame_batches, [])
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_compare_frames_in_dialog_falls_through_when_inactive(self) -> None:
+        assistant = self.make()
+
+        self.assertIsNone(assistant._vision_watch_compare("сравни кадры", in_dialog=True))
+
+    def test_compare_frames_works_in_dialog_when_active(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        self.add_key_frames(assistant)
+
+        message = assistant._vision_watch_compare("сравни кадры наблюдения", in_dialog=True)
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(len(assistant.vision.frame_batches), 1)
+
+    def test_compare_frames_with_events_disabled(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.timeline = None
+
+        message = assistant.run_text("сравни кадры")
+
+        self.assertIn("Ключевые кадры выключены", message)
+        self.assertEqual(assistant.vision.frame_batches, [])
+
+    def test_compare_frames_with_key_frames_disabled(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.timeline.max_frames = 0
+
+        message = assistant.run_text("сравни кадры")
+
+        self.assertIn("Ключевые кадры выключены", message)
+        self.assertEqual(assistant.vision.frame_batches, [])
+
+    def test_compare_frames_failure_is_reported(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision.error = RuntimeError("boom")
+        self.add_key_frames(assistant)
+
+        with patch("app.main.beep"):
+            message = assistant.run_text("сравни кадры")
+
+        self.assertEqual(message, "Не удалось сравнить кадры")
+        self.assertEqual(len(assistant.vision.frame_batches), 1)
+
+    def test_compare_is_not_triggered_by_plain_change_question(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+
+        self.assertIsNone(assistant._vision_watch_compare("что изменилось", in_dialog=False))
+
     def test_timeout_is_announced(self) -> None:
         assistant = self.make()
         assistant.vision_watch.auto_off_sec = 60.0
@@ -2689,6 +2811,8 @@ class VisionWatchConfigTest(unittest.TestCase):
         assert observer.timeline is not None
         self.assertEqual(observer.timeline.max_events, DEFAULT_MAX_EVENTS)
         self.assertEqual(observer.timeline.idle_after_sec, DEFAULT_IDLE_AFTER_SEC)
+        self.assertEqual(observer.timeline.max_frames, DEFAULT_MAX_FRAMES)
+        self.assertEqual(observer.timeline.frame_gap_sec, DEFAULT_FRAME_GAP_SEC)
 
     def test_events_can_be_disabled(self) -> None:
         assistant = Assistant.__new__(Assistant)
@@ -2712,7 +2836,14 @@ class VisionWatchConfigTest(unittest.TestCase):
             {
                 "vision": {
                     "enabled": True,
-                    "watch": {"events": {"max_events": 5, "idle_after_sec": 30}},
+                    "watch": {
+                        "events": {
+                            "max_events": 5,
+                            "idle_after_sec": 30,
+                            "max_frames": 2,
+                            "frame_gap_sec": 7.5,
+                        }
+                    },
                 }
             }
         )
@@ -2721,6 +2852,8 @@ class VisionWatchConfigTest(unittest.TestCase):
         assert observer.timeline is not None
         self.assertEqual(observer.timeline.max_events, 5)
         self.assertEqual(observer.timeline.idle_after_sec, 30.0)
+        self.assertEqual(observer.timeline.max_frames, 2)
+        self.assertEqual(observer.timeline.frame_gap_sec, 7.5)
 
 
 if __name__ == "__main__":
