@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .qa import EXPLICIT_SEARCH
+from .visual_intent import VISUAL_INTENTS, VISUAL_QUESTION
 
 log = logging.getLogger(__name__)
 
@@ -238,11 +239,82 @@ class IntentClassifier:
             clock=clock,
         )
         self.last: IntentDecision | None = None
+        visual = (cfg.get("vision") or {}).get("intent")
+        if not isinstance(visual, dict):
+            visual = {}
+        self.visual_enabled = bool(visual.get("enabled", True))
+        self.visual_threshold = float(visual.get("threshold") or DEFAULT_THRESHOLD)
+        self.visual_timeout = float(visual.get("timeout_sec") or DEFAULT_TIMEOUT_SEC)
+        self.last_visual: IntentDecision | None = None
 
     # ------------------------------------------------------------------ public
     def available(self) -> bool:
         """Можно ли идти в сеть. Режим ``off`` выключает классификатор."""
         return bool(self.enabled and self.mode != MODE_OFF and self.model and self.api_key)
+
+    def available_visual(self) -> bool:
+        """Можно ли спросить модель, относится ли фраза к экрану."""
+        return bool(self.enabled and self.visual_enabled and self.model and self.api_key)
+
+    def classify_visual(self, text: str, *, in_dialog: bool) -> IntentDecision:
+        """Решает, про текущий экран ли реплика. Исключений не бросает.
+
+        Это отдельный вопрос к той же decisions-модели: картинка не
+        передаётся, поэтому вызов дешёвый. Низкая уверенность становится
+        ``unknown``, и вызывающий код остаётся на прежнем маршруте.
+        """
+        text = _one_line(text)
+        if not text:
+            return self._decision(UNKNOWN, source=SOURCE_RULES, error="пустая реплика")
+
+        if not self.available_visual():
+            decision = self._decision(
+                UNKNOWN,
+                source=SOURCE_FALLBACK,
+                error="визуальный классификатор выключен или нет ключа",
+            )
+            self._log_decision(
+                text,
+                in_dialog,
+                decision,
+                label="Визуальный вопрос",
+                mode="visual",
+            )
+            return decision
+
+        started = time.monotonic()
+        try:
+            data = self._request(
+                text,
+                in_dialog=in_dialog,
+                question_key="visual",
+                question=VISUAL_QUESTION,
+                timeout=self.visual_timeout,
+            )
+        except (IntentError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            decision = self._decision(
+                UNKNOWN,
+                source=SOURCE_FALLBACK,
+                elapsed_sec=time.monotonic() - started,
+                error=str(exc),
+            )
+        else:
+            decision = self._parse(
+                data,
+                started,
+                question_key="visual",
+                allowed=VISUAL_INTENTS,
+                threshold=self.visual_threshold,
+            )
+        self.last_visual = decision
+        self._log_decision(
+            text,
+            in_dialog,
+            decision,
+            label="Визуальный вопрос",
+            mode="visual",
+        )
+        return decision
 
     def classify(self, text: str, *, in_dialog: bool) -> IntentDecision:
         """Считает намерение синхронно. Исключений наружу не бросает."""
@@ -343,7 +415,15 @@ class IntentClassifier:
         markers = tuple(marker.replace("ё", "е") for marker in EXPLICIT_SEARCH) + SEARCH_VERBS
         return any(marker in lowered for marker in markers)
 
-    def _request(self, text: str, *, in_dialog: bool) -> dict[str, Any]:
+    def _request(
+        self,
+        text: str,
+        *,
+        in_dialog: bool,
+        question_key: str = "intent",
+        question: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         payload = {
             "model": self.model,
             "state": {
@@ -352,7 +432,7 @@ class IntentClassifier:
                 "last_luna_question": self.state.question(),
                 "utterance": text,
             },
-            "questions": {"intent": QUESTION},
+            "questions": {question_key: question or QUESTION},
         }
         request = urllib.request.Request(
             self.base_url + "/decisions",
@@ -365,7 +445,10 @@ class IntentClassifier:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=self.timeout if timeout is None else float(timeout),
+            ) as response:
                 body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:300]
@@ -381,16 +464,24 @@ class IntentClassifier:
             raise IntentError("сервер вернул не объект")
         return data
 
-    def _parse(self, data: dict[str, Any], started: float) -> IntentDecision:
+    def _parse(
+        self,
+        data: dict[str, Any],
+        started: float,
+        *,
+        question_key: str = "intent",
+        allowed: frozenset[str] = INTENTS,
+        threshold: float | None = None,
+    ) -> IntentDecision:
         elapsed = time.monotonic() - started
         answers = data.get("answers")
-        answer = answers.get("intent") if isinstance(answers, dict) else None
+        answer = answers.get(question_key) if isinstance(answers, dict) else None
         if not isinstance(answer, dict):
             return self._decision(
                 UNKNOWN,
                 source=SOURCE_FALLBACK,
                 elapsed_sec=elapsed,
-                error="в ответе нет answers.intent",
+                error=f"в ответе нет answers.{question_key}",
             )
 
         raw = str(answer.get("choice") or "").strip().lower()
@@ -415,7 +506,7 @@ class IntentClassifier:
         except (TypeError, ValueError):
             tokens = 0
 
-        if raw not in INTENTS:
+        if raw not in allowed:
             return self._decision(
                 UNKNOWN,
                 confidence=confidence,
@@ -427,7 +518,8 @@ class IntentClassifier:
             )
 
         # Низкая уверенность — это unknown: инструменты вслепую не запускаем.
-        intent = raw if confidence >= self.threshold else UNKNOWN
+        limit = self.threshold if threshold is None else float(threshold)
+        intent = raw if confidence >= limit else UNKNOWN
         return self._decision(
             intent,
             confidence=confidence,
@@ -442,6 +534,9 @@ class IntentClassifier:
         text: str,
         in_dialog: bool,
         decision: IntentDecision,
+        *,
+        label: str = "Намерение",
+        mode: str | None = None,
     ) -> None:
         """Одна строка на решение: по ней потом считается статистика."""
         proposed = (
@@ -449,8 +544,9 @@ class IntentClassifier:
         )
         error = f", ошибка: {decision.error}" if decision.error else ""
         log.info(
-            "Намерение [%s%s]: %s%s (уверенность %.2f, %s, %.2f с, токены %s)%s :: %s",
-            self.mode,
+            "%s [%s%s]: %s%s (уверенность %.2f, %s, %.2f с, токены %s)%s :: %s",
+            label,
+            self.mode if mode is None else mode,
             ", диалог" if in_dialog else "",
             decision.intent,
             proposed,

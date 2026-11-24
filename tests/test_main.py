@@ -53,6 +53,7 @@ from app.screen_capture import Frame
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
 from app.vision_watch import WatchStatus
+from app.visual_intent import OTHER, SCREEN
 from app.visual_router import VisualRouter
 from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -323,6 +324,8 @@ class FakeIntent:
         self,
         mode: str = MODE_SHADOW,
         decision: IntentDecision | None = None,
+        *,
+        visual: IntentDecision | None = None,
     ) -> None:
         self.mode = mode
         self.decision = decision or IntentDecision(
@@ -331,9 +334,14 @@ class FakeIntent:
             raw=DIALOG,
             source=SOURCE_MODEL,
         )
+        self.visual = visual or IntentDecision(
+            UNKNOWN,
+            source=SOURCE_FALLBACK,
+        )
         self.state = DialogState()
         self.observed: list[tuple[str, bool]] = []
         self.classified: list[tuple[str, bool]] = []
+        self.visual_classified: list[tuple[str, bool]] = []
 
     def observe(self, text: str, *, in_dialog: bool) -> None:
         self.observed.append((text, in_dialog))
@@ -341,6 +349,10 @@ class FakeIntent:
     def classify(self, text: str, *, in_dialog: bool) -> IntentDecision:
         self.classified.append((text, in_dialog))
         return self.decision
+
+    def classify_visual(self, text: str, *, in_dialog: bool) -> IntentDecision:
+        self.visual_classified.append((text, in_dialog))
+        return self.visual
 
     def blocks_lookup(self, decision: IntentDecision) -> bool:
         return decision.source == SOURCE_MODEL and decision.intent in {
@@ -2350,6 +2362,140 @@ class VisionWatchRoutingTest(unittest.TestCase):
         self.assertEqual(message, "На экране открыт браузер")
         self.assertEqual(assistant.vision.seen, ["где здесь кнопка"])
         self.assertEqual(assistant.vision.frame_answers, 1)
+
+    def make_with_visual_model(self, visual: IntentDecision) -> Assistant:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.last_frame = self.frame()
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 1800}})
+        assistant.intent = FakeIntent(visual=visual)
+        return assistant
+
+    @staticmethod
+    def model_choice(intent: str, confidence: float = 0.9) -> IntentDecision:
+        return IntentDecision(
+            intent,
+            confidence=confidence,
+            raw=intent,
+            source=SOURCE_MODEL,
+        )
+
+    def test_model_screen_decision_answers_by_observed_frame(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        message = assistant.run_text("почему это не работает")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.vision.describe_calls, 0)
+        self.assertEqual(assistant.vision.snapshots, 0)
+        self.assertEqual(
+            assistant.intent.visual_classified,
+            [("почему это не работает", False)],
+        )
+
+    def test_model_screen_decision_replaces_clarify_for_ambiguous(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        message = assistant.run_text("что в левом верхнем углу")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertNotIn("Покажи экран", " ".join(assistant.notifications))
+
+    def test_model_other_decision_skips_clarify(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(OTHER))
+
+        with patch("app.main.beep"):
+            message = assistant.run_text("что в левом верхнем углу")
+
+        self.assertEqual(message, "Не понял команду")
+        self.assertEqual(assistant.vision.frame_answers, 0)
+        self.assertNotIn("Покажи экран", " ".join(assistant.notifications))
+
+    def test_uncertain_model_keeps_old_clarify(self) -> None:
+        assistant = self.make_with_visual_model(
+            IntentDecision(
+                UNKNOWN,
+                confidence=0.4,
+                raw=SCREEN,
+                source=SOURCE_MODEL,
+            )
+        )
+
+        message = assistant.run_text("что в левом верхнем углу")
+
+        self.assertIn("Покажи экран", message)
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_general_qa_route_still_asks_the_model(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant.qa = FakeQA(kind="general")
+
+        message = assistant.run_text("почему это не работает")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.qa.answered, [])
+
+    def test_general_qa_route_answers_normally_for_other(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(OTHER))
+        assistant.qa = FakeQA(kind="general")
+
+        message = assistant.run_text("что в левом верхнем углу")
+
+        self.assertEqual(message, "Короткий ответ")
+        self.assertEqual(assistant.qa.answered, ["что в левом верхнем углу"])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_saved_description_does_not_ask_the_model(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+        assistant._vision_context_at = time.monotonic()
+
+        message = assistant.run_text("что написано на экране")
+
+        self.assertIn("Покажи экран", message)
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_explicit_vision_does_not_ask_the_model(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        message = assistant.run_text("посмотри на экран, что за ошибка")
+
+        self.assertEqual(message, "На экране открыт браузер")
+        self.assertEqual(assistant.vision.frame_answers, 1)
+        self.assertEqual(assistant.intent.visual_classified, [])
+
+    def test_command_does_not_ask_the_model(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        with patch("app.main.beep"):
+            assistant.run_text("нажми на эту кнопку")
+
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_plain_talk_does_not_ask_the_model(self) -> None:
+        assistant = self.make_with_visual_model(self.model_choice(SCREEN))
+
+        with patch("app.main.beep"):
+            assistant.run_text("как дела")
+
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.frame_answers, 0)
+
+    def test_no_fresh_frame_does_not_ask_the_model(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.visual_router = VisualRouter({"vision": {"context_ttl_sec": 1800}})
+        assistant.intent = FakeIntent(visual=self.model_choice(SCREEN))
+
+        message = assistant.run_text("что в левом верхнем углу")
+
+        self.assertIn("Покажи экран", message)
+        self.assertEqual(assistant.intent.visual_classified, [])
+        self.assertEqual(assistant.vision.frame_answers, 0)
 
     def test_status_reports_changes_and_window(self) -> None:
         assistant = self.make()
