@@ -298,6 +298,37 @@ class VisualIntentClassifierTest(unittest.TestCase):
         )
         self.assertEqual(payload["state"]["utterance"], "почему это не работает")
         self.assertFalse(payload["state"]["dialog_mode"])
+        self.assertNotIn("dialog_context", payload["state"])
+        self.assertNotIn("screen_state", payload["state"])
+
+    def test_visual_payload_includes_dialog_context_and_screen_state(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):  # noqa: ANN001
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(response_body(OTHER, 0.9, {OTHER: 0.9, SCREEN: 0.1}, key="visual"))
+
+        classifier = self.make()
+        context = "Пользователь: что на экране\nЛуна: открыт браузер"
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            decision = classifier.classify_visual(
+                "смотри что выделено",
+                in_dialog=True,
+                context=context,
+                screen_state="наблюдение включено, свежий кадр есть",
+            )
+
+        self.assertEqual(decision.intent, OTHER)
+        state = captured["payload"]["state"]
+        self.assertEqual(state["dialog_context"], context)
+        self.assertEqual(
+            state["screen_state"],
+            "наблюдение включено, свежий кадр есть",
+        )
 
     def test_other_choice_is_returned(self) -> None:
         classifier = self.make()
