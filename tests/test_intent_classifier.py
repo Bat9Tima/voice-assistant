@@ -24,6 +24,7 @@ from app.intent_classifier import (
     IntentClassifier,
     IntentDecision,
 )
+from app.visual_intent import OTHER, SCREEN
 
 
 class FakeResponse:
@@ -55,13 +56,15 @@ def response_body(
     choice: str,
     confidence: float,
     probabilities: dict[str, float] | None = None,
+    *,
+    key: str = "intent",
 ) -> bytes:
     return json.dumps(
         {
             "id": "gen-dec-test",
             "model": "openai/gpt-6-luna-decisions-20260101",
             "answers": {
-                "intent": {
+                key: {
                     "type": "choice",
                     "choice": choice,
                     "confidence": confidence,
@@ -243,6 +246,147 @@ class IntentClassifierHttpTest(unittest.TestCase):
         self.assertEqual(decision.intent, UNKNOWN)
         self.assertEqual(decision.source, SOURCE_FALLBACK)
         urlopen.assert_not_called()
+
+
+class VisualIntentClassifierTest(unittest.TestCase):
+    @staticmethod
+    def make(**visual: object) -> IntentClassifier:
+        cfg = make_cfg()
+        section = {"enabled": True, "threshold": 0.6, "timeout_sec": 3.0}
+        section.update(visual)
+        cfg["vision"] = {"intent": section}
+        return IntentClassifier(cfg)
+
+    def test_payload_uses_separate_visual_question(self) -> None:
+        captured: dict = {}
+
+        def fake_urlopen(request, timeout=None):  # noqa: ANN001
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse(
+                response_body(
+                    SCREEN,
+                    0.91,
+                    {SCREEN: 0.91, OTHER: 0.09},
+                    key="visual",
+                )
+            )
+
+        classifier = self.make()
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            decision = classifier.classify_visual(
+                "почему это не работает",
+                in_dialog=False,
+            )
+
+        self.assertEqual(decision.intent, SCREEN)
+        self.assertEqual(decision.raw, SCREEN)
+        self.assertEqual(decision.confidence, 0.91)
+        self.assertEqual(decision.source, SOURCE_MODEL)
+        self.assertEqual(classifier.last_visual, decision)
+        self.assertEqual(captured["timeout"], 3.0)
+
+        payload = captured["payload"]
+        self.assertEqual(set(payload["questions"]), {"visual"})
+        self.assertEqual(
+            set(payload["questions"]["visual"]["criteria"]),
+            {SCREEN, OTHER},
+        )
+        self.assertEqual(payload["state"]["utterance"], "почему это не работает")
+        self.assertFalse(payload["state"]["dialog_mode"])
+
+    def test_other_choice_is_returned(self) -> None:
+        classifier = self.make()
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            return_value=FakeResponse(
+                response_body(OTHER, 0.88, {OTHER: 0.88, SCREEN: 0.12}, key="visual")
+            ),
+        ):
+            decision = classifier.classify_visual("как дела", in_dialog=True)
+
+        self.assertEqual(decision.intent, OTHER)
+        self.assertEqual(decision.source, SOURCE_MODEL)
+
+    def test_low_confidence_becomes_unknown(self) -> None:
+        classifier = self.make(threshold=0.6)
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            return_value=FakeResponse(
+                response_body(SCREEN, 0.41, {SCREEN: 0.41, OTHER: 0.39}, key="visual")
+            ),
+        ):
+            decision = classifier.classify_visual("что это", in_dialog=False)
+
+        self.assertEqual(decision.intent, UNKNOWN)
+        self.assertEqual(decision.raw, SCREEN)
+        self.assertEqual(decision.confidence, 0.41)
+
+    def test_disabled_visual_classifier_skips_network(self) -> None:
+        classifier = self.make(enabled=False)
+
+        with patch("app.intent_classifier.urllib.request.urlopen") as urlopen:
+            decision = classifier.classify_visual("что тут", in_dialog=False)
+
+        self.assertFalse(classifier.available_visual())
+        self.assertEqual(decision.intent, UNKNOWN)
+        self.assertEqual(decision.source, SOURCE_FALLBACK)
+        urlopen.assert_not_called()
+
+    def test_disabled_intent_section_skips_network(self) -> None:
+        classifier = IntentClassifier(
+            {
+                "intent": {"enabled": False, "api_key": "test-key"},
+                "vision": {"intent": {"enabled": True}},
+            }
+        )
+
+        with patch("app.intent_classifier.urllib.request.urlopen") as urlopen:
+            decision = classifier.classify_visual("что тут", in_dialog=False)
+
+        self.assertFalse(classifier.available_visual())
+        self.assertEqual(decision.source, SOURCE_FALLBACK)
+        urlopen.assert_not_called()
+
+    def test_missing_key_skips_network(self) -> None:
+        classifier = IntentClassifier(
+            {
+                "intent": {"enabled": True, "mode": MODE_SHADOW},
+                "vision": {"intent": {"enabled": True}},
+            }
+        )
+
+        with patch("app.intent_classifier.urllib.request.urlopen") as urlopen:
+            decision = classifier.classify_visual("что тут", in_dialog=False)
+
+        self.assertEqual(decision.source, SOURCE_FALLBACK)
+        urlopen.assert_not_called()
+
+    def test_http_error_falls_back(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://api.proxyapi.ru/v1/decisions",
+            500,
+            "Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(b'{"detail": "boom"}'),
+        )
+        classifier = self.make()
+
+        with patch(
+            "app.intent_classifier.urllib.request.urlopen",
+            side_effect=error,
+        ):
+            decision = classifier.classify_visual("что тут", in_dialog=False)
+
+        self.assertEqual(decision.intent, UNKNOWN)
+        self.assertEqual(decision.source, SOURCE_FALLBACK)
+        self.assertIn("HTTP 500", decision.error)
 
 
 class IntentClassifierRulesTest(unittest.TestCase):
