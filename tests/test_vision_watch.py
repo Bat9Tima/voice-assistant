@@ -9,6 +9,7 @@ from PIL import Image
 from app.frame_processor import ChangeResult, FrameProcessor
 from app.screen_capture import Frame, ScreenCaptureError
 from app.screen_watch import ScreenWatcher, WatchEvent
+from app.vision_events import KIND_CHANGE, KIND_START, EventTimeline
 from app.vision_watch import (
     MIN_INTERVAL_SEC,
     VisionObserver,
@@ -78,6 +79,8 @@ class VisionObserverTest(unittest.TestCase):
     def make(
         self,
         events: list[WatchEvent] | None = None,
+        *,
+        timeline: EventTimeline | None = None,
         **kwargs: float,
     ) -> tuple[VisionObserver, FakeWatcher]:
         watcher = FakeWatcher(events or [make_event(baseline=True)])
@@ -85,6 +88,7 @@ class VisionObserverTest(unittest.TestCase):
         observer = VisionObserver(
             watcher,
             clock=lambda: 100.0,
+            timeline=timeline,
             **kwargs,
         )
         return observer, watcher
@@ -206,6 +210,50 @@ class VisionObserverTest(unittest.TestCase):
     def test_interval_is_not_below_minimum(self) -> None:
         observer, _ = self.make(interval_sec=0.001)
         self.assertEqual(observer.interval_sec, MIN_INTERVAL_SEC)
+
+    def test_timeline_records_start_and_changes(self) -> None:
+        timeline = EventTimeline()
+        events = [
+            make_event(baseline=True, title="Терминал"),
+            make_event(changed=True, title="Chrome"),
+        ]
+        observer, _ = self.make(events, timeline=timeline)
+
+        observer.start(background=False)
+        observer.tick(100.0)
+        observer.tick(102.0)
+
+        self.assertEqual(
+            [event.kind for event in timeline.events()],
+            [KIND_START, KIND_CHANGE],
+        )
+
+    def test_pause_and_stop_forget_timeline(self) -> None:
+        timeline = EventTimeline()
+        observer, _ = self.make(timeline=timeline)
+        observer.start(background=False)
+        observer.tick(100.0)
+        self.assertTrue(timeline.events())
+
+        observer.pause()
+        self.assertEqual(timeline.events(), ())
+
+        observer.resume()
+        observer.tick(102.0)
+        self.assertTrue(timeline.events())
+
+        observer.stop()
+        self.assertEqual(timeline.events(), ())
+
+    def test_auto_off_forgets_timeline(self) -> None:
+        timeline = EventTimeline()
+        observer, _ = self.make(timeline=timeline, auto_off_sec=10.0)
+        observer.start(background=False)
+        observer.tick(100.0)
+
+        observer.tick(110.0)
+
+        self.assertEqual(timeline.events(), ())
 
 
 class VisionObserverThreadTest(unittest.TestCase):

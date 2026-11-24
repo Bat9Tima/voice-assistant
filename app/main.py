@@ -62,6 +62,11 @@ from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
 from .vision import ScreenVision, VisionError
+from .vision_events import (
+    DEFAULT_IDLE_AFTER_SEC,
+    DEFAULT_MAX_EVENTS,
+    EventTimeline,
+)
 from .vision_watch import (
     DEFAULT_AUTO_OFF_SEC,
     DEFAULT_INTERVAL_SEC,
@@ -141,6 +146,25 @@ WATCH_CHANGE_PHRASES = frozenset(
         "что изменилось на моем экране",
         "что нового на экране",
         "что там изменилось",
+    }
+)
+# Лента событий: «что происходило» — рассказ по фактам, без модели.
+# Короткие фразы понимаются только вне разговора, чтобы не перехватывать
+# обычный вопрос «что происходило?» в диалоге.
+WATCH_HISTORY_PHRASES = frozenset(
+    {
+        "что происходило на экране",
+        "что происходило за это время",
+        "история наблюдения",
+        "что было в наблюдении",
+    }
+)
+WATCH_HISTORY_SHORT_PHRASES = frozenset(
+    {
+        "что происходило",
+        "что ты заметила",
+        "что ты видела",
+        "расскажи что происходило",
     }
 )
 
@@ -425,6 +449,23 @@ class Assistant:
             return None
         raw_auto_off = watch_cfg.get("auto_off_sec", DEFAULT_AUTO_OFF_SEC)
         auto_off = DEFAULT_AUTO_OFF_SEC if raw_auto_off is None else float(raw_auto_off)
+        raw_events = watch_cfg.get("events")
+        if isinstance(raw_events, dict):
+            events_cfg = raw_events
+        elif raw_events is False:
+            events_cfg = {"enabled": False}
+        else:
+            events_cfg = {}
+        timeline = None
+        if bool(events_cfg.get("enabled", True)):
+            raw_max = events_cfg.get("max_events", DEFAULT_MAX_EVENTS)
+            max_events = DEFAULT_MAX_EVENTS if raw_max is None else int(raw_max)
+            raw_idle = events_cfg.get("idle_after_sec", DEFAULT_IDLE_AFTER_SEC)
+            idle_after = DEFAULT_IDLE_AFTER_SEC if raw_idle is None else float(raw_idle)
+            timeline = EventTimeline(
+                max_events=max_events,
+                idle_after_sec=idle_after,
+            )
         watcher = ScreenWatcher(
             ScreenCapture(
                 max_width=int(vision_cfg.get("max_width") or 1280),
@@ -437,6 +478,7 @@ class Assistant:
             interval_sec=float(watch_cfg.get("interval_sec") or DEFAULT_INTERVAL_SEC),
             auto_off_sec=auto_off,
             on_stop=self._vision_watch_stopped,
+            timeline=timeline,
         )
 
     # ------------------------------------------------------------------ memory
@@ -1321,6 +1363,19 @@ class Assistant:
             return "Наблюдение и так выключено."
         if text in WATCH_STATUS_PHRASES:
             return describe_status(observer.status(), now=time.monotonic())
+        history = text in WATCH_HISTORY_PHRASES or (
+            not in_dialog and text in WATCH_HISTORY_SHORT_PHRASES
+        )
+        if history:
+            status = observer.status()
+            if not status.active:
+                if in_dialog:
+                    return None
+                return "Наблюдение выключено. Скажи «включи зрение», и я начну запоминать события."
+            timeline = getattr(observer, "timeline", None)
+            if timeline is None:
+                return "История событий выключена в настройках."
+            return timeline.describe(now=time.monotonic())
         if text in WATCH_CHANGE_PHRASES:
             status = observer.status()
             if status.active:

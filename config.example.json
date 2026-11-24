@@ -167,7 +167,12 @@
     "watch": {
       "enabled": true,
       "interval_sec": 2.0,
-      "auto_off_sec": 600
+      "auto_off_sec": 600,
+      "events": {
+        "enabled": true,
+        "max_events": 40,
+        "idle_after_sec": 120
+      }
     },
     "prompt": "Опиши, что видно на экране, в двух-трёх предложениях. Если на экране текст, код или ошибка — назови главное. Если экран чёрный или пустой, так и скажи.",
     "triggers": [
