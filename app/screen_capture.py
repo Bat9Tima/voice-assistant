@@ -28,8 +28,8 @@ class ScreenCaptureError(RuntimeError):
 class Frame:
     """Один снимок экрана.
 
-    ``window_title`` пока всегда ``None``: заголовок активного окна
-    появится отдельным этапом, без изменения остальных полей.
+    ``window_title`` заполняется, если у ``ScreenCapture`` есть
+    ``title_provider``; без него остаётся ``None``.
     """
 
     image: Image.Image

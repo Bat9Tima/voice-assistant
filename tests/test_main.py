@@ -49,6 +49,7 @@ from app.main import Assistant, _hotkey_key, _make_hotkey_listener
 from app.qa import QAAnswer, QAService, Route
 from app.search import SearchError, SearchResult
 from app.vision import DEFAULT_TRIGGERS, VisionError, match_request
+from app.vision_watch import WatchStatus
 from app.visual_router import VisualRouter
 from app.wake import BargeInMatch
 from app.weather import DailyForecast, GeoPlace, WeatherError, WeatherReport
@@ -202,9 +203,69 @@ class FakeTTS:
 class FakeTray:
     def __init__(self, status: dict[str, Any]) -> None:
         self._status = status
+        self.states: list[str] = []
 
     def status(self) -> dict[str, Any]:
         return self._status
+
+    def set_state(self, state: str) -> None:
+        self.states.append(state)
+
+
+class FakeVisionWatch:
+    def __init__(self) -> None:
+        self.active = False
+        self.paused = False
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.started_at: float | None = None
+        self.changes = 0
+        self.window_title: str | None = None
+        self.error: str | None = None
+        self.interval_sec = 2.0
+        self.auto_off_sec = 600.0
+
+    def start(self) -> bool:
+        self.start_calls += 1
+        if self.active:
+            return False
+        self.active = True
+        self.started_at = time.monotonic()
+        return True
+
+    def stop(self) -> bool:
+        self.stop_calls += 1
+        if not self.active:
+            return False
+        self.active = False
+        return True
+
+    def pause(self) -> bool:
+        if not self.active:
+            return False
+        self.paused = True
+        return True
+
+    def resume(self) -> bool:
+        if not self.active:
+            return False
+        self.paused = False
+        return True
+
+    def status(self) -> WatchStatus:
+        return WatchStatus(
+            active=self.active,
+            paused=self.paused,
+            started_at=self.started_at,
+            last_poll_at=self.started_at,
+            last_change_at=self.started_at,
+            polls=2 if self.active else 0,
+            changes=self.changes,
+            window_title=self.window_title,
+            error=self.error,
+            interval_sec=self.interval_sec,
+            auto_off_sec=self.auto_off_sec,
+        )
 
 
 class FakeQA:
@@ -332,6 +393,35 @@ class TrayStatusTest(unittest.TestCase):
         self.assertEqual(set(status["tray"]), {"available", "running", "error", "restarts"})
         self.assertEqual(status["tray"], tray_status)
 
+    def test_status_without_observation_is_none(self) -> None:
+        self.assertIsNone(self.make(None).status()["observation"])
+
+    def test_status_exposes_observation(self) -> None:
+        assistant = self.make(None)
+        assistant.vision_watch = FakeVisionWatch()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.changes = 2
+
+        observation = assistant.status()["observation"]
+
+        self.assertEqual(
+            observation,
+            {"active": True, "paused": False, "changes": 2},
+        )
+
+    def test_observation_makes_tray_watching(self) -> None:
+        assistant = self.make(FakeTray({}))
+        assistant.vision_watch = FakeVisionWatch()
+        assistant.vision_watch.active = True
+
+        assistant.set_state("idle")
+        self.assertEqual(assistant.state, "idle")
+        self.assertEqual(assistant.tray.states, ["watching"])
+
+        assistant.vision_watch.active = False
+        assistant.set_state("idle")
+        self.assertEqual(assistant.tray.states, ["watching", "idle"])
+
 
 class PauseHotkeyTest(unittest.TestCase):
     @staticmethod
@@ -374,6 +464,18 @@ class PauseHotkeyTest(unittest.TestCase):
         bindings = assistant._hotkey_bindings()
         self.assertEqual(set(bindings), {"<ctrl>+<alt>+<space>"})
         self.assertEqual(bindings["<ctrl>+<alt>+<space>"], assistant.trigger_listen)
+
+    def test_toggle_pause_pauses_observation(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch = FakeVisionWatch()
+        assistant.vision_watch.active = True
+
+        assistant.toggle_pause()
+        self.assertTrue(assistant.vision_watch.paused)
+
+        assistant.toggle_pause()
+        self.assertFalse(assistant.vision_watch.paused)
+        self.assertTrue(assistant.vision_watch.active)
 
     def test_toggle_pause_switches_state_and_speaks(self) -> None:
         assistant = self.make()
@@ -2073,6 +2175,158 @@ class RecordDialogLimitsTest(unittest.TestCase):
         assistant._paused = True
         self.assertEqual(assistant._record_command(dialog=False), b"")
         self.assertEqual(assistant.mic.reads, 0)
+
+
+class VisionWatchRoutingTest(unittest.TestCase):
+    def make(self) -> Assistant:
+        assistant = Assistant.__new__(Assistant)
+        assistant.router = FakeRouter()
+        assistant.planner = FakeLocalPlanner()
+        assistant.qa = None
+        assistant.vision = FakeVision()
+        assistant.image_search = FakeImageSearch()
+        assistant.llm = FakeLLM()
+        assistant.tts = FakeTTS(enabled=True)
+        assistant.vision_watch = FakeVisionWatch()
+        assistant.notifications = []
+        assistant.notify = lambda message, title="Ассистент": assistant.notifications.append(
+            message
+        )
+        assistant._state_lock = threading.Lock()
+        assistant._state = "idle"
+        assistant.states = []
+        assistant.set_state = assistant.states.append
+        return assistant
+
+    def test_enable_starts_observation_without_router_or_vision(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("включи зрение")
+
+        self.assertTrue(assistant.vision_watch.active)
+        self.assertIn("Наблюдение включено", message)
+        self.assertEqual(assistant.router.seen, [])
+        self.assertEqual(assistant.vision.seen, [])
+        self.assertEqual(assistant.vision.captures, 0)
+        self.assertEqual(assistant.tts.said, [message])
+
+    def test_enable_twice_reports_already_on(self) -> None:
+        assistant = self.make()
+        assistant.run_text("включи зрение")
+
+        message = assistant.run_text("включи наблюдение")
+
+        self.assertEqual(assistant.vision_watch.start_calls, 2)
+        self.assertEqual(message, "Наблюдение уже включено.")
+
+    def test_disable_stops_observation(self) -> None:
+        assistant = self.make()
+        assistant.run_text("включи зрение")
+
+        message = assistant.run_text("выключи зрение")
+
+        self.assertFalse(assistant.vision_watch.active)
+        self.assertIn("Наблюдение выключено", message)
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_disable_when_off_is_safe(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("выключи наблюдение")
+
+        self.assertEqual(message, "Наблюдение и так выключено.")
+
+    def test_status_reports_changes_and_window(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.started_at = time.monotonic() - 10
+        assistant.vision_watch.changes = 2
+        assistant.vision_watch.window_title = "Chrome — GitHub"
+
+        message = assistant.run_text("статус наблюдения")
+
+        self.assertIn("Экран менялся 2 раза", message)
+        self.assertIn("Активное окно: Chrome — GitHub", message)
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_what_changed_uses_observation_when_active(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.active = True
+        assistant.vision_watch.started_at = time.monotonic() - 5
+        assistant.vision_watch.changes = 3
+
+        message = assistant.run_text("что изменилось")
+
+        self.assertIn("Экран менялся 3 раза", message)
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_what_changed_without_observation_suggests_enabling(self) -> None:
+        assistant = self.make()
+
+        message = assistant.run_text("что изменилось")
+
+        self.assertIn("включи зрение", message)
+        self.assertEqual(assistant.router.seen, [])
+
+    def test_what_changed_in_dialog_falls_through(self) -> None:
+        assistant = self.make()
+
+        self.assertIsNone(assistant._vision_watch_reply("что изменилось", in_dialog=True))
+
+    def test_timeout_is_announced(self) -> None:
+        assistant = self.make()
+        assistant.vision_watch.auto_off_sec = 60.0
+
+        assistant._vision_watch_stopped("timeout")
+
+        self.assertEqual(assistant.notifications, ["Наблюдение выключено: прошло 1 минуту."])
+        self.assertEqual(assistant.tts.said, ["Наблюдение выключено: прошло 1 минуту."])
+
+    def test_manual_stop_is_not_announced_twice(self) -> None:
+        assistant = self.make()
+
+        assistant._vision_watch_stopped("manual")
+
+        self.assertEqual(assistant.notifications, [])
+
+
+class VisionWatchConfigTest(unittest.TestCase):
+    def test_disabled_vision_has_no_observer(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+        self.assertIsNone(assistant._make_vision_watch({"vision": {"enabled": False}}))
+
+    def test_disabled_watch_has_no_observer(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+        self.assertIsNone(
+            assistant._make_vision_watch({"vision": {"enabled": True, "watch": {"enabled": False}}})
+        )
+
+    def test_defaults_create_inactive_observer(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        observer = assistant._make_vision_watch({"vision": {"enabled": True}})
+
+        self.assertIsNotNone(observer)
+        assert observer is not None
+        self.assertFalse(observer.status().active)
+        self.assertEqual(observer.interval_sec, 2.0)
+        self.assertEqual(observer.auto_off_sec, 600.0)
+
+    def test_custom_timing_is_applied(self) -> None:
+        assistant = Assistant.__new__(Assistant)
+
+        observer = assistant._make_vision_watch(
+            {
+                "vision": {
+                    "enabled": True,
+                    "watch": {"interval_sec": 3.5, "auto_off_sec": 120},
+                }
+            }
+        )
+
+        assert observer is not None
+        self.assertEqual(observer.interval_sec, 3.5)
+        self.assertEqual(observer.auto_off_sec, 120.0)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ from .cloud_llm import CloudLLM
 from .config import DATA_DIR, LOGS_DIR, MODELS_DIR, STATE_DIR, VOSK_DIR, load_config
 from .dialog import DialogService
 from .duck import AppVolumeDucker
+from .frame_processor import FrameProcessor
 from .image_search import (
     ImageSearchError,
     YandexImageSearch,
@@ -49,6 +50,8 @@ from .memory_manager import MemoryManager
 from .persona import DEFAULT_MAX_FACTS, PersonaMemory
 from .profile import Profile
 from .qa import QAService, Route
+from .screen_capture import ScreenCapture
+from .screen_watch import ScreenWatcher
 from .session_store import SessionStore
 from .single_instance import acquire
 from .stt import create_transcriber
@@ -59,6 +62,13 @@ from .tray import TrayUI
 from .tts import TTSService
 from .vad import EndpointTracker, SileroVad
 from .vision import ScreenVision, VisionError
+from .vision_watch import (
+    DEFAULT_AUTO_OFF_SEC,
+    DEFAULT_INTERVAL_SEC,
+    VisionObserver,
+    describe_status,
+    format_duration,
+)
 from .visual_router import (
     AMBIGUOUS,
     CONTEXT_ONLY,
@@ -68,6 +78,7 @@ from .visual_router import (
     VisualRouter,
 )
 from .wake import BargeInDetector, BargeInMatch, OpenWakeWordDetector, WakeWordDetector
+from .window_info import active_window_title
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +88,60 @@ DIALOG_QA_KINDS = frozenset({"datetime", "weather", "news", "news_detail", "sear
 # Из них классификатор может отменить только те, что требуют внешних
 # данных. Дата считается локально, а уточнения держатся за контекст.
 GATED_QA_KINDS = frozenset({"weather", "news", "search"})
+
+# Режим наблюдения включается только явной фразой и так же выключается.
+# Это не команды зрения: кадр никуда не отправляется, пока режим работает.
+WATCH_ON_PHRASES = frozenset(
+    {
+        "включи зрение",
+        "включи наблюдение",
+        "включи наблюдение за экраном",
+        "включи слежение",
+        "включи слежение за экраном",
+        "включи режим наблюдения",
+        "начни наблюдение",
+        "начни наблюдение за экраном",
+        "начни следить за экраном",
+        "перейди в режим наблюдения",
+        "следи за экраном",
+    }
+)
+WATCH_OFF_PHRASES = frozenset(
+    {
+        "выключи зрение",
+        "выключи наблюдение",
+        "выключи наблюдение за экраном",
+        "выключи слежение",
+        "выключи режим наблюдения",
+        "отключи зрение",
+        "отключи наблюдение",
+        "останови наблюдение",
+        "останови слежение",
+        "перестань наблюдать",
+        "перестань следить за экраном",
+        "хватит наблюдать",
+        "хватит следить за экраном",
+    }
+)
+WATCH_STATUS_PHRASES = frozenset(
+    {
+        "статус наблюдения",
+        "что с наблюдением",
+        "наблюдение включено",
+        "наблюдение работает",
+        "ты наблюдаешь",
+        "ты следишь за экраном",
+    }
+)
+WATCH_CHANGE_PHRASES = frozenset(
+    {
+        "что изменилось",
+        "что изменилось на экране",
+        "что изменилось на моем экране",
+        "что нового на экране",
+        "что там изменилось",
+    }
+)
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -338,6 +403,35 @@ class Assistant:
         # Последние ~1-3 секунды звука: чтобы не потерять начало команды,
         # если пользователь заговорил сразу после ключевой фразы.
         self._preroll: deque[bytes] = deque(maxlen=12)
+        self.vision_watch = self._make_vision_watch(cfg)
+
+    def _make_vision_watch(self, cfg: dict[str, Any]) -> VisionObserver | None:
+        """Собирает режим наблюдения, если он разрешён в конфиге.
+
+        Захват не запускается: до явной команды «включи зрение» ни один
+        кадр не снимается.
+        """
+        vision_cfg = cfg.get("vision") or {}
+        watch_cfg = vision_cfg.get("watch") or {}
+        if not bool(vision_cfg.get("enabled", True)):
+            return None
+        if not bool(watch_cfg.get("enabled", True)):
+            return None
+        raw_auto_off = watch_cfg.get("auto_off_sec", DEFAULT_AUTO_OFF_SEC)
+        auto_off = DEFAULT_AUTO_OFF_SEC if raw_auto_off is None else float(raw_auto_off)
+        watcher = ScreenWatcher(
+            ScreenCapture(
+                max_width=int(vision_cfg.get("max_width") or 1280),
+                title_provider=active_window_title,
+            ),
+            FrameProcessor(),
+        )
+        return VisionObserver(
+            watcher,
+            interval_sec=float(watch_cfg.get("interval_sec") or DEFAULT_INTERVAL_SEC),
+            auto_off_sec=auto_off,
+            on_stop=self._vision_watch_stopped,
+        )
 
     # ------------------------------------------------------------------ memory
     def _recover_sessions_async(self) -> None:
@@ -390,10 +484,19 @@ class Assistant:
     def set_state(self, state: str) -> None:
         with self._state_lock:
             self._state = state
-        if self.tray is not None:
-            self.tray.set_state(state)
+        if self.tray is None:
+            return
+        # Внутреннее состояние остаётся idle, но пользователь должен видеть,
+        # что экран всё ещё под наблюдением.
+        tray_state = state
+        observer = getattr(self, "vision_watch", None)
+        if state == "idle" and observer is not None and observer.active:
+            tray_state = "watching"
+        self.tray.set_state(tray_state)
 
     def status(self) -> dict[str, Any]:
+        observer = getattr(self, "vision_watch", None)
+        watch = observer.status() if observer is not None else None
         return {
             "state": self.state,
             "paused": self._paused,
@@ -405,6 +508,15 @@ class Assistant:
             "wake_loaded": self.wake is not None,
             "speaking": bool(getattr(getattr(self, "tts", None), "busy", False)),
             "dialog": bool(getattr(self, "_dialog_active", False)),
+            "observation": (
+                {
+                    "active": watch.active,
+                    "paused": watch.paused,
+                    "changes": watch.changes,
+                }
+                if watch is not None
+                else None
+            ),
             "tray": self.tray.status() if self.tray is not None else None,
         }
 
@@ -744,6 +856,14 @@ class Assistant:
     def toggle_pause(self) -> None:
         self._paused = not self._paused
         log.info("Пауза микрофона: %s", "включена" if self._paused else "выключена")
+        observer = getattr(self, "vision_watch", None)
+        if observer is not None:
+            # Пауза должна останавливать и наблюдение за экраном: иначе
+            # «микрофон выключен» не означает «экран не смотрят».
+            if self._paused:
+                observer.pause()
+            else:
+                observer.resume()
         if self._paused and getattr(self, "mic", None) is not None:
             # Нажали паузу во время записи: уже накопленный звук не нужен.
             self.mic.flush()
@@ -1112,6 +1232,48 @@ class Assistant:
         except Exception:  # noqa: BLE001
             log.warning("Зрение: не удалось взять контекст диалога", exc_info=True)
             return ""
+
+    def _vision_watch_reply(self, text: str, *, in_dialog: bool) -> str | None:
+        """Команды режима наблюдения. ``None`` — фраза не про него."""
+        observer = getattr(self, "vision_watch", None)
+        if observer is None:
+            return None
+        if text in WATCH_ON_PHRASES:
+            if observer.start():
+                return (
+                    "Наблюдение включено. Кадры остаются в памяти, в модель "
+                    "ничего не отправляется. Выключить — «выключи зрение»."
+                )
+            return "Наблюдение уже включено."
+        if text in WATCH_OFF_PHRASES:
+            if observer.stop():
+                return "Наблюдение выключено. Кадры больше не снимаю."
+            return "Наблюдение и так выключено."
+        if text in WATCH_STATUS_PHRASES:
+            return describe_status(observer.status(), now=time.monotonic())
+        if text in WATCH_CHANGE_PHRASES:
+            status = observer.status()
+            if status.active:
+                return describe_status(status, now=time.monotonic())
+            if not in_dialog:
+                return (
+                    "Наблюдение выключено. Скажи «включи зрение», если хочешь, "
+                    "чтобы я следила за экраном."
+                )
+        return None
+
+    def _vision_watch_stopped(self, reason: str) -> None:
+        """Режим выключился сам: сообщаем, чтобы не оставался незаметным."""
+        if reason != "timeout":
+            return
+        observer = getattr(self, "vision_watch", None)
+        limit = observer.status().auto_off_sec if observer is not None else DEFAULT_AUTO_OFF_SEC
+        message = f"Наблюдение выключено: прошло {format_duration(limit)}."
+        log.info("Зрение: %s", message)
+        self.notify(message)
+        self.tts.say(message)
+        # Возвращаем иконку трея из «наблюдаю» в текущее состояние.
+        self.set_state(self.state)
 
     def _visual_decision(self, text: str, *, in_dialog: bool) -> VisualDecision | None:
         """Решение, нужен ли снимок. Сбой правил не должен ломать команду."""
@@ -1558,6 +1720,14 @@ class Assistant:
                 if in_dialog and dialog.wants_exit(text):
                     return self._stop_dialog("phrase")
 
+            # Режим наблюдения важнее зрения по команде: «включи зрение» —
+            # это переключатель, а «посмотри на экран» остаётся разовым кадром.
+            watch_reply = self._vision_watch_reply(text, in_dialog=in_dialog)
+            if watch_reply is not None:
+                self.notify(watch_reply[:250])
+                self.tts.say(watch_reply)
+                return watch_reply
+
             qa = getattr(self, "qa", None)
             vision = getattr(self, "vision", None)
             image_search = getattr(self, "image_search", None)
@@ -1794,6 +1964,9 @@ class Assistant:
 
     def _cleanup(self) -> None:
         log.info("Завершаю работу")
+        observer = getattr(self, "vision_watch", None)
+        if observer is not None:
+            observer.stop()
         dialog = getattr(self, "dialog", None)
         if dialog is not None:
             # Программу закрыли посреди разговора: сессия всё равно должна

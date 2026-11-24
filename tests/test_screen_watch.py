@@ -142,6 +142,19 @@ class ScreenWatcherTest(unittest.TestCase):
         self.assertIn("старт", text)
         self.assertIn("Терминал", text)
 
+    def test_last_frame_is_kept_until_reset(self) -> None:
+        watcher = ScreenWatcher(
+            FakeCapture([Image.new("RGB", (320, 180), "white")]),
+            FrameProcessor(),
+        )
+        self.assertIsNone(watcher.last_frame)
+
+        watcher.poll()
+
+        self.assertIsNotNone(watcher.last_frame)
+        watcher.reset()
+        self.assertIsNone(watcher.last_frame)
+
     def test_format_baseline_and_change(self) -> None:
         watcher = ScreenWatcher(
             FakeCapture(

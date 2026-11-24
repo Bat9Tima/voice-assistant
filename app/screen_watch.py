@@ -68,6 +68,11 @@ class ScreenWatcher:
             window_title=frame.window_title,
         )
 
+    @property
+    def last_frame(self) -> Frame | None:
+        """Последний снятый кадр или ``None`` до первого шага."""
+        return self._previous
+
     def reset(self) -> None:
         """Забывает предыдущий кадр: следующий шаг снова будет стартовым."""
         self._previous = None

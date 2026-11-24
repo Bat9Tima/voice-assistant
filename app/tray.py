@@ -31,6 +31,7 @@ COLORS = {
     "listening": "#2ecc71",
     "thinking": "#f39c12",
     "paused": "#95a5a6",
+    "watching": "#9b59b6",
     "error": "#e74c3c",
 }
 
@@ -40,6 +41,7 @@ TITLES = {
     "listening": "Ассистент: слушаю",
     "thinking": "Ассистент: думаю",
     "paused": "Ассистент: пауза",
+    "watching": "Ассистент: наблюдаю",
     "error": "Ассистент: ошибка",
 }
 
